@@ -1558,18 +1558,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const encryptedBuf = Buffer.from(await fetchRes.arrayBuffer());
 
       const video = await storage.getVideoByPublicId(session.publicId);
+      log(`SEGMENT_REENCRYPT_ATTEMPT: sid=${sid}, seg=${segSubPath}, encKeyPath=${video?.encryptionKeyPath || "null"}, variantCacheSize=${session.variantCache.size}`);
+
       if (video?.encryptionKeyPath && session.ephemeralKey) {
         try {
           const masterKey = await getMasterKey(video.encryptionKeyPath, session);
           const originalIV = extractIVForSegment(session, segSubPath);
-          if (masterKey && originalIV) {
+
+          if (!masterKey) {
+            log(`SEGMENT_REENCRYPTED=false: sid=${sid}, seg=${segSubPath}, reason=masterKeyFetchFailed`);
+          } else if (!originalIV) {
+            log(`SEGMENT_REENCRYPTED=false: sid=${sid}, seg=${segSubPath}, reason=ivNotFound (variantCacheSize=${session.variantCache.size})`);
+          } else {
             const decrypted = decryptAes128Cbc(encryptedBuf, masterKey, originalIV);
             const reEncrypted = encryptAes128Cbc(decrypted, session.ephemeralKey, session.ephemeralIV);
+            log(`SEGMENT_REENCRYPTED=true: sid=${sid}, seg=${segSubPath}, masterKeyLen=${masterKey.length}, origIV=${originalIV.toString("hex").slice(0, 8)}…, sessionIV=${session.ephemeralIV.toString("hex").slice(0, 8)}…, bytes=${reEncrypted.length}`);
             releaseSegment(sid);
             return res.end(reEncrypted);
           }
         } catch (e: any) {
-          log(`Re-encrypt error: ${e.message}`);
+          log(`SEGMENT_REENCRYPTED=false: sid=${sid}, seg=${segSubPath}, reason=exception: ${e.message}`);
         }
       }
 
@@ -2149,6 +2157,133 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const allPassed = Object.values(results).every(r => r.status === "PASS");
     res.json({ videoId, overall: allPassed ? "ALL_PASS" : "HAS_FAILURES", results });
+  });
+
+  // ── Segment Re-encryption Integrity Test ─────────────────────────────────────
+  // Verifies per-session AES re-encryption is actually happening.
+  // Fetches one segment, applies re-encryption twice with two different ephemeral
+  // keys (simulating two sessions), then compares SHA256 hashes.
+  // If hashes differ → re-encryption working. If same → broken.
+  app.get("/api/debug/segment-integrity/:publicId/:segment", requireAuth, async (req: any, res: any) => {
+    try {
+      const { publicId, segment } = req.params;
+      const video = await storage.getVideoByPublicId(publicId);
+      if (!video) return res.status(404).json({ message: "Video not found" });
+
+      const connId = (video as any).storageConnectionId as string | null;
+      const conn = connId
+        ? await storage.getStorageConnectionById(connId)
+        : await storage.getActiveStorageConnection();
+      if (!conn || conn.provider !== "backblaze_b2") {
+        return res.status(400).json({ message: "Only Backblaze B2 storage supported for this test" });
+      }
+      const cfg = conn.config as any;
+
+      // Find the segment in storage — search variant prefixes (360p, 720p, 1080p)
+      const hlsPrefix = video.hlsS3Prefix || `videos/${video.id}/hls/`;
+      const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+      const b2 = makeB2Client({ endpoint: cfg.endpoint });
+      const listResp = await b2.send(new ListObjectsV2Command({ Bucket: cfg.bucket, Prefix: hlsPrefix, MaxKeys: 500 }));
+      const allKeys: string[] = (listResp.Contents || []).map((o: any) => o.Key || "");
+
+      // Find segment key in B2 (match by filename)
+      const segKey = allKeys.find(k => k.endsWith(`/${segment}`) || k.endsWith(segment));
+      if (!segKey) {
+        return res.status(404).json({ message: `Segment '${segment}' not found in B2`, availableSegments: allKeys.filter(k => k.endsWith(".ts")).slice(0, 20) });
+      }
+
+      // Find variant playlist to get the segment's IV
+      const variantM3u8Key = allKeys.find(k => k.includes(segKey.split("/").slice(0, -1).join("/")) && k.endsWith(".m3u8") && !k.endsWith("master.m3u8"));
+      let originalIV: Buffer | null = null;
+      if (variantM3u8Key) {
+        const { GetObjectCommand: GOC } = await import("@aws-sdk/client-s3");
+        const playlistResp = await b2.send(new GOC({ Bucket: cfg.bucket, Key: variantM3u8Key }));
+        const playlistText = await (playlistResp.Body as any).transformToString();
+        const parsed = parsePlaylist(playlistText);
+        const segFile = segment.split("/").pop()!;
+        const segEntry = parsed.segments.find(s => s.uri === segFile || s.uri.endsWith(segFile));
+        if (segEntry?.keyTag) originalIV = extractIVFromKeyTag(segEntry.keyTag);
+      }
+
+      // Fetch raw segment bytes from B2
+      const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const segResp = await b2.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: segKey }));
+      const rawBytes = Buffer.from(await (segResp.Body as any).transformToByteArray());
+      const rawSha256 = crypto.createHash("sha256").update(rawBytes).digest("hex");
+
+      // Fetch master key (key A)
+      let masterKey: Buffer | null = null;
+      const encKeyPath = video.encryptionKeyPath;
+      if (encKeyPath) {
+        try {
+          const keyResp = await b2.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: encKeyPath }));
+          masterKey = Buffer.from(await (keyResp.Body as any).transformToByteArray());
+        } catch (e: any) {
+          return res.json({
+            segment: segKey, rawSha256, encryptionKeyPath: encKeyPath,
+            error: `Failed to fetch master key: ${e.message}`,
+            reEncryptionWorking: false, reason: "masterKeyFetchFailed"
+          });
+        }
+      }
+
+      // Attempt re-encryption with two simulated sessions
+      if (!masterKey) {
+        return res.json({
+          segment: segKey, rawSha256, encryptionKeyPath: encKeyPath || null,
+          reEncryptionWorking: false, reason: "noEncryptionKeyPath — video was not transcoded with AES encryption"
+        });
+      }
+
+      if (!originalIV) {
+        return res.json({
+          segment: segKey, rawSha256, encryptionKeyPath: encKeyPath,
+          reEncryptionWorking: false, reason: "ivNotFound — could not extract IV from variant playlist key tag"
+        });
+      }
+
+      // Session A: random ephemeral key + IV
+      const ephKeyA = crypto.randomBytes(16);
+      const ephIVA = crypto.randomBytes(16);
+      const decrypted = decryptAes128Cbc(rawBytes, masterKey, originalIV);
+      const reEncA = encryptAes128Cbc(decrypted, ephKeyA, ephIVA);
+      const sha256A = crypto.createHash("sha256").update(reEncA).digest("hex");
+
+      // Session B: different ephemeral key + IV
+      const ephKeyB = crypto.randomBytes(16);
+      const ephIVB = crypto.randomBytes(16);
+      const reEncB = encryptAes128Cbc(decrypted, ephKeyB, ephIVB);
+      const sha256B = crypto.createHash("sha256").update(reEncB).digest("hex");
+
+      const sessionsProduceDifferentOutput = sha256A !== sha256B;
+      const session1DiffersFromOriginal = sha256A !== rawSha256;
+      const session2DiffersFromOriginal = sha256B !== rawSha256;
+      const reEncryptionWorking = sessionsProduceDifferentOutput && session1DiffersFromOriginal && session2DiffersFromOriginal;
+
+      log(`SEGMENT_INTEGRITY_TEST: publicId=${publicId}, seg=${segment}, reEncryptionWorking=${reEncryptionWorking}`);
+
+      return res.json({
+        segment: segKey,
+        encryptionKeyPath: encKeyPath,
+        ivFound: !!originalIV,
+        ivHex: originalIV.toString("hex"),
+        masterKeyLen: masterKey.length,
+        rawBytes: rawBytes.length,
+        rawSha256,
+        session1Sha256: sha256A,
+        session2Sha256: sha256B,
+        session1DiffersFromOriginal,
+        session2DiffersFromOriginal,
+        sessionsProduceDifferentOutput,
+        reEncryptionWorking,
+        verdict: reEncryptionWorking
+          ? "PASS — Per-session re-encryption is working correctly. Each session produces unique encrypted output."
+          : "FAIL — Re-encryption is NOT working. Sessions produce identical output.",
+      });
+    } catch (e: any) {
+      log(`segment-integrity test error: ${e.message}`);
+      res.status(500).json({ message: e.message });
+    }
   });
 
   return httpServer;
