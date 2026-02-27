@@ -71,6 +71,7 @@ export default function EmbedPlayerPage() {
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const popIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const rotationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const controlsTimerRef = useRef<NodeJS.Timeout | null>(null);
   const devToolsCheckRef = useRef<NodeJS.Timeout | null>(null);
   const devToolsOpenRef = useRef(false);
@@ -149,6 +150,11 @@ export default function EmbedPlayerPage() {
           if (manifestRes.status === 409 && data.code === "HLS_NOT_AVAILABLE") {
             setStatus("error");
             setErrorMsg("HLS not available — this video has not been converted for our custom player yet. An admin needs to build the HLS from the video source.");
+            return;
+          }
+          if (manifestRes.status === 409 && data.code === "VIDEO_NOT_SECURE_REBUILD_REQUIRED") {
+            setStatus("error");
+            setErrorMsg("This video requires encrypted HLS to play. An admin needs to rebuild the HLS from the video settings.");
             return;
           }
           setStatus("error");
@@ -249,6 +255,7 @@ export default function EmbedPlayerPage() {
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
       if (popIntervalRef.current) clearInterval(popIntervalRef.current);
+      if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
     };
   }, [publicId, token, retryKey]);
 
@@ -279,6 +286,41 @@ export default function EmbedPlayerPage() {
       }).catch(() => {});
     }, 10000);
     return () => { if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); };
+  }, [publicId, status]);
+
+  // Session rotation — rotate every 3 minutes to invalidate old session and ephemeral key
+  useEffect(() => {
+    const sid = streamSidRef.current;
+    if (!sid || !publicId) return;
+    rotationIntervalRef.current = setInterval(async () => {
+      const currentSid = streamSidRef.current;
+      if (!currentSid) return;
+      try {
+        const res = await fetch(`/api/player/${publicId}/rotate-session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sid: currentSid }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.manifestUrl || !data.sessionId) return;
+        streamSidRef.current = data.sessionId;
+        const hls = hlsRef.current;
+        if (hls) {
+          const v = videoRef.current;
+          const savedTime = v ? v.currentTime : 0;
+          const wasPaused = v ? v.paused : true;
+          hls.loadSource(data.manifestUrl);
+          hls.once(Hls.Events.MANIFEST_PARSED, () => {
+            if (v) {
+              v.currentTime = savedTime;
+              if (!wasPaused) v.play().catch(() => {});
+            }
+          });
+        }
+      } catch {}
+    }, 3 * 60 * 1000);
+    return () => { if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current); };
   }, [publicId, status]);
 
   // Pause video immediately when violation cooldown block is triggered

@@ -11,7 +11,8 @@ function resolveSecret(): string {
 
 const SECRET = resolveSecret();
 
-const SESSION_MAX_AGE_MS = 10 * 60 * 1000;
+const SESSION_MAX_AGE_MS = 5 * 60 * 1000;
+export const SESSION_ROTATION_MS = 3 * 60 * 1000;
 
 const ABUSE_THRESHOLDS = {
   requestsPerWindow: 10,
@@ -19,7 +20,8 @@ const ABUSE_THRESHOLDS = {
   burstLimit: 15,
   concurrentSegments: 6,
   playlistFetchesPerMin: 30,
-  keyHitsPerMin: 30,
+  keyHitsPerMin: 3,
+  keyHitsTotal: 20,
   scoreToRevoke: 15,
   windowSize: 6,
   outOfWindowPenalty: 3,
@@ -78,6 +80,11 @@ export interface VideoSession {
 
   ephemeralKey: Buffer;
   ephemeralIV: Buffer;
+
+  keyIssued: boolean;
+  keyIssuedCount: number;
+  keyExp: number;
+  keySig: string;
 }
 
 const sessions = new Map<string, VideoSession>();
@@ -104,6 +111,8 @@ export function createSession(
 ): string {
   const sid = crypto.randomBytes(16).toString("hex");
   const uaHash = userAgent ? crypto.createHash("sha256").update(userAgent).digest("hex").slice(0, 32) : "";
+  const keyExp = Math.floor(Date.now() / 1000) + Math.floor(SESSION_MAX_AGE_MS / 1000);
+  const keySig = signPath(sid, "/key", keyExp, deviceHash || "");
   sessions.set(sid, {
     publicId,
     hlsPrefix,
@@ -131,8 +140,51 @@ export function createSession(
     variantCache: new Map(),
     ephemeralKey: crypto.randomBytes(16),
     ephemeralIV: crypto.randomBytes(16),
+    keyIssued: false,
+    keyIssuedCount: 0,
+    keyExp,
+    keySig,
   });
   return sid;
+}
+
+export function rotateSession(oldSid: string): string | null {
+  const old = sessions.get(oldSid);
+  if (!old || old.revoked) return null;
+
+  const newSid = crypto.randomBytes(16).toString("hex");
+  const keyExp = Math.floor(Date.now() / 1000) + Math.floor(SESSION_MAX_AGE_MS / 1000);
+  const keySig = signPath(newSid, "/key", keyExp, old.deviceHash || "");
+
+  sessions.set(newSid, {
+    ...old,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + SESSION_MAX_AGE_MS,
+    revoked: false,
+    revokeReason: null,
+    abuseScore: 0,
+    breachEvents: 0,
+    blockedUntil: null,
+    requestLog: [],
+    playlistFetchLog: [],
+    keyHitLog: [],
+    segmentFetchLog: [],
+    concurrentSegments: 0,
+    outOfWindowCount: 0,
+    variantCache: new Map(),
+    ephemeralKey: crypto.randomBytes(16),
+    ephemeralIV: crypto.randomBytes(16),
+    keyIssued: false,
+    keyIssuedCount: 0,
+    keyExp,
+    keySig,
+  });
+
+  old.revoked = true;
+  old.revokeReason = { signal: "rate_limit", detail: "Session rotated" };
+
+  console.log(`[video-session] SESSION_ROTATED: oldSid=${oldSid} → newSid=${newSid}, publicId=${old.publicId}`);
+  return newSid;
 }
 
 export function getSession(sid: string): VideoSession | undefined {
@@ -291,13 +343,33 @@ export function trackKeyHit(sid: string, ip?: string): { abused: boolean; reason
   const now = Date.now();
   s.keyHitLog = s.keyHitLog.filter(t => t > now - 60000);
   s.keyHitLog.push(now);
+  s.keyIssuedCount += 1;
 
   if (s.keyHitLog.length > ABUSE_THRESHOLDS.keyHitsPerMin) {
-    const reason: AbuseReason = { signal: "key_abuse", detail: `${s.keyHitLog.length} key requests in 60s (limit: ${ABUSE_THRESHOLDS.keyHitsPerMin})` };
+    const reason: AbuseReason = { signal: "key_abuse", detail: `${s.keyHitLog.length} key requests in 60s (limit: ${ABUSE_THRESHOLDS.keyHitsPerMin}) — SECURITY_KEY_SPAM` };
+    console.log(`[video-session] SECURITY_KEY_SPAM: sid=${sid}, hits_per_min=${s.keyHitLog.length}`);
+    return addAbuse(s, 5, reason);
+  }
+
+  if (s.keyIssuedCount > ABUSE_THRESHOLDS.keyHitsTotal) {
+    const reason: AbuseReason = { signal: "key_abuse", detail: `${s.keyIssuedCount} total key requests this session (limit: ${ABUSE_THRESHOLDS.keyHitsTotal}) — SECURITY_KEY_REPLAY` };
+    console.log(`[video-session] SECURITY_KEY_REPLAY: sid=${sid}, total_issued=${s.keyIssuedCount}`);
     return addAbuse(s, 5, reason);
   }
 
   return { abused: false };
+}
+
+export function checkAndIssueKey(sid: string): { allowed: boolean; alreadyIssued: boolean } {
+  const s = sessions.get(sid);
+  if (!s) return { allowed: false, alreadyIssued: false };
+  if (s.keyIssued) {
+    console.log(`[video-session] SECURITY_KEY_REPLAY: sid=${sid}, keyIssuedCount=${s.keyIssuedCount} — repeated key request`);
+    return { allowed: false, alreadyIssued: true };
+  }
+  s.keyIssued = true;
+  s.keyIssuedCount = 1;
+  return { allowed: true, alreadyIssued: false };
 }
 
 export function buildSignedProxyUrl(baseUrl: string, sid: string, resourcePath: string, ttlSeconds: number, deviceHash?: string): string {
@@ -305,6 +377,11 @@ export function buildSignedProxyUrl(baseUrl: string, sid: string, resourcePath: 
   const st = signPath(sid, resourcePath, exp, deviceHash);
   const sep = baseUrl.includes("?") ? "&" : "?";
   return `${baseUrl}${sep}sid=${encodeURIComponent(sid)}&st=${encodeURIComponent(st)}&exp=${exp}`;
+}
+
+export function buildStableKeyUrl(baseUrl: string, sid: string, session: VideoSession): string {
+  const sep = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${sep}sid=${encodeURIComponent(sid)}&st=${encodeURIComponent(session.keySig)}&exp=${session.keyExp}`;
 }
 
 export function updateProgress(sid: string, segmentIndex: number): boolean {
@@ -409,6 +486,7 @@ export function getSessionAbuseSummary(sid: string) {
     recentRequests: s.requestLog.length,
     playlistFetches: s.playlistFetchLog.length,
     keyHits: s.keyHitLog.length,
+    keyIssuedCount: s.keyIssuedCount,
     boundIp: s.boundIp,
     currentSegmentIndex: s.currentSegmentIndex,
     outOfWindowCount: s.outOfWindowCount,

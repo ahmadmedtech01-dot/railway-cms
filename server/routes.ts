@@ -14,7 +14,7 @@ import os from "os";
 import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } from "./vimeo";
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile } from "./b2";
-import { createSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent } from "./video-session";
+import { createSession, rotateSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS } from "./video-session";
 import type { PlaylistCache } from "./video-session";
 
 function log(message: string) {
@@ -1258,6 +1258,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
+      // Secure playback only — block if video does not have encrypted HLS + master key
+      if (!video.encryptionKeyPath) {
+        log(`VIDEO_NOT_SECURE_REBUILD_REQUIRED: publicId=${video.publicId} — no encryptionKeyPath, blocking playback`);
+        return res.status(409).json({
+          code: "VIDEO_NOT_SECURE_REBUILD_REQUIRED",
+          message: "This video does not have encrypted HLS. Please rebuild the HLS from the video settings to enable secure playback.",
+        });
+      }
+
       // Check video's storage connection (B2 or legacy S3)
       const hlsPrefix = video.hlsS3Prefix;
       const ttl = secSettings?.signedUrlTtl || 120;
@@ -1443,7 +1452,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
           if (seg.keyTag && seg.keyTag !== lastKeyEmitted) {
             const proxyBase = `/key/${publicId}`;
-            const signed = buildSignedProxyUrl(proxyBase, sid, `/key`, ttls.key, dh);
+            const signed = buildStableKeyUrl(proxyBase, sid, session);
             let rewritten = seg.keyTag.replace(/URI="([^"]+)"/, () => `URI="${signed}"`);
             if (session.ephemeralIV) {
               const ephIvHex = session.ephemeralIV.toString("hex");
@@ -1564,8 +1573,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
+      // SECURITY_PLAIN_SEGMENT_BLOCKED: never serve a segment without re-encryption
+      log(`SECURITY_PLAIN_SEGMENT_BLOCKED: sid=${sid}, publicId=${session.publicId}, seg=${segSubPath} — re-encryption not possible, blocking`);
       releaseSegment(sid);
-      res.end(encryptedBuf);
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Secure playback only. Segment cannot be served without re-encryption." });
     } catch (e: any) {
       releaseSegment(sid);
       log(`Segment proxy error for ${req.params.publicId}${req.path}: ${e.message}`);
@@ -1602,6 +1613,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ── Session Rotation — called by player every SESSION_ROTATION_MS ─────────
+  app.post("/api/player/:publicId/rotate-session", async (req: any, res: any) => {
+    try {
+      const { sid } = req.body;
+      if (!sid) return res.status(400).json({ message: "Missing sid" });
+
+      const session = getSession(sid);
+      if (!session || session.revoked) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session invalid or expired" });
+      if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
+
+      const newSid = rotateSession(sid);
+      if (!newSid) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session rotation failed" });
+
+      const newSession = getSession(newSid);
+      if (!newSession) return res.status(500).json({ message: "Failed to create rotated session" });
+
+      const ttls = getTokenTTL();
+      const dh = newSession.deviceHash;
+      const proxyBase = `/hls/${req.params.publicId}/master.m3u8`;
+      const manifestUrl = buildSignedProxyUrl(proxyBase, newSid, "/master.m3u8", ttls.manifest, dh);
+
+      return res.json({ manifestUrl, sessionId: newSid, rotationIntervalMs: SESSION_ROTATION_MS });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/key/:publicId", async (req: any, res: any) => {
     const { sid, st, exp, dh } = req.query as Record<string, string>;
     if (!sid || !st || !exp) return res.status(401).json({ code: "PLAYBACK_DENIED", message: "Missing auth" });
@@ -1623,17 +1661,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid key token" });
     }
 
-    const keyIp = (req.headers["x-forwarded-for"] as string || req.ip || "").split(",")[0].trim();
-    const { abused: keyAbused, reason: keyReason } = trackKeyHit(sid, keyIp);
-    if (keyAbused) {
-      const bi = getBreachInfo(sid);
-      return res.status(403).json({ code: "PLAYBACK_DENIED", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Key access denied", signal: keyReason?.signal });
-    }
-
     const keyUa = req.headers["user-agent"] || "";
     if (!validateUserAgent(sid, keyUa)) {
       log(`SECURITY: UA mismatch on key endpoint for sid=${sid}`);
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
+    }
+
+    const { allowed: keyAllowed, alreadyIssued } = checkAndIssueKey(sid);
+    if (!keyAllowed) {
+      log(`SECURITY_KEY_REPLAY: sid=${sid} — key already issued, rejecting repeated request`);
+      return res.status(403).json({ code: "KEY_ALREADY_ISSUED", message: "Session key already issued. Start a new session.", signal: "key_abuse" });
+    }
+
+    const keyIp = (req.headers["x-forwarded-for"] as string || req.ip || "").split(",")[0].trim();
+    const { abused: keyAbused, reason: keyReason } = trackKeyHit(sid, keyIp);
+    if (keyAbused) {
+      const bi = getBreachInfo(sid);
+      log(`SECURITY_KEY_SPAM: sid=${sid} — rate limit exceeded`);
+      return res.status(429).json({ code: "PLAYBACK_DENIED", error: "SECURITY_KEY_SPAM", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Key rate limit exceeded", signal: keyReason?.signal });
     }
 
     try {

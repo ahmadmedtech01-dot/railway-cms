@@ -1,0 +1,99 @@
+You are a senior backend video security engineer.
+
+We already implemented:
+- Proxy-only HLS (/hls, /seg, /key)
+- Short-lived signatures
+- Sliding window playlist
+- Per-session AES re-encryption
+- Rate limiting
+- Session binding (UA + optional IP)
+
+Now implement FINAL HARDENING to prevent ALL non-DRM download bypasses.
+
+==============================
+FINAL SECURITY ENFORCEMENT
+==============================
+
+1) SECURE PLAYBACK ONLY (NO FALLBACKS)
+- Remove ANY possibility of streaming:
+  - direct .mp4
+  - direct .m3u8
+  - raw storage URLs
+  - unencrypted HLS
+- If a video does NOT have encrypted HLS artifacts + master key A available:
+  - Block playback
+  - Return HTTP 409 with code: VIDEO_NOT_SECURE_REBUILD_REQUIRED
+- Add a server assertion inside /seg:
+  - If a segment is about to be returned unencrypted (plain), throw error and log: SECURITY_PLAIN_SEGMENT_BLOCKED
+  - Return 403
+
+2) STRICT TOKEN + SESSION ENFORCEMENT
+- Playback JWT expiry: MAX 10 minutes
+- Playlist signed URLs expiry: 60 seconds
+- Segment signed URLs expiry: 10 seconds
+- Key signed URLs expiry: 10 seconds
+- Session maximum lifetime: 5 minutes (reduce from 10)
+- If expired: immediately reject with 403
+
+3) KEY ENDPOINT HARDENING
+- /key must only succeed ONCE per session:
+  - First call returns ephemeral session key B
+  - Mark session.keyIssued = true
+  - Subsequent calls return 403 with code KEY_ALREADY_ISSUED
+  - Log SECURITY_KEY_REPLAY
+- Rate limit /key:
+  - Max 3 per minute per session
+  - If exceeded: block session for 10 minutes and log SECURITY_KEY_SPAM
+
+4) STRICT SEGMENT RATE LIMITING
+- Max 10 segment requests per second per session (burst 15)
+- Max 6 concurrent segment downloads
+- If more than 30 segments requested in 5 seconds:
+  - Block session for 10 minutes
+  - Return 429
+  - Log SECURITY_BULK_DOWNLOAD
+
+5) FORCE SESSION ROTATION
+- Rotate playback session every 3 minutes automatically:
+  - Generate new sessionId + new key B
+  - Invalidate old session immediately
+- Ensure player refreshes manifest seamlessly (no UI change)
+
+6) ABSOLUTE ORIGIN MASKING
+- Confirm that DevTools NEVER shows:
+  - B2 URLs
+  - S3 URLs
+  - raw bucket paths
+- Only /hls, /seg, /key routes allowed.
+- If any route tries to expose external .m3u8, block and log UNSECURE_MANIFEST_BLOCKED
+
+7) STRICT HEADERS
+- Playlists + key:
+  Cache-Control: no-store
+- Segments:
+  Cache-Control: private, no-store, no-cache, max-age=0
+- No wildcard CORS (*). Only allowed configured origins.
+
+8) VERIFICATION LOGGING
+Add structured logs for:
+- SECURITY_PLAIN_SEGMENT_BLOCKED
+- SECURITY_KEY_REPLAY
+- SECURITY_KEY_SPAM
+- SECURITY_BULK_DOWNLOAD
+- UNSECURE_MANIFEST_BLOCKED
+- SESSION_ROTATED
+
+==============================
+GOAL
+==============================
+After implementation:
+
+- Copying a segment URL must fail after 10 seconds.
+- Downloading segments must result in unplayable encrypted data.
+- CoCoCut may detect chunks but cannot download a usable full video.
+- No direct storage URLs ever appear in Network tab.
+- No fallback playback path exists.
+
+Do NOT change UI.
+Focus only on backend security enforcement.
+Deliver clean, production-ready code.
