@@ -89,6 +89,27 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "";
+  const isDevMode = process.env.NODE_ENV !== "production";
+  const replitDomain = (process.env.REPLIT_DOMAINS || "").split(",").some(d => origin.includes(d.trim()));
+  const isAllowed = isDevMode || replitDomain || ALLOWED_ORIGINS.includes(origin) || !origin;
+
+  if (isAllowed && origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-embed-referrer");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+  next();
+});
+
 const PgSession = connectPgSimple(session);
 app.use(
   session({

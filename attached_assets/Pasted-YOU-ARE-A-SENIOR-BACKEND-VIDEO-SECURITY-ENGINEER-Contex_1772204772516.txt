@@ -1,0 +1,128 @@
+YOU ARE A SENIOR BACKEND + VIDEO SECURITY ENGINEER.
+
+Context:
+- We have a custom Video CMS.
+- Storage: Backblaze B2 (S3-compatible) and/or AWS S3 buckets.
+- Playback: HLS via hls.js in browser.
+- Goal: NO DRM. We ONLY want to stop “downloaders” like CoCoCut from getting a playable full video.
+- Constraint: Keep UI/UX same. Only change backend streaming security + minimal player wiring if needed.
+- Must work on Railway + Replit dev environment.
+
+ABSOLUTE SECURITY RULES (MANDATORY):
+1) NEVER expose direct bucket URLs (B2/S3) for .m3u8, .ts, .key, or any media.
+2) The browser must only ever request:
+   - /api/player/:publicId/manifest
+   - /hls/:publicId/master.m3u8
+   - /hls/:publicId/index.m3u8 (and variant playlists)
+   - /seg/:publicId/:variant/:segment
+   - /key/:publicId
+3) All requests must be session-bound and short-lived.
+4) Even if someone downloads segments, they must be UNPLAYABLE without a short-lived session key.
+
+TARGET OUTCOME:
+- CoCoCut may “see” chunks, but downloaded files are useless (encrypted per-session), or downloads fail mid-way due to expiry/rate limits.
+
+IMPLEMENTATION TASKS (DO THESE IN ORDER):
+
+A) Force Manifest → Proxy Only
+1) Find the code that returns manifest/playback URL for the player:
+   - Endpoint like GET /api/player/:publicId/manifest (or equivalent).
+2) Ensure it NEVER returns an external .m3u8 URL or bucket URL.
+3) It must always return a URL on our domain: /hls/:publicId/master.m3u8 with signed params.
+4) Add a guard: If a manifest URL does not start with our own domain/path (/hls/...), block and log "UNSECURE_MANIFEST_BLOCKED".
+
+B) Short-Lived Token Policy (CRITICAL)
+1) Public playback token (JWT in /v/:publicId?token=...):
+   - Set expiry to MAX 10 minutes.
+2) HLS playlist signed query params:
+   - Expiry MAX 60 seconds.
+3) Segment signed query params:
+   - Expiry MAX 10 seconds.
+4) Key endpoint signed query params:
+   - Expiry MAX 10 seconds.
+
+C) Session Binding
+1) Create/ensure a session object for playback:
+   - sessionId (sid)
+   - userAgent hash
+   - optional IP (config flag; default OFF to avoid mobile IP issues)
+   - createdAt, expiresAt
+2) All /hls, /seg, /key requests must validate:
+   - token is valid
+   - sid exists and not expired
+   - userAgent matches session
+   - (optional) IP matches if enabled
+
+D) AES HLS Encryption + Per-Session Re-Encryption (STRONG NON-DRM)
+We will store HLS segments encrypted at rest with MASTER KEY A (server-only).
+Then we will re-encrypt segments per-session with EPHEMERAL KEY B.
+
+1) Packaging (Transcode step):
+   - Ensure ffmpeg produces HLS with AES-128 encryption (key A).
+   - The key file (key A) must NEVER be public in bucket.
+   - Store key A in DB OR encrypted server storage (prefer DB as encrypted blob).
+   - If key exists in bucket today, remove public access and stop exposing it.
+
+2) /key endpoint:
+   - On valid request, return EPHEMERAL KEY B for that session (binary).
+   - Generate EPHEMERAL KEY B per session (32 bytes) + IV (16 bytes) and store in session record.
+   - Return ONLY key B (and if needed IV via headers or fixed IV policy).
+   - Rate limit this endpoint (see section F).
+
+3) Playlist rewriting:
+   - When serving /hls/:publicId/master.m3u8 and variants:
+     - Rewrite segment URLs to point to /seg/:publicId/:variant/:segment?sid=...&exp=...&sig=...
+     - Ensure playlist includes EXT-X-KEY pointing to /key/:publicId?sid=...&exp=...&sig=...
+   - The playlist must NEVER contain bucket URLs or raw keys.
+   - Ensure Content-Type correct and no-store for playlists.
+
+4) /seg endpoint (core protection):
+   - Fetch encrypted segment bytes from bucket using SERVER credentials (not presigned URL to client).
+   - Decrypt segment using MASTER KEY A (server-side).
+   - Re-encrypt segment bytes using EPHEMERAL KEY B (session-specific) using AES-128-CBC (or AES-CTR) consistent with EXT-X-KEY expectations.
+   - Return re-encrypted bytes to client.
+   - If decryption/re-encryption fails, log and return 403.
+
+NOTE:
+- If implementing full decrypt+reencrypt is heavy, minimum acceptable fallback:
+  - Keep segment encrypted with key A, but ONLY deliver key A via /key endpoint for authorized sessions (still helps).
+  - However, per-session re-encryption is preferred to defeat token reuse and bulk merging.
+
+E) Strict Anti-Downloader Controls
+1) Rate limit segments:
+   - Max 10 segment requests per second per session (burst 15).
+2) Detect bulk download behavior:
+   - Parallel segment requests beyond threshold
+   - High sustained segment fetch rate
+   - Repeated key fetch
+3) On breach:
+   - Mark session as blocked for 10 minutes
+   - Return 429/403 with message "Playback temporarily blocked"
+   - Emit log event "SECURITY_BULK_DOWNLOAD"
+
+F) CORS + Cache Policy
+1) CORS:
+   - Allow only your site origin(s), not "*".
+2) Cache:
+   - Playlists and key: Cache-Control: no-store
+   - Segments: Cache-Control: private, max-age=0 (or very short) to discourage caching reuse.
+
+G) Validation Tests (MUST PASS)
+Implement a small internal test script or logs to verify:
+1) DevTools Network shows ONLY:
+   - /hls, /seg, /key (no bucket urls)
+2) Copy a segment URL and open it after 15 seconds:
+   - Must fail (expired)
+3) Try CoCoCut:
+   - It should fail to download full playable file OR the result is unplayable because segments are session-encrypted.
+4) Ensure normal users can watch without buffering issues:
+   - Use small segment duration (2s is fine)
+   - Keep re-encryption efficient (streaming transform if possible)
+
+DELIVERABLE:
+- Update backend routes + security utilities.
+- Update player only if needed to consume /api/player/:publicId/manifest.
+- Add clear logs and comments for future maintenance.
+- Do not change UI layout/design.
+
+START WORK NOW: Identify the current playback path, ensure manifest returns only /hls proxy URL, then implement expiry tightening + /seg re-encryption + /key endpoint enforcement + rate limiting.

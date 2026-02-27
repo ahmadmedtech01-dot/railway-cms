@@ -11,19 +11,29 @@ function resolveSecret(): string {
 
 const SECRET = resolveSecret();
 
+const SESSION_MAX_AGE_MS = 10 * 60 * 1000;
+
 const ABUSE_THRESHOLDS = {
-  requestsPerWindow: 50,
-  requestWindowMs: 5000,
+  requestsPerWindow: 10,
+  requestWindowMs: 1000,
+  burstLimit: 15,
   concurrentSegments: 6,
-  playlistFetchesPerMin: 60,
-  keyHitsPerMin: 120,
+  playlistFetchesPerMin: 30,
+  keyHitsPerMin: 30,
   scoreToRevoke: 15,
   windowSize: 6,
   outOfWindowPenalty: 3,
 };
 
+const TOKEN_TTL = {
+  manifest: 60,
+  playlist: 60,
+  segment: 10,
+  key: 10,
+};
+
 export interface AbuseReason {
-  signal: "rate_limit" | "concurrent" | "playlist_abuse" | "key_abuse" | "ip_mismatch" | "out_of_window";
+  signal: "rate_limit" | "concurrent" | "playlist_abuse" | "key_abuse" | "ip_mismatch" | "out_of_window" | "bulk_download";
   detail: string;
 }
 
@@ -46,6 +56,7 @@ export interface VideoSession {
   storageConfig: any;
   connId: string | null;
   createdAt: number;
+  expiresAt: number;
   revoked: boolean;
   revokeReason: AbuseReason | null;
   abuseScore: number;
@@ -55,9 +66,11 @@ export interface VideoSession {
   concurrentSegments: number;
   playlistFetchLog: number[];
   keyHitLog: number[];
+  segmentFetchLog: number[];
   boundIp: string | null;
 
   deviceHash: string;
+  userAgentHash: string;
   currentSegmentIndex: number;
   lastProgressAt: number;
   outOfWindowCount: number;
@@ -70,11 +83,11 @@ export interface VideoSession {
 const sessions = new Map<string, VideoSession>();
 
 setInterval(() => {
-  const cutoff = Date.now() - 30 * 60 * 1000;
+  const now = Date.now();
   for (const [id, s] of sessions) {
-    if (s.createdAt < cutoff) sessions.delete(id);
+    if (now > s.expiresAt || s.createdAt < now - 30 * 60 * 1000) sessions.delete(id);
   }
-}, 5 * 60 * 1000).unref();
+}, 60 * 1000).unref();
 
 export function computeDeviceHash(ua: string): string {
   return crypto.createHash("sha256").update(ua || "unknown-ua").digest("hex").slice(0, 16);
@@ -87,8 +100,10 @@ export function createSession(
   storageConfig: any,
   connId: string | null,
   deviceHash?: string,
+  userAgent?: string,
 ): string {
   const sid = crypto.randomBytes(16).toString("hex");
+  const uaHash = userAgent ? crypto.createHash("sha256").update(userAgent).digest("hex").slice(0, 32) : "";
   sessions.set(sid, {
     publicId,
     hlsPrefix,
@@ -96,6 +111,7 @@ export function createSession(
     storageConfig,
     connId,
     createdAt: Date.now(),
+    expiresAt: Date.now() + SESSION_MAX_AGE_MS,
     revoked: false,
     revokeReason: null,
     abuseScore: 0,
@@ -105,8 +121,10 @@ export function createSession(
     concurrentSegments: 0,
     playlistFetchLog: [],
     keyHitLog: [],
+    segmentFetchLog: [],
     boundIp: null,
     deviceHash: deviceHash || "",
+    userAgentHash: uaHash,
     currentSegmentIndex: 0,
     lastProgressAt: Date.now(),
     outOfWindowCount: 0,
@@ -118,7 +136,14 @@ export function createSession(
 }
 
 export function getSession(sid: string): VideoSession | undefined {
-  return sessions.get(sid);
+  const s = sessions.get(sid);
+  if (!s) return undefined;
+  if (Date.now() > s.expiresAt) {
+    s.revoked = true;
+    s.revokeReason = { signal: "rate_limit", detail: "Session expired" };
+    return s;
+  }
+  return s;
 }
 
 export function revokeSession(sid: string, reason?: AbuseReason): void {
@@ -127,6 +152,13 @@ export function revokeSession(sid: string, reason?: AbuseReason): void {
     s.revoked = true;
     if (reason) s.revokeReason = reason;
   }
+}
+
+export function validateUserAgent(sid: string, userAgent: string): boolean {
+  const s = sessions.get(sid);
+  if (!s || !s.userAgentHash) return true;
+  const hash = crypto.createHash("sha256").update(userAgent || "").digest("hex").slice(0, 32);
+  return hash === s.userAgentHash;
 }
 
 export function signPath(sid: string, resourcePath: string, exp: number, deviceHash?: string): string {
@@ -160,6 +192,7 @@ function addAbuse(s: VideoSession, delta: number, reason: AbuseReason): { abused
     s.revoked = true;
     s.blockedUntil = Date.now() + BLOCK_DURATION_MS;
     if (!s.revokeReason) s.revokeReason = reason;
+    console.log(`[video-session] SECURITY_BULK_DOWNLOAD: Session ${reason.signal} — ${reason.detail}`);
     return { abused: true };
   }
   return { abused: false };
@@ -169,6 +202,11 @@ export function trackRequest(sid: string, ip?: string): { abused: boolean; reaso
   const s = sessions.get(sid);
   if (!s) return { abused: true, reason: { signal: "rate_limit", detail: "Session not found" } };
   if (s.revoked) return { abused: true, reason: s.revokeReason ?? { signal: "rate_limit", detail: "Session revoked" } };
+
+  if (Date.now() > s.expiresAt) {
+    s.revoked = true;
+    return { abused: true, reason: { signal: "rate_limit", detail: "Session expired" } };
+  }
 
   if (ip) {
     if (!s.boundIp) {
@@ -181,11 +219,17 @@ export function trackRequest(sid: string, ip?: string): { abused: boolean; reaso
 
   const now = Date.now();
   s.requestLog = s.requestLog.filter(t => t > now - ABUSE_THRESHOLDS.requestWindowMs);
+
+  if (s.requestLog.length >= ABUSE_THRESHOLDS.burstLimit) {
+    const reason: AbuseReason = { signal: "rate_limit", detail: `${s.requestLog.length + 1} requests in ${ABUSE_THRESHOLDS.requestWindowMs}ms (burst limit: ${ABUSE_THRESHOLDS.burstLimit})` };
+    return addAbuse(s, 5, reason);
+  }
+
   s.requestLog.push(now);
 
   if (s.requestLog.length > ABUSE_THRESHOLDS.requestsPerWindow) {
-    const reason: AbuseReason = { signal: "rate_limit", detail: `${s.requestLog.length} requests in 5s (limit: ${ABUSE_THRESHOLDS.requestsPerWindow})` };
-    return addAbuse(s, 5, reason);
+    const reason: AbuseReason = { signal: "rate_limit", detail: `${s.requestLog.length} requests in ${ABUSE_THRESHOLDS.requestWindowMs}ms (limit: ${ABUSE_THRESHOLDS.requestsPerWindow})` };
+    return addAbuse(s, 3, reason);
   }
 
   return { abused: false };
@@ -219,6 +263,16 @@ export function acquireSegment(sid: string, ip?: string): { abused: boolean; rea
     const reason: AbuseReason = { signal: "concurrent", detail: `${s.concurrentSegments} concurrent segment requests (limit: ${ABUSE_THRESHOLDS.concurrentSegments})` };
     s.concurrentSegments -= 1;
     return addAbuse(s, 5, reason);
+  }
+
+  const now = Date.now();
+  s.segmentFetchLog = s.segmentFetchLog.filter(t => t > now - 5000);
+  s.segmentFetchLog.push(now);
+
+  if (s.segmentFetchLog.length > 30) {
+    const reason: AbuseReason = { signal: "bulk_download", detail: `${s.segmentFetchLog.length} segments in 5s — bulk download detected` };
+    console.log(`[video-session] SECURITY_BULK_DOWNLOAD: sid=${sid}, segments_in_5s=${s.segmentFetchLog.length}`);
+    return addAbuse(s, 8, reason);
   }
 
   return { abused: false };
@@ -370,6 +424,10 @@ export function getBreachInfo(sid: string): { breachCount: number; violationLimi
 
 export function getAbuseThresholds() {
   return { ...ABUSE_THRESHOLDS };
+}
+
+export function getTokenTTL() {
+  return { ...TOKEN_TTL };
 }
 
 export function getAllSessions() {

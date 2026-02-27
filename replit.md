@@ -47,18 +47,28 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 - `GET /key/:publicId` — AES-128 key endpoint (ready for when ffmpeg encryption is enabled)
 - `POST /api/video/session` — alternative session creation endpoint for custom players
 
-**Layer 2 — Per-Chunk Signed Tokens**: Every segment URL includes an HMAC token (15s TTL) binding `sid`, path, expiry, and `deviceHash` (SHA256 of User-Agent). Segments from different browsers/devices are rejected. 3-second clock skew tolerance.
+**Layer 2 — Per-Chunk Signed Tokens**: Every segment URL includes an HMAC token (10s TTL) binding `sid`, path, expiry, and `deviceHash` (SHA256 of User-Agent). Key tokens expire in 10s. Playlist tokens expire in 60s. Manifest tokens expire in 60s. Segments from different browsers/devices are rejected. 3-second clock skew tolerance. User-Agent hash validated on all endpoints.
 
 **Layer 3 — Sliding Window Playlist**: Variant playlists return only the next 6 segments (not the entire video). The playlist is served as a live-like HLS stream (no `#EXT-X-ENDLIST` until the final window). hls.js reloads it periodically and only sees segments in the current window. Progress tracked via `POST /api/stream/:publicId/progress` (every 10s) and via segment access (auto-advances window when segments are fetched).
 
+**Session Binding**: Each session stores: sessionId, userAgent hash, deviceHash, boundIp, createdAt, expiresAt (10 min max). All /hls, /seg, /key requests validate token + session validity + UA match + device hash.
+
 **Abuse Detection** (server/video-session.ts): Sessions revoked when abuse score reaches 15:
-- Rate limit: >50 requests/5s → +5 score
+- Rate limit: >10 requests/second (burst 15) → +3/+5 score
 - Concurrent segments: >6 simultaneous → +5
-- Playlist abuse: >60 fetches/min → +3
+- Bulk download detection: >30 segments in 5s → +8 (logged as SECURITY_BULK_DOWNLOAD)
+- Playlist abuse: >30 fetches/min → +3
 - IP mismatch: different IP on same session → +8
 - Out-of-window: segment request outside [current-1, current+6] → +3 (after 3 violations)
-- Key abuse: >120 key requests/min → +5
+- Key abuse: >30 key requests/min → +5
+- On breach: session blocked for 10 minutes, returns 429/403
 - Breach response format: `{ error: "SECURITY_BREACH", breach: "X/6" }` in denial responses
+
+**CORS Policy**: Origin-restricted (not wildcard). In production, only configured ALLOWED_ORIGINS + Replit domains permitted. Dev mode allows all origins.
+
+**Cache Policy**: Playlists and keys: `Cache-Control: no-store`. Segments: `Cache-Control: private, no-store, no-cache, max-age=0`.
+
+**Manifest Guard**: Direct external m3u8 URLs are blocked with `UNSECURE_MANIFEST_BLOCKED` log. External URLs in playlists are stripped.
 
 **AES-128 Double Encryption**: Server decrypts segments with master key (fetched from B2, cached), re-encrypts with session-specific ephemeral key/IV. Player never sees master key.
 
@@ -124,6 +134,7 @@ Signing secret: auto-derived from `SESSION_SECRET`; override with `SIGNING_SECRE
 - `B2_APPLICATION_KEY` — Backblaze B2 Application Key secret (required for B2 uploads)
 - `B2_S3_ENDPOINT` — B2 S3-compatible endpoint (e.g. `https://s3.ca-east-006.backblazeb2.com`)
 - `B2_BUCKET` — Default B2 bucket name (e.g. `mytestvideo`)
+- `ALLOWED_ORIGINS` — Comma-separated list of allowed CORS origins for production (e.g. `https://yourdomain.com,https://app.yourdomain.com`)
 
 ## Storage Configuration
 

@@ -14,7 +14,7 @@ import os from "os";
 import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } from "./vimeo";
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile } from "./b2";
-import { createSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getAllSessions } from "./video-session";
+import { createSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent } from "./video-session";
 import type { PlaylistCache } from "./video-session";
 
 function log(message: string) {
@@ -1243,10 +1243,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
-      // Direct external m3u8 (admin-provided HLS stream URL)
+      // Direct external m3u8 — BLOCKED: never expose external URLs to the client
       const isDirectM3u8 = video.sourceType === "direct_url" && video.sourceUrl && /\.m3u8/i.test(video.sourceUrl);
       if (isDirectM3u8) {
-        return res.json({ manifestUrl: video.sourceUrl, sourceType: "hls", videoId: video.id });
+        log(`UNSECURE_MANIFEST_BLOCKED: Attempted to serve external m3u8 URL for video ${video.publicId}. External URLs are not allowed.`);
+        return res.status(403).json({ message: "Direct external HLS streams are not supported for security reasons. Please ingest the video through our transcoding pipeline." });
       }
 
       // If no HLS prefix at all, return structured 409 so the frontend can show a fix action
@@ -1269,11 +1270,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ua = req.headers["user-agent"] || "";
       const dh = computeDeviceHash(ua);
 
+      const ttls = getTokenTTL();
+
       if (conn?.provider === "backblaze_b2") {
         const cfg = conn.config as any;
-        const sid = createSession(video.publicId, hlsPrefix, "backblaze_b2", cfg, conn.id, dh);
+        const sid = createSession(video.publicId, hlsPrefix, "backblaze_b2", cfg, conn.id, dh, ua);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", 60, dh);
+        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
         return res.json({ manifestUrl, sourceType: "b2_proxy", sessionId: sid, videoId: video.id });
       }
 
@@ -1281,9 +1284,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const s3cfg = await getS3Config();
 
       if (client && s3cfg.bucket) {
-        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh);
+        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", 60, dh);
+        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
         return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid });
       }
 
@@ -1320,7 +1323,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ext = path.extname(fullPath);
     const contentType = ext === ".m3u8" ? "application/vnd.apple.mpegurl" : "video/MP2T";
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     fs.createReadStream(fullPath).pipe(res);
   });
 
@@ -1346,6 +1350,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const hlsDh = computeDeviceHash(hlsUa);
     if (!verifySignedPath(sid, subPath, parseInt(exp, 10), st, session.deviceHash ? hlsDh : undefined, 3)) {
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid or expired token" });
+    }
+
+    if (!validateUserAgent(sid, hlsUa)) {
+      log(`SECURITY: UA mismatch on HLS proxy for sid=${sid}`);
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
     }
 
     const ip = (req.headers["x-forwarded-for"] as string || req.ip || "").split(",")[0].trim();
@@ -1374,6 +1383,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         originUrl = await getSignedUrl(client, cmd, { expiresIn: 30 });
       }
 
+      const ttls = getTokenTTL();
+
       if (isMaster) {
         const fetchRes = await fetch(originUrl);
         if (!fetchRes.ok) return res.status(404).json({ message: "Playlist not found" });
@@ -1381,11 +1392,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         const rewritten = playlistText.split("\n").map(line => {
           const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith("#") || /^https?:\/\//.test(trimmed)) return line;
+          if (!trimmed || trimmed.startsWith("#")) return line;
+          if (/^https?:\/\//.test(trimmed)) {
+            log(`UNSECURE_MANIFEST_BLOCKED: Raw external URL found in master playlist for ${publicId}, stripping`);
+            return "";
+          }
           if (/\.m3u8(\?|$)/i.test(trimmed)) {
             const variantSubPath = path.posix.join(variantDir, trimmed);
             const proxyBase = `/hls/${publicId}${variantSubPath}`;
-            return buildSignedProxyUrl(proxyBase, sid, variantSubPath, 1800, session.deviceHash);
+            return buildSignedProxyUrl(proxyBase, sid, variantSubPath, ttls.playlist, session.deviceHash);
           }
           return line;
         }).join("\n");
@@ -1428,7 +1443,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
           if (seg.keyTag && seg.keyTag !== lastKeyEmitted) {
             const proxyBase = `/key/${publicId}`;
-            const signed = buildSignedProxyUrl(proxyBase, sid, `/key`, 3600, dh);
+            const signed = buildSignedProxyUrl(proxyBase, sid, `/key`, ttls.key, dh);
             let rewritten = seg.keyTag.replace(/URI="([^"]+)"/, () => `URI="${signed}"`);
             if (session.ephemeralIV) {
               const ephIvHex = session.ephemeralIV.toString("hex");
@@ -1441,7 +1456,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           lines.push(seg.extinf);
           const segSubPath = path.posix.join(variantDir, seg.uri);
           const proxyBase = `/seg/${publicId}${segSubPath}`;
-          lines.push(buildSignedProxyUrl(proxyBase, sid, segSubPath, 15, dh));
+          lines.push(buildSignedProxyUrl(proxyBase, sid, segSubPath, ttls.segment, dh));
         }
 
         if (isLast) {
@@ -1486,6 +1501,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid or expired segment token", signal: "rate_limit" });
     }
 
+    if (!validateUserAgent(sid, segUa)) {
+      log(`SECURITY: UA mismatch on segment proxy for sid=${sid}`);
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
+    }
+
     const segMatch = segSubPath.match(/seg_?(\d+)\./i);
     if (segMatch) {
       const segIdx = parseInt(segMatch[1], 10);
@@ -1523,7 +1543,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const contentType = segSubPath.endsWith(".m4s") ? "video/iso.segment" : "video/MP2T";
       res.setHeader("Content-Type", contentType);
-      res.setHeader("Cache-Control", "private, max-age=10, no-transform");
+      res.setHeader("Cache-Control", "private, no-store, no-cache, max-age=0");
       res.setHeader("X-Content-Type-Options", "nosniff");
 
       const encryptedBuf = Buffer.from(await fetchRes.arrayBuffer());
@@ -1610,11 +1630,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ code: "PLAYBACK_DENIED", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Key access denied", signal: keyReason?.signal });
     }
 
+    const keyUa = req.headers["user-agent"] || "";
+    if (!validateUserAgent(sid, keyUa)) {
+      log(`SECURITY: UA mismatch on key endpoint for sid=${sid}`);
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
+    }
+
     try {
       res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("Content-Length", 16);
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("X-Content-Type-Options", "nosniff");
       return res.send(session.ephemeralKey);
     } catch (e: any) {
       log(`Key fetch error: ${e.message}`);
@@ -1659,9 +1685,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const cfg = conn.config as any;
       const altUa = req.headers["user-agent"] || "";
       const altDh = computeDeviceHash(altUa);
-      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh);
+      const altTtls = getTokenTTL();
+      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa);
       const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-      const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", 60, altDh);
+      const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", altTtls.manifest, altDh);
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
 
       res.json({ sessionId: sid, playlistUrl, expiresAt });
@@ -2062,13 +2089,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // 7) Security features summary
     const thresholds = getAbuseThresholds();
+    const tokenTtls = getTokenTTL();
     results["security_summary"] = {
       status: "PASS",
-      detail: `Rate limit: ${thresholds.requestsPerWindow} req/${thresholds.requestWindowMs}ms, ` +
+      detail: `Rate limit: ${thresholds.requestsPerWindow} req/${thresholds.requestWindowMs}ms (burst ${thresholds.burstLimit}), ` +
         `Concurrent: ${thresholds.concurrentSegments} max, ` +
         `Window: ${thresholds.windowSize} segments, ` +
         `Revoke threshold: ${thresholds.scoreToRevoke}, ` +
         `Ephemeral re-encryption: enabled, ` +
+        `TTL — manifest: ${tokenTtls.manifest}s, playlist: ${tokenTtls.playlist}s, segment: ${tokenTtls.segment}s, key: ${tokenTtls.key}s, ` +
+        `Session binding: UA hash + IP + deviceHash, ` +
         `Segment duration: 2s`
     };
 
