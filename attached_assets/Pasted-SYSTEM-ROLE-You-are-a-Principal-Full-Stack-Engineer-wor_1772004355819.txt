@@ -1,0 +1,176 @@
+SYSTEM ROLE:
+You are a Principal Full-Stack Engineer working in an EXISTING Replit project: “Secure Video CMS (Single Admin)”.
+This is a SURGICAL CHANGE to fix a core product requirement:
+
+REQUIREMENT (NON-NEGOTIABLE):
+When admin provides a Vimeo/YouTube/etc link, the video MUST play in OUR custom CMS player (hls.js player).
+It must NOT open/render the YouTube/Vimeo player UI inside our app.
+External provider player must be fully avoided.
+
+IMPORTANT REALITY / COMPLIANCE (MUST FOLLOW):
+- You cannot reliably/legally “extract” YouTube streams to play in your own player. YouTube requires using their embedded player for typical use.
+- Vimeo can provide direct MP4/HLS only if your Vimeo plan/API permissions allow it (private files require OAuth). If direct file URL is not available, you must use Vimeo embed player (but the requirement says DO NOT).
+Therefore, implement this strict rule in the app:
+✅ Allowed sources for OUR player:
+  1) Upload file to our storage (S3/Supabase) -> we generate/host HLS
+  2) Direct media URLs (HLS .m3u8 or MP4) from S3/Supabase/your CDN/your server
+  3) Vimeo ONLY if we can resolve a direct MP4/HLS URL via Vimeo API (authenticated) and then we INGEST it into our storage (download/transfer) and convert to OUR HLS.
+❌ Disallowed sources for OUR player:
+  - YouTube link (unless user provides a legal direct HLS/MP4 URL, which YouTube does not provide). In this case show “Not supported—upload file instead.”
+  - Vimeo link if API cannot provide downloadable/progressive file URL. Show “Your Vimeo settings/plan does not allow direct file access—upload instead.”
+
+GOAL:
+Replace the current behavior where Vimeo/YouTube links are embedded as-is (showing their player).
+Instead, build an “Ingest & Convert” pipeline:
+- Admin pastes a link
+- Backend attempts to RESOLVE/INGEST the actual media into OUR storage
+- Then our player loads OUR HLS URL and applies our security/watermark settings
+- If ingest not possible, block and show clear message.
+
+SCOPE:
+Implement this in Replit with Node.js + Express + TypeScript backend + React frontend.
+
+========================================================
+1) FRONTEND CHANGES (Upload Wizard / Add Video)
+========================================================
+A) Modify the “Add by Link” UI:
+- Add a radio/select field:
+  - "Direct Stream URL (HLS/MP4) [Recommended]"
+  - "Provider Link (Vimeo/YouTube) [Will attempt ingest]"
+- Add helper text:
+  - “To play in our custom player, the system needs a direct HLS (.m3u8) or MP4 URL, or it must ingest the file into our storage.”
+
+B) Input validation:
+- If user pastes:
+  - .m3u8 URL -> accept as Direct Stream
+  - .mp4 URL -> accept as Direct Stream
+  - youtube.com / youtu.be -> show error: “YouTube links cannot be played in our custom player. Please upload the video file or provide a direct HLS/MP4 URL you own.”
+  - vimeo.com -> allow but only through ingest flow
+
+C) Remove/disable any iframe embed preview of Vimeo/YouTube players.
+- The preview area should ALWAYS use OUR player component only.
+- If video is not ready, show a “Pending ingest/processing” placeholder.
+
+========================================================
+2) BACKEND CHANGES (Core APIs)
+========================================================
+Add/Update these endpoints:
+
+POST /api/videos/import
+- Body:
+  {
+    "sourceUrl": "string",
+    "mode": "direct" | "provider",
+    "title": "optional",
+    "description": "optional",
+    "author": "optional"
+  }
+
+Behavior:
+1) Create video row in DB with status='processing' and source_type set:
+   - direct_url
+   - vimeo_ingest
+   - youtube_blocked
+2) If mode="direct":
+   - Validate URL endsWith .m3u8 or .mp4
+   - Save it as external_source_url (new column) BUT IMPORTANT:
+     - For best security, if direct points to your own S3/Supabase, copy it into our storage OR require signed access.
+   - If .mp4: enqueue transcode to HLS into our storage; status='processing'
+   - If .m3u8: optionally “mirror” playlists/segments into our storage (recommended) else store as “external_hls_url” (less secure)
+3) If provider="vimeo":
+   - Attempt to resolve downloadable/progressive file URL via Vimeo API:
+     - Requires VIMEO_ACCESS_TOKEN env var
+     - Parse Vimeo video ID from URL
+     - Call Vimeo API GET /videos/{id}
+     - Look for files array: progressive mp4 or HLS link (if permitted)
+   - If a downloadable MP4 is available:
+     - Download/stream it server-side into OUR storage (S3/Supabase) under raw/{videoId}/source.mp4
+     - Then run ffmpeg to generate HLS to hls/{videoId}/...
+     - Update DB: raw_object_key, hls_master_key, status='ready'
+   - If Vimeo does NOT provide direct downloadable file:
+     - Set status='error'
+     - Set last_error: “Vimeo file not available for ingest. Your Vimeo plan/privacy settings do not expose MP4/HLS. Upload instead.”
+
+4) If provider="youtube":
+   - Immediately set status='error'
+   - last_error: “YouTube links are not supported for custom player playback. Upload the file instead.”
+
+Return:
+- { videoId, publicId, status, message }
+
+========================================================
+3) DATABASE CHANGES
+========================================================
+Add these columns to videos:
+- source_type text (extend enum values to include: 'direct_url','vimeo_ingest','youtube_blocked')
+- external_source_url text null
+- last_error text null
+
+Ensure library shows status badges.
+
+========================================================
+4) STORAGE + TRANSCODE PIPELINE
+========================================================
+A) S3 upload helper:
+- Use AWS SDK v3 to upload streams (PutObject)
+- For Supabase Storage (optional): use supabase-js storage upload with service key from server only.
+
+B) Vimeo ingest downloader:
+- Stream download (do NOT buffer whole file in RAM)
+- Pipe to S3/Supabase upload stream
+- Track progress -> update videos.upload_progress
+
+C) ffmpeg processing:
+- If mp4 ingested or uploaded:
+  - Generate HLS:
+    master.m3u8 + variant playlists + segments
+  - Save under hls/{videoId}/
+  - Update DB hls_master_key = 'hls/{videoId}/master.m3u8'
+  - Set status='ready'
+
+========================================================
+5) PLAYER ENFORCEMENT
+========================================================
+The public player (/embed/:publicId and /v/:publicId) MUST ONLY play:
+- Our own HLS master.m3u8 served via our signing endpoint
+- No iframes, no Vimeo/YT embeds
+
+If a video record contains external_source_url pointing to Vimeo/YT, DO NOT use it directly.
+Only play when hls_master_key exists in our storage.
+
+Show user-friendly states:
+- Processing: “Ingesting/Converting…”
+- Error: show last_error
+- Ready: play with our custom player + security overlays
+
+========================================================
+6) UI EXPECTATION
+========================================================
+In Upload Wizard "Import by Link":
+- If YouTube link: show error immediately (no embed preview)
+- If Vimeo link: show “We will ingest this into your CMS. This may take time.”
+- After import call, redirect to Video Detail page and show processing progress.
+In Video Preview:
+- Always our player component; if not ready show placeholder.
+
+========================================================
+7) ENV VARS (Replit)
+========================================================
+- VIMEO_ACCESS_TOKEN= (required for Vimeo ingest)
+- AWS_ACCESS_KEY_ID=
+- AWS_SECRET_ACCESS_KEY=
+- AWS_REGION=
+- S3_BUCKET=
+(or Supabase storage keys if you’re using Supabase storage)
+
+========================================================
+8) DELIVERABLE
+========================================================
+Implement all changes now:
+- Remove provider iframe embeds everywhere
+- Add /api/videos/import endpoint + Vimeo ingest + YouTube block
+- Add DB columns + status/error handling
+- Ensure only OUR HLS plays in OUR player
+- Keep existing UI intact except inside Upload/Import flow and preview placeholder.
+
+START IMPLEMENTATION.

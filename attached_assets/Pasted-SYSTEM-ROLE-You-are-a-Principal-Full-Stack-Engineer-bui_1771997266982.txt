@@ -1,0 +1,338 @@
+SYSTEM ROLE:
+You are a Principal Full-Stack Engineer building a NEW “Secure Video CMS” webapp in Replit.
+Goal: deliver a working end-to-end MVP that an Admin (single user) can use to upload/import videos, configure security/player settings, and generate secure embed codes + masked links that work inside other websites.
+
+IMPORTANT PRODUCT RULES:
+- ONLY ONE USER exists: Admin (me). No student/viewer accounts, no multi-tenant.
+- The CMS hosts the secure player. External websites only embed via iframe or use a masked share link.
+- Video settings must be enforced by the player everywhere it is embedded.
+
+TECH STACK (required):
+Frontend:
+- React + TypeScript + Vite
+- Tailwind CSS
+- React Router
+- TanStack Query (or SWR)
+Backend:
+- Node.js + Express (TypeScript)
+- PostgreSQL (Supabase Postgres OR local Postgres in Replit)
+Storage + Streaming:
+- Primary: AWS S3 for raw uploads + processed HLS segments
+- CDN optional later (CloudFront). For MVP, use S3 + signed URLs.
+Video Processing:
+- Use ffmpeg on server to generate HLS outputs (master.m3u8 + variant playlists).
+Security approach:
+- HLS only (NO direct MP4 public URL)
+- Server issues short-lived signed URLs for HLS manifests/segments or proxies requests securely
+- Embed protection via allowed domain whitelist + token validation
+- Masked link: /v/:publicId (never expose S3 object keys in UI)
+- “Best effort” anti-download deterrence (no promise of 100% anti screen-record; do watermark overlays and strict token rules)
+
+DELIVERABLES (MVP MUST INCLUDE):
+1) Admin Auth (single admin)
+- Email+password login (simple local auth in DB) OR Supabase Auth
+- 2FA is optional for MVP, but keep a placeholder UI
+- Protect all admin routes
+
+2) Admin UI Screens (as described):
+- Login
+- Dashboard
+- Library (videos list)
+- Upload Wizard (upload from PC + import by link placeholders)
+- Video Detail with tabs:
+  - Overview
+  - Player
+  - Watermark
+  - Security
+  - Access Rules
+  - Embed & Share
+  - Analytics (basic)
+  - Audit Logs (basic)
+- Security Policies (preset templates)
+- Embed Manager (list/revoke tokens)
+- System Settings (S3 config, ffmpeg status, global kill switch)
+
+3) Upload + Processing pipeline
+- Admin uploads a video file -> server stores raw file in S3 (private)
+- Server runs ffmpeg to create HLS outputs (240/360/480/720/1080 as selected)
+- Store HLS outputs in S3 private bucket path: hls/{videoId}/...
+- Save metadata and processing status in DB
+- Show progress states in UI: Uploading -> Processing -> Ready / Error
+
+4) Secure Player + Embed
+- A public route: /embed/:publicId
+- This page renders a custom video player (use hls.js) + controls:
+  play/pause, seek, ±10s, volume, fullscreen, speed (1x..3x), quality selection
+- Brightness control (CSS filter)
+- Availability toggle: when OFF show “Video unavailable”
+- Watermark overlay layer:
+  - Logo watermark
+  - Scrolling ticker
+  - Dynamic pop watermark (random corners/center at interval)
+  - Watermark text template supports variables: {DOMAIN} {VIDEO_ID} {SESSION_CODE} {TIME}
+
+5) Security rules enforced for embed playback
+- Each playback requires a valid token (embed token or link token)
+- Domain whitelist check:
+  - If video has allowedDomains enabled: only allow when request “Referer” host matches allowed list
+  - For iframe embeds, rely on document.referrer in the embed page and also server-side “Referer”/“Origin” checks where possible
+- Token TTL and revoke support
+- Concurrent session limit per token (best effort: store active sessions with lastSeen timestamps)
+
+6) Masked share links
+- /v/:publicId?token=...
+- Same enforcement as embed
+- Never show raw S3 URLs in browser devtools as stable links. Use short-lived signed manifest URLs.
+
+7) Signed HLS URL mechanism (MVP)
+Implement one of these two (choose simplest that works in Replit):
+A) Signed URL delivery:
+- The player calls API: GET /api/player/:publicId/manifest?token=...
+- Server validates token + domain + availability
+- Server generates short-lived signed URL to S3 master.m3u8 and returns it
+- For segment requests, easiest approach:
+  - Use S3 signed URL rewriting in playlists:
+    - When serving the playlist, server rewrites segment URIs into signed URLs
+  - OR proxy segments through server route /api/player/:publicId/seg/... (more bandwidth on server)
+Prefer playlist rewriting for MVP.
+
+8) Analytics (basic)
+- Log playback session start/stop, total watch time (approx), referrer domain, user agent, IP (from req)
+- Show in Analytics tab:
+  - total plays
+  - unique tokens
+  - top domains
+  - last 20 sessions
+
+9) Audit Logs (basic)
+- Log admin actions: upload, edit settings, create token, revoke token, toggle availability.
+
+NON-FUNCTIONAL REQUIREMENTS:
+- Clean modern UI, glass cards, sidebar + topbar
+- Responsive layout
+- Dark mode optional (nice to have)
+- Keep code modular and readable with types
+
+DATA MODEL (Postgres tables you MUST CREATE):
+- admin_users (id, email, password_hash, created_at)
+- videos (
+    id uuid pk,
+    public_id text unique,  // short id used in URLs
+    title text,
+    description text,
+    author text,
+    tags text[],
+    thumbnail_url text,
+    status text, // uploading|processing|ready|error
+    available boolean default true,
+    source_type text, // upload|youtube|vimeo|s3|drive (placeholders ok)
+    raw_s3_key text,
+    hls_s3_prefix text, // hls/{videoId}/
+    qualities int[], // [240,360,480,720,1080]
+    created_at, updated_at
+  )
+- video_player_settings (
+    video_id fk,
+    allow_speed boolean,
+    allow_quality boolean,
+    allow_fullscreen boolean,
+    allow_skip boolean,
+    allow_brightness boolean,
+    resume_enabled boolean,
+    autoplay_allowed boolean,
+    start_time int,
+    end_time int
+  )
+- video_watermark_settings (
+    video_id fk,
+    logo_enabled boolean,
+    logo_url text,
+    logo_position text,
+    logo_opacity float,
+    ticker_enabled boolean,
+    ticker_text text,
+    ticker_speed int,
+    ticker_opacity float,
+    pop_enabled boolean,
+    pop_interval int,
+    pop_duration int,
+    pop_mode text, // corners|center|random
+    pop_opacity float
+  )
+- video_security_settings (
+    video_id fk,
+    signed_urls boolean,
+    signed_url_ttl int,
+    domain_whitelist_enabled boolean,
+    allowed_domains text[],
+    referrer_strict boolean,
+    token_required boolean,
+    token_ttl int,
+    concurrent_limit int,
+    rate_limit_enabled boolean,
+    hotlink_protection boolean,
+    drm_mode boolean // placeholder
+  )
+- embed_tokens (
+    id uuid pk,
+    video_id fk,
+    token text unique,
+    allowed_domain text, // optional per token
+    expires_at timestamptz,
+    revoked boolean default false,
+    created_at
+  )
+- playback_sessions (
+    id uuid pk,
+    video_id fk,
+    token_id fk nullable,
+    session_code text,
+    domain text,
+    ip text,
+    user_agent text,
+    started_at timestamptz,
+    last_seen_at timestamptz,
+    ended_at timestamptz nullable,
+    seconds_watched int default 0
+  )
+- audit_logs (
+    id uuid pk,
+    action text,
+    meta jsonb,
+    ip text,
+    created_at timestamptz
+  )
+
+API ROUTES (Express):
+Auth:
+- POST /api/auth/login
+- POST /api/auth/logout
+- GET /api/auth/me
+
+Videos:
+- GET /api/videos
+- POST /api/videos (create placeholder record)
+- POST /api/videos/:id/upload (multipart upload -> S3)
+- POST /api/videos/:id/process (trigger ffmpeg HLS)
+- GET /api/videos/:id
+- PUT /api/videos/:id (metadata + toggles)
+- PUT /api/videos/:id/player-settings
+- PUT /api/videos/:id/watermark-settings
+- PUT /api/videos/:id/security-settings
+- POST /api/videos/:id/thumbnail (upload thumbnail)
+- POST /api/videos/:id/toggle-availability
+
+Embeds:
+- POST /api/videos/:id/tokens (create token)
+- GET /api/tokens (list)
+- POST /api/tokens/:id/revoke
+
+Player:
+- GET /api/player/:publicId/manifest (returns signed master playlist URL OR serves rewritten playlist)
+- GET /api/player/:publicId/playlist/:name.m3u8 (if rewriting)
+- GET /api/player/:publicId/segment/:file (if proxying, optional)
+- POST /api/player/:publicId/ping (updates playback session lastSeen + seconds watched)
+
+Analytics:
+- GET /api/videos/:id/analytics
+- GET /api/videos/:id/sessions
+Audit:
+- GET /api/audit
+
+PUBLIC PAGES:
+- /embed/:publicId  (iframe page)
+- /v/:publicId      (masked share page)
+Both pages:
+- read token from query param OR allow “embed token baked into iframe src”
+- call /api/player/:publicId/manifest to load HLS
+- overlay watermark UI
+
+EMBED CODE GENERATION (UI):
+For each video, show:
+1) iframe embed:
+<iframe
+  src="https://YOUR_DOMAIN/embed/PUBLIC_ID?token=TOKEN"
+  width="100%"
+  height="500"
+  allow="fullscreen"
+  referrerpolicy="no-referrer-when-downgrade"
+  sandbox="allow-scripts allow-same-origin allow-presentation">
+</iframe>
+2) masked link:
+https://YOUR_DOMAIN/v/PUBLIC_ID?token=TOKEN
+3) Video ID:
+PUBLIC_ID
+
+SECURITY IMPLEMENTATION DETAILS (MUST DO):
+- Token validation:
+  - token exists, not revoked, not expired
+  - token.video_id matches requested publicId
+- Domain checks:
+  - determine domain from request headers: Referer / Origin
+  - plus client-side document.referrer sent to server as “x-embed-referrer” header from embed page
+  - if domain whitelist enabled: only allow matches
+- Signed URL TTL short default: 60–120 seconds
+- Playlist rewriting:
+  - when serving m3u8, replace segment URIs with pre-signed S3 URLs for each segment
+  - ensure CORS allows player domain only
+- Global Kill Switch:
+  - in system settings: if ON, all playback endpoints return 503 “Temporarily disabled”
+
+UI REQUIREMENTS (Tailwind):
+- Sidebar with icons and active state
+- Glass cards, rounded 12px
+- Toggle switches consistent
+- Tables with sticky headers
+- Modals for “Create token”, “Revoke token”, “Confirm disable”
+- Toast notifications
+- Loading skeletons
+
+PROJECT SETUP IN REPLIT:
+- Monorepo:
+  /server (Express TS)
+  /web (React TS Vite)
+- Use concurrently to run both
+- Provide .env.example for both server and web
+
+ENV VARS (server .env):
+- DATABASE_URL=
+- ADMIN_SEED_EMAIL=
+- ADMIN_SEED_PASSWORD=
+- AWS_ACCESS_KEY_ID=
+- AWS_SECRET_ACCESS_KEY=
+- AWS_REGION=
+- S3_BUCKET=
+- S3_PRIVATE_PREFIX=raw/
+- S3_HLS_PREFIX=hls/
+- SIGNING_SECRET= (for tokens if needed)
+- BASE_URL=http://localhost:...
+- GLOBAL_KILL_SWITCH=false
+
+ENV VARS (web .env):
+- VITE_API_BASE_URL=
+
+IMPLEMENTATION PLAN:
+1) Scaffold monorepo, Tailwind, Router, Query
+2) Implement DB migrations and seed admin
+3) Implement auth + protected routes
+4) Build UI screens with mocked data
+5) Implement video CRUD
+6) Implement upload -> S3
+7) Implement ffmpeg HLS processing job (simple queue)
+8) Implement player page + HLS playback via hls.js
+9) Implement security: tokens + domain whitelist + signed playlist rewrite
+10) Implement embed/link generator UI
+11) Implement analytics pings + logs
+
+QUALITY BAR:
+- App must run end-to-end in Replit
+- No placeholder “TODO” for core flow (upload -> process -> embed -> play)
+- Code must be typed, modular, and readable
+- Do not add multi-user features
+
+NOW BUILD IT.
+Return:
+- Full working code in the Replit project
+- Clear run instructions in README
+- Provide seed admin credentials via env seeding
+- Ensure the embed player works on an external domain by honoring allowedDomains.

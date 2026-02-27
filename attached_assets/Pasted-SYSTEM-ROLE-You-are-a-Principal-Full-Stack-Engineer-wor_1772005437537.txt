@@ -1,0 +1,162 @@
+SYSTEM ROLE:
+You are a Principal Full-Stack Engineer working in an EXISTING Replit project: “Secure Video CMS (Single Admin)”.
+We currently accept Vimeo links/embeds and they are rendering the Vimeo player iframe. This violates the product requirement:
+“Wherever the video is embedded/shared, it must play in OUR CMS custom player with OUR security/watermark settings.”
+
+IMPORTANT REALITY (MUST BE HONEST IN IMPLEMENTATION):
+- Vimeo “embed code” is ALWAYS Vimeo’s player. You cannot hide/replace it and still stream Vimeo content in your own custom HLS.js player unless you have a DIRECT VIDEO FILE URL (progressive MP4) or HLS playlist URL that Vimeo grants via API (depends on plan/privacy), OR you ingest the file into your own storage.
+- Therefore, implement a strict policy:
+  1) Do NOT store/render Vimeo embed HTML or Vimeo player iframe anywhere in our app.
+  2) When admin pastes Vimeo embed code or Vimeo URL, we must convert it into “Ingest into our CMS”:
+     - Extract Vimeo video ID
+     - Use Vimeo API to fetch direct downloadable file (progressive MP4) or HLS URL (if allowed)
+     - Download/transfer it into our own storage (S3/Supabase)
+     - (Optional but recommended) Convert MP4 to HLS via ffmpeg
+     - Play ONLY from our own HLS in our custom player
+  3) If Vimeo API does NOT provide a downloadable file/HLS (not permitted), show a hard error:
+     “Vimeo embed cannot be used for custom player. Please upload the original file to CMS or change Vimeo settings/plan to allow downloads/API file access.”
+
+SCOPE:
+Implement ONLY Vimeo embed handling + ingest pipeline. No UI redesign, no unrelated changes.
+
+========================================================
+A) FRONTEND: Fix Vimeo Embed Input Behavior
+========================================================
+1) In Upload/Add Video → “Import from Link / Embed” input:
+- Accept either:
+  - A Vimeo URL (vimeo.com/xxxx or player.vimeo.com/video/xxxx)
+  - A full Vimeo embed HTML snippet (the iframe code)
+- Add a small helper text under the input:
+  “Note: Vimeo embed player will NOT be used. We will import the video into your CMS to play via our secure player.”
+
+2) Remove any iframe preview that shows Vimeo’s player.
+- Preview panel must show ONLY:
+  - “Importing…” state
+  - “Processing…” state
+  - our custom player when ready
+  - error message when not possible
+
+3) Validation:
+- If input contains <iframe ...player.vimeo.com/video/...> then treat as “Vimeo Embed” and extract video ID.
+- If input contains vimeo.com or player.vimeo.com/video then extract video ID.
+- If input contains youtube embed/url, show blocked message (no provider player).
+
+========================================================
+B) BACKEND: Vimeo Embed → Vimeo ID Extraction
+========================================================
+Create a utility function `extractVimeoId(input: string): string | null` that supports:
+1) Full iframe embed HTML:
+   - Find src="https://player.vimeo.com/video/1168001442?...”
+   - Extract `1168001442`
+2) Direct player URL:
+   - https://player.vimeo.com/video/1168001442
+3) Standard URL:
+   - https://vimeo.com/1168001442
+Return null if not Vimeo.
+
+========================================================
+C) BACKEND: Vimeo API Resolve + Ingest
+========================================================
+Add endpoint:
+POST /api/videos/import/vimeo
+Body:
+{
+  "input": "<iframe...> or vimeo url",
+  "title": "optional",
+  "description": "optional",
+  "author": "optional"
+}
+
+Behavior:
+1) Extract vimeoId using extractVimeoId()
+   - If missing => 400 invalid
+2) Create DB video row:
+   - status='processing'
+   - source_type='vimeo_ingest'
+   - store vimeoId in meta json (optional)
+3) Call Vimeo API using env var:
+   - VIMEO_ACCESS_TOKEN
+   - GET https://api.vimeo.com/videos/{vimeoId}
+4) From response try to obtain a direct downloadable URL:
+   Preferred order:
+   a) `files` array with `quality` and `link` (progressive MP4) and `link` is present
+   b) `download` array (if available)
+   c) HLS links (if Vimeo provides an HLS playlist URL in allowed fields)
+5) If no downloadable MP4/HLS link is available:
+   - Update DB status='error'
+   - last_error = "Vimeo embed cannot be imported: direct file access not available. Enable downloads or use a plan/API that exposes progressive MP4, or upload the original file to CMS."
+   - return {ok:false, ...}
+6) If MP4 link is available:
+   - Stream-download MP4 server-side (do NOT buffer in memory)
+   - Upload stream to our storage as raw/{videoId}/source.mp4 (S3 or Supabase storage)
+   - Update DB bytes/progress during download
+   - Run ffmpeg to generate HLS to hls/{videoId}/master.m3u8 + variants
+   - Upload HLS outputs to storage
+   - Update DB:
+     - raw_object_key
+     - hls_master_key='hls/{videoId}/master.m3u8'
+     - status='ready'
+     - available=true
+7) If only HLS playlist is available:
+   MVP option:
+   - Mirror the HLS playlist+segments into our storage OR store as external (NOT recommended for security)
+   REQUIRED FOR THIS PRODUCT:
+   - Mirror into our own storage so our security applies.
+   - Download playlist, parse segment URLs, download segments, upload into hls/{videoId}/...
+   - Generate a new master.m3u8 referencing our mirrored files.
+   - Then status='ready'.
+
+========================================================
+D) DATABASE CHANGES
+========================================================
+Add columns if not present:
+- videos.source_type add 'vimeo_ingest'
+- videos.last_error text
+- videos.external_source_url text (optional)
+- videos.upload_progress int default 0
+- videos.bytes_uploaded bigint default 0
+- videos.bytes_total bigint default 0
+
+========================================================
+E) PLAYER RULE (CRITICAL)
+========================================================
+Public playback routes (/embed/:publicId and /v/:publicId) must ONLY play:
+- our own HLS master referenced by videos.hls_master_key in our storage
+NEVER render Vimeo iframe.
+
+If video.status != 'ready':
+- show Processing UI
+If status='error':
+- show last_error
+
+========================================================
+F) UI: Video Detail "Source" Display
+========================================================
+In Video Detail Overview:
+- Show source badge:
+  “Vimeo (Imported)” when source_type='vimeo_ingest'
+- Show Vimeo ID for reference (not playable)
+
+========================================================
+G) ENV VARS REQUIRED
+========================================================
+- VIMEO_ACCESS_TOKEN=xxxxxxxx
+- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION / S3_BUCKET
+(or Supabase storage keys used server-side)
+
+========================================================
+H) DO NOT DO
+========================================================
+- Do not embed Vimeo iframe
+- Do not store Vimeo embed HTML in DB
+- Do not claim “hide Vimeo player” while still playing from Vimeo embed
+- Do not use any ripping/illegal extraction approach
+Use Vimeo API only, and ingest into our storage.
+
+========================================================
+IMPLEMENT NOW IN REPLIT:
+- Add extractVimeoId()
+- Add /api/videos/import/vimeo
+- Add ingest pipeline (download -> upload -> ffmpeg -> hls upload)
+- Update frontend import UI to accept embed code but always ingest
+- Ensure preview uses only our custom player.

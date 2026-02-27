@@ -1,0 +1,179 @@
+SYSTEM ROLE:
+You are a Senior Security-Focused Full-Stack Engineer working on an EXISTING React + TypeScript + Vite web app (Video CMS / LMS). This is a SURGICAL ADDITIVE FEATURE. NOT a refactor, NOT a redesign.
+
+====================================================================
+GLOBAL IMMUTABLE RULES (ABSOLUTE)
+====================================================================
+1) Do NOT change any existing UX/UI, screens, layout, styling, routes, or flows.
+2) Do NOT change existing business logic unrelated to streaming security.
+3) Do NOT rename/move files unless strictly required.
+4) Additive changes only: create new code + minimal wiring.
+5) Keep edits minimal and localized. App must compile and work.
+6) No DRM. Do NOT implement Widevine/FairPlay or mention DRM as required.
+7) Do NOT expose any storage/origin URLs to the frontend (no Backblaze B2 direct URLs).
+8) No breaking changes. Default behavior must remain working.
+
+====================================================================
+GOAL
+====================================================================
+Implement a "Maximum Non-DRM Video Protection" pipeline that makes:
+- Direct video links NOT reusable (short-lived)
+- Streaming capture by IDM/CocoCut VERY difficult (token + segment rules)
+- HLS segments + keys inaccessible without auth
+- Abuse detection triggers "Video Playback Denied" overlay
+
+We accept that 100% prevention is impossible on web; goal is maximum practical protection.
+
+====================================================================
+CURRENT STACK ASSUMPTIONS
+====================================================================
+- Frontend: React + TypeScript + Vite
+- Auth: Firebase Auth (already in app)
+- Backend: Add Firebase Cloud Functions (or an Express server if already present)
+- Storage: Backblaze B2 (private) OR any private origin (DO NOT expose public links)
+- CDN/Edge: Optional Cloudflare (preferred) but implement a backend proxy version first.
+
+If Cloudflare is available, also add an optional Worker implementation (separate folder).
+
+====================================================================
+FEATURES TO IMPLEMENT (NON-DRM)
+====================================================================
+
+A) SECURE HLS PLAYLIST GATEWAY (SIGNED PLAYLIST URL)
+1) Frontend must NEVER store or receive origin .m3u8/.ts/.m4s URLs.
+2) Frontend calls backend:
+   POST /api/video/session
+   body: { videoId }
+   auth: Firebase ID token
+3) Backend validates:
+   - user authenticated
+   - user has access to videoId/courseId
+   - create sessionId and sessionSecret
+4) Backend returns:
+   {
+     sessionId,
+     playlistUrl: "https://<your-domain>/hls/<videoId>/master.m3u8?sid=...&st=...&exp=..."
+     expiresAt
+   }
+Where "st" is signed token (HMAC) and exp is short (60s).
+
+B) PLAYLIST REWRITE (PER-SEGMENT TOKENS)
+1) Backend endpoint:
+   GET /hls/:videoId/master.m3u8
+   - verify sid + signature + exp
+   - fetch origin master playlist from private origin (server-side)
+   - rewrite all variant playlist URLs to your domain:
+     /hls/:videoId/variant.m3u8?sid=...&st=...&exp=...
+2) Backend endpoint:
+   GET /hls/:videoId/:variant.m3u8
+   - verify token
+   - fetch origin variant playlist
+   - rewrite EVERY segment URL into:
+     /seg/:videoId/:segmentName?sid=...&st=...&exp=...&n=<nonce>
+   - set exp for segments 10–20 seconds
+   - ensure tokens are per-segment and can be single-use (nonce tracked)
+
+C) HLS ENCRYPTION KEY GATEWAY (AES-128 / rotating keys)
+(Non-DRM encryption)
+1) Origin HLS is encrypted with AES-128 (or SAMPLE-AES if supported).
+2) The EXT-X-KEY URI must point to our backend:
+   /key/:videoId?sid=...&st=...&exp=...
+3) Backend key endpoint:
+   - verify token and session
+   - enforce rate limits
+   - return decryption key bytes
+4) Rotate keys periodically (ex: every 1–2 minutes) if your packager supports.
+If packager rotation not available now, still support single key securely.
+
+D) SEGMENT PROXY (NO DIRECT ORIGIN ACCESS)
+1) Endpoint:
+   GET /seg/:videoId/:segmentName
+   - verify token, nonce, exp
+   - enforce concurrency and rate limits per session
+   - fetch segment bytes from private origin server-side
+   - stream response with correct content-type
+2) Add anti-download friction:
+   - Max 2 concurrent segment requests per sid
+   - If exceeded, flag abuse and revoke session
+
+E) ABUSE DETECTION + "VIDEO PLAYBACK DENIED" OVERLAY
+1) Implement an abuse scoring system per session:
+   - too many requests/sec
+   - too many concurrent connections
+   - repeated playlist fetches
+   - token re-use from different IP (optional)
+   - excessive key endpoint hits
+2) When abuse triggers:
+   - backend marks session revoked
+   - future requests return 403 with code "PLAYBACK_DENIED"
+3) Frontend player must show an overlay (no redesign):
+   - Semi-transparent overlay above video area only
+   - Text: "Video playback denied due to suspicious activity."
+   - Button: "Retry" (calls /api/video/session again)
+   - On deny: stop/pause playback immediately.
+
+F) FRONTEND PLAYER INTEGRATION (React)
+1) Use hls.js (for non-Safari), and native HLS for Safari.
+2) Add a small VideoPlayer wrapper:
+   - accepts videoId
+   - fetches playlistUrl via /api/video/session
+   - sets video.src or hls.loadSource(playlistUrl)
+3) Handle errors:
+   - If any request returns 401/403 with PLAYBACK_DENIED → show overlay and stop.
+4) Do NOT change layout or styling outside the player container.
+
+G) SECURITY HARDENING (SERVER)
+1) Use HttpOnly secure cookie for session token (preferred) OR signed query tokens.
+2) Add CORS rules:
+   - allow only your domains
+3) Add headers:
+   - Cache-Control: no-store for playlists/keys
+4) Ensure no sensitive secrets in client bundle.
+
+H) OPTIONAL: CLOUDFLARE WORKER VERSION (IF CLOUDFLARE EXISTS)
+Create /cloudflare-worker/ with:
+- same behavior: playlist rewrite + segment proxy + key endpoint
+- keep it optional; backend version remains default.
+
+====================================================================
+IMPLEMENTATION DETAILS REQUIRED
+====================================================================
+1) Create a new backend folder/functions with:
+   - /api/video/session (creates session + returns playlistUrl)
+   - /hls/:videoId/master.m3u8
+   - /hls/:videoId/:variant.m3u8
+   - /seg/:videoId/:segmentName
+   - /key/:videoId
+2) Add a small in-memory limiter (and optionally Firestore/Redis style fallback):
+   - track session state, nonce usage, concurrent req count
+3) Use HMAC signing:
+   - secret in env (VIDEO_SIGNING_SECRET)
+   - token = HMAC(videoId|sid|path|exp|nonce)
+4) Token validation must be constant-time compare.
+5) All endpoints must validate Firebase ID token OR session cookie.
+
+====================================================================
+DELIVERABLES
+====================================================================
+1) Code changes with minimal wiring:
+   - new backend endpoints
+   - new frontend player wrapper + overlay on denied
+2) Clear env vars list:
+   - VIDEO_SIGNING_SECRET
+   - ORIGIN_HLS_BASE_URL (private)
+   - B2 credentials (if proxying directly)
+3) A short README section:
+   - how to run locally
+   - how to deploy (Replit)
+   - how to test IDM/extension resistance (expected behaviors)
+
+====================================================================
+TEST CASES (MUST PASS)
+====================================================================
+1) Normal user playback works (Chrome + Safari).
+2) Copying playlistUrl after 60s fails.
+3) Downloaders requesting many segments concurrently get denied.
+4) Reusing old segment URLs fails.
+5) When denied, frontend shows overlay "Video playback denied..." and playback stops.
+
+Now implement this in my Replit project with clean, minimal edits and production-grade code.

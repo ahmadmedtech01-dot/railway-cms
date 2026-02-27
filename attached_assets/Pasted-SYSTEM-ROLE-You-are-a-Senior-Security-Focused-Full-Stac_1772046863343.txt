@@ -1,0 +1,208 @@
+SYSTEM ROLE:
+You are a Senior Security-Focused Full-Stack Engineer working on my EXISTING Replit app.
+Stack: React + TypeScript (Vite) frontend + Node/Express backend.
+Storage: Backblaze B2 (private bucket) already used for videos.
+GOAL: Implement “custom DRM-like” protection using ENCRYPTED HLS (AES-128) + protected key delivery + protected segments + rolling playlist window + fast abuse detection, while keeping playback smooth (no buffering).
+
+===============================================================================
+IMMUTABLE RULES (ABSOLUTE)
+===============================================================================
+1) Do NOT change existing UI/UX, layout, routes, styling, flows. Only minimal wiring.
+2) Do NOT refactor/rewrite. Additive, localized edits only.
+3) Do NOT expose original B2 object URLs to browser (ever).
+4) Security must be enforced server-side.
+5) Integrate with existing “violation popup + limit + 10 min block” logic (already in app). Do NOT redesign it.
+6) This is NOT true DRM (won’t stop screen recording). Objective is to block bulk downloading / extensions.
+
+===============================================================================
+WHAT TO BUILD (REQUIRED)
+===============================================================================
+A) Encrypt videos into AES-128 HLS on upload (or on processing step)
+B) Store HLS outputs in PRIVATE B2:
+   - /hls/<videoId>/master.m3u8
+   - /hls/<videoId>/variant_720p.m3u8 (if variants exist)
+   - /hls/<videoId>/seg_0001.ts (or .m4s)
+   - /hls/<videoId>/key.key  (DO NOT store public; only server can fetch)
+C) Serve playlist and segments through YOUR backend only:
+   - /api/stream/:videoId/playlist.m3u8     (rolling window)
+   - /api/stream/:videoId/segment?seg=...   (proxy)
+   - /api/stream/:videoId/key?kid=...       (protected key endpoint)
+D) Key endpoint requires auth + short-lived token; keys NEVER public.
+E) Rolling playlist window (only next 3–6 segments visible at a time).
+F) Detect abnormal access patterns and block quickly (violation system).
+G) Keep playback smooth: no buffering (segment duration 2–4 sec, pre-sign window).
+
+===============================================================================
+STEP 1 — HLS AES-128 ENCRYPTION (SERVER-SIDE)
+===============================================================================
+On upload/processing:
+- Convert source MP4 to HLS with AES-128 encryption using ffmpeg.
+- Use segment duration: 4 seconds (or 2–4).
+- Generate a per-video KEY (16 bytes) and KEY ID (kid).
+- IMPORTANT: Do NOT embed the real key file URL in playlist.
+  Instead, in the HLS playlist set EXT-X-KEY URI to my backend endpoint:
+  URI="/api/stream/<videoId>/key?kid=<kid>&t=<keyToken>"
+
+Implementation detail:
+- Use ffmpeg with key info file:
+  key_info_file contains:
+   line1: key-uri (our backend key endpoint URI placeholder)
+   line2: local path where key file is written during encryption
+   line3: key hex (optional)
+- Store encrypted segments + playlists in B2 private bucket.
+- Store encryption metadata in DB:
+  videoId, kid, keyObjectPath (private), segmentPattern, segmentCount, duration, variant playlists.
+
+===============================================================================
+STEP 2 — SERVER AUTH + TOKENS
+===============================================================================
+Two tokens:
+1) streamSessionToken (5–10 minutes) -> created on /start
+2) short tokens:
+   - keyToken (expires 15–30 seconds)
+   - chunkToken (expires 12–20 seconds)
+
+All tokens must bind:
+- userId
+- videoId
+- sessionId
+- deviceHash (hash(userAgent + optional fingerprint))
+- exp
+- resource scope (key or segment name)
+
+Clock skew tolerance: ±3 seconds.
+
+===============================================================================
+STEP 3 — BACKEND ENDPOINTS (MANDATORY)
+===============================================================================
+1) POST /api/stream/start
+   Input: { videoId }
+   Output: { sessionId, streamSessionToken, expiresAt }
+
+2) GET /api/stream/:videoId/playlist.m3u8
+   Auth: streamSessionToken
+   Behavior:
+   - Generate a ROLLING WINDOW playlist (do NOT return full VOD list)
+   - Include only next 3–6 segments based on server-tracked currentIndex
+   - For each segment line, use:
+     /api/stream/:videoId/segment?seg=<segName>&t=<chunkToken>
+   - Include EXT-X-KEY pointing to:
+     /api/stream/:videoId/key?kid=<kid>&t=<keyToken>
+   Headers:
+   - Cache-Control: no-store
+   - Content-Type: application/vnd.apple.mpegurl
+
+3) GET /api/stream/:videoId/segment?seg=...&t=...
+   Auth: chunkToken
+   Behavior:
+   - Validate token + session
+   - Enforce sliding window:
+     allowedIndexRange = [currentIndex - 1, currentIndex + 6]
+   - Fetch encrypted segment object from B2 privately and pipe bytes
+   Headers:
+   - Content-Type: video/MP2T (or correct)
+   - Optional short cache: max-age=10 (ONLY if safe)
+   - Never expose B2 URL
+
+4) GET /api/stream/:videoId/key?kid=...&t=...
+   Auth: keyToken
+   Behavior:
+   - Validate token + session + deviceHash + expiry
+   - Apply strict rate limit (keys should not be fetched repeatedly)
+   - Fetch key bytes from private B2 key object and return raw bytes
+   Headers:
+   - Cache-Control: no-store
+   - Content-Type: application/octet-stream
+   - NEVER log the key contents
+
+5) POST /api/stream/:videoId/heartbeat
+   Every 15 seconds from client
+   Body: { sessionId, playbackTime, lastSegmentIndex, visibilityState }
+   Server:
+   - update session activity
+   - run detection rules
+   - return { ok, violationCount, blockedUntil }
+
+===============================================================================
+STEP 4 — ABUSE DETECTION (REQUIRED)
+===============================================================================
+Do NOT detect by extension name. Detect behavior.
+
+Increment violation count when:
+- Too many segments/minute (> 2x expected)
+- Too many out-of-order segment requests
+- Segments requested far ahead of window repeatedly
+- Same session from multiple IPs/deviceHash
+- Too many parallel segment requests (concurrency > 2)
+- Too many key requests (key endpoint spam)
+
+When violationLimit reached:
+- Block video access for 10 minutes (existing app logic)
+- All endpoints should return 403 with blockedUntil
+- Frontend shows existing popup “Security breach X/Y” and block timer
+
+===============================================================================
+STEP 5 — FRONTEND PLAYER INTEGRATION (MINIMAL CHANGES)
+===============================================================================
+Do NOT redesign UI.
+
+Implement:
+- On video play:
+  call /api/stream/start -> get streamSessionToken
+- Set HLS source URL to:
+  /api/stream/<videoId>/playlist.m3u8
+- For headers:
+  include streamSessionToken via Authorization header OR secure HttpOnly cookie.
+  (If HLS.js can’t attach headers for playlist/segments reliably, use HttpOnly cookie approach.)
+
+Playlist refresh:
+- Force refresh every 10–12 seconds (reload playlist) so window advances.
+
+Heartbeat:
+- POST /api/stream/<videoId>/heartbeat every 15 seconds with playback progress.
+
+===============================================================================
+IMPORTANT NOTE ABOUT HLS.JS HEADERS
+===============================================================================
+If your current HLS.js setup cannot attach Authorization headers for each request:
+- Use server-issued HttpOnly cookie session for streaming
+- Tokens embedded in URLs for segment/key are still short-lived
+- This keeps it compatible and avoids buffering.
+
+===============================================================================
+BACKBLAZE B2 PRIVATE ACCESS (MANDATORY)
+===============================================================================
+- Bucket stays private.
+- Backend uses B2/S3 credentials to read objects.
+- NEVER return pre-signed public URLs to client for segments or keys.
+- Only proxy responses from backend.
+
+===============================================================================
+PERFORMANCE / BUFFERING REQUIREMENTS
+===============================================================================
+- segment duration: 4s (or 2–4s)
+- window size: 3–6 segments
+- pre-sign tokens for the window each playlist response
+- allow ±3s expiry tolerance
+- stream bytes (pipe) to avoid memory spikes
+
+===============================================================================
+DELIVERABLES
+===============================================================================
+1) Add ffmpeg encryption pipeline (AES-128 HLS) on upload/process
+2) Add DB fields for HLS + encryption metadata (kid, key path, segment count)
+3) Implement backend endpoints: start, playlist, segment, key, heartbeat
+4) Implement rolling window playlist generator
+5) Implement detection rules + integrate existing violation/block UI
+6) Ensure browser never sees B2 object URLs
+7) Verify normal playback smooth; verify download tools fail to batch download
+
+===============================================================================
+DO NOT DO
+===============================================================================
+- Do NOT claim “100% DRM”
+- Do NOT expose full segment list in playlist
+- Do NOT expose key publicly
+- Do NOT refactor UI
+
+NOW IMPLEMENT IN MY EXISTING REPLIT CODEBASE WITH SURGICAL CHANGES ONLY.

@@ -1,0 +1,75 @@
+You are a Senior Full-Stack Engineer.
+
+GOAL
+Fix Vercel deployed app login failing with:
+POST /api/auth/login → 404 NOT_FOUND (Vercel).
+This means the API route is not deployed. Implement Vercel Serverless Functions correctly.
+
+TECH STACK
+Frontend: React + Vite + TypeScript (SPA)
+Deployment: Vercel via GitHub
+Database: Supabase (already configured)
+Auth: Admin email/password from Vercel env vars (ADMIN_EMAIL, ADMIN_PASSWORD) + session secret (SESSION_SECRET)
+
+ABSOLUTE RULES
+1) Do NOT change any existing UI/UX screens or flows.
+2) Do NOT remove any existing features.
+3) Only implement what is needed to make /api/auth/login exist and work on Vercel.
+4) The API must work both locally (Replit) and on Vercel.
+5) Keep code clean, minimal, and production-safe.
+
+TASKS (MANDATORY)
+
+A) Create Vercel Function Route
+1) At the REPO ROOT (NOT inside src), create:
+   /api/auth/login.ts
+2) Implement POST handler:
+   - Validate body { email, password }
+   - Compare with process.env.ADMIN_EMAIL and process.env.ADMIN_PASSWORD
+   - If match: return 200 { ok: true }
+   - If not: return 401 { ok: false, error: "Invalid credentials" }
+   - If missing env vars: return 500 with clear message
+   - For non-POST methods: return 405
+
+Use TypeScript and VercelRequest/VercelResponse from @vercel/node.
+
+B) Add Optional Session Cookie (only if project currently expects cookies)
+If the current frontend expects a session cookie, set an HttpOnly cookie when login is successful:
+- Cookie name: "svcms_session"
+- Value: a signed token using SESSION_SECRET (simple HMAC is ok)
+- Flags: HttpOnly; Secure (in production); SameSite=Lax; Path=/
+Also add a /api/auth/me.ts endpoint to check session and return { authenticated: true/false } if the app already calls “me”.
+
+If the project does NOT use session cookies currently, skip cookies and only return JSON.
+
+C) Fix Vercel Rewrites if SPA rewrites exist
+Check if vercel.json exists OR Vercel config is rewriting all routes to index.html.
+If yes, ensure /api/* is NOT swallowed.
+Create/Update vercel.json at root:
+
+{
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
+
+D) Ensure Vercel sees the function
+1) Confirm /api directory is at repo root and committed.
+2) If repo is monorepo and Vercel root directory is a subfolder, move api/ into that root folder OR document required Vercel “Root Directory” change in a short note.
+
+E) Verification
+1) After implementation, the following must be true:
+   - Visiting https://<domain>/api/auth/login in browser returns 405 (NOT 404)
+   - POST /api/auth/login returns 200 on correct creds, 401 on wrong creds
+2) Add a small README section “Vercel Login Fix” listing required env vars:
+   - ADMIN_EMAIL
+   - ADMIN_PASSWORD
+   - SESSION_SECRET (only if cookies implemented)
+   - SUPABASE_DATABASE_URL (already used elsewhere)
+
+OUTPUT REQUIRED
+1) Show me the exact new files created and their full contents.
+2) Show diffs for any edited files.
+3) Explain in 5-7 lines why 404 happened and how this fix solves it.
+4) Do NOT add extra refactors or unrelated improvements.

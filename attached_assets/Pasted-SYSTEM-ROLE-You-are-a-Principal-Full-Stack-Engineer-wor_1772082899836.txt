@@ -1,0 +1,194 @@
+SYSTEM ROLE:
+You are a Principal Full-Stack Engineer working on an EXISTING Replit webapp (React + TypeScript + Vite frontend, Node/Express backend, Replit DB). This is a SURGICAL FEATURE ADD (not a rewrite, not a refactor).
+
+========================================================
+GLOBAL IMMUTABLE RULES (ABSOLUTE)
+========================================================
+1) Do NOT change existing UX/UI, routes, layout, styling, or current flows except where explicitly required to add HLS playback.
+2) Do NOT remove MP4 support abruptly; provide a safe migration path.
+3) Additive changes only: new files + minimal wiring in existing ones.
+4) If you touch an existing file, keep edits minimal and localized.
+5) No breaking changes. App must compile and work after deploy.
+6) Security features must be default-safe (OFF by default, then enabled per video).
+7) Implement AND verify each feature with clear tests + a checklist report. Do not claim “done” unless you actually tested it.
+
+========================================================
+CONTEXT / CURRENT STATE
+========================================================
+- Current video storage/serving is MP4.
+- Goal: prevent “direct link download” and avoid serving a single full MP4 file.
+- New approach: convert MP4 to HLS (small segments), mask original storage links, short-lived signed access, rate limits, and violation blocking.
+
+========================================================
+GOAL
+========================================================
+Implement “Secure HLS Streaming Mode”:
+- Upload MP4 -> server converts to HLS (master.m3u8 + variant playlists + small segments).
+- Store HLS assets in Backblaze B2 (preferred) or local storage (fallback for dev).
+- Client plays via HLS (hls.js for most browsers, native HLS for iOS Safari).
+- Original B2 links must never be exposed directly to the client.
+- Access must be chunked (segments), tokenized, and time-limited so download tools can’t fetch full video easily.
+
+========================================================
+FEATURES TO IMPLEMENT (MUST)
+========================================================
+
+A) HLS TRANSCODING PIPELINE (FFmpeg)
+1) On upload of an MP4 video:
+   - Save temporarily to server.
+   - Run FFmpeg to generate HLS output:
+     - master.m3u8
+     - at least ONE variant (e.g. 720p) playlist index_720.m3u8
+     - segments in small size by using short duration:
+       - target segment duration: 1s (or 2s max)
+     - Use HLS format that works broadly:
+       - MPEG-TS segments (.ts) OR fMP4 (.m4s). Pick one and be consistent.
+2) Ensure segment size is “KB to a few hundred KB” typical (depends bitrate).
+3) Store metadata in DB:
+   - videoId
+   - original filename
+   - duration (if available)
+   - hlsEnabled boolean (default false)
+   - hlsMasterKey/path (internal storage key, NOT public URL)
+   - createdAt, updatedAt
+
+B) STORAGE IN BACKBLAZE B2 (Masked)
+1) Upload generated HLS files to B2 under:
+   /videos/{videoId}/hls/...
+2) NEVER return raw B2 URLs to the frontend.
+3) For local dev: allow fallback to local filesystem storage if B2 env vars not set, but keep the same API shape.
+
+C) SECURE DELIVERY APIS (No original link exposure)
+Implement these backend endpoints:
+
+1) GET /api/video/manifest?videoId=...
+   - Requires auth (use existing auth system).
+   - Returns the HLS master manifest content OR a signed internal URL to it.
+   - IMPORTANT: The manifest must reference segment URLs that go through YOUR API, not B2.
+     Example inside playlist should point to:
+       /api/video/segment/{videoId}/{variant}/{segmentName}?token=...
+   - Must generate short-lived tokens (JWT) for segment access.
+
+2) GET /api/video/segment/:videoId/:variant/:segmentName
+   - Requires a valid short-lived JWT token (e.g., 30–60 seconds).
+   - Token must be bound to:
+     - userId
+     - sessionId (generated on manifest request)
+     - optionally IP hash (soft check: allow small IP changes, but block big changes)
+   - Server fetches segment from B2 (server-side) and streams it to client.
+   - Add correct Content-Type headers for segments and playlists.
+
+3) (Optional but recommended) GET /api/video/playlist/:videoId/:variant
+   - Same token rules
+   - Returns the variant playlist but with URLs rewritten to API segment endpoint.
+
+D) TOKEN + SESSION RULES
+1) Use JWT with:
+   - videoId, userId, sessionId, exp, type (manifest/segment)
+2) Short expiry:
+   - manifest token: 2–5 minutes
+   - segment token: 30–60 seconds
+3) Rotation:
+   - Each time a playlist is requested, issue a fresh session token if needed.
+4) Do not store secrets client-side. JWT is sent via query param or Authorization header for segment endpoints.
+
+E) RATE LIMIT + ANTI BULK DOWNLOAD
+1) Implement per-user + per-session throttles:
+   - Max concurrent segment requests: 3
+   - Max segment requests per 10 seconds: configurable (e.g., 20)
+2) Detect suspicious behavior:
+   - Too fast segment requests
+   - Excessive parallel requests
+   - Frequent out-of-order segment requests
+3) On violation:
+   - increment breach counter: breachCount (per user per video)
+   - return a structured JSON error:
+     { error: "SECURITY_BREACH", breach: "2/6", blockSecondsRemaining: ... }
+
+F) VIOLATION LIMIT + AUTO BLOCK (10 MINUTES)
+1) Add settings:
+   - violationLimit default 6
+   - blockDurationSeconds default 600 (10 minutes)
+2) Behavior:
+   - Each breach increments count and returns “Security breach X/6”
+   - On reaching limit (6/6):
+     - block video playback for that user+video for 10 minutes
+     - any attempt to fetch manifest/playlist/segment returns:
+       { error: "VIDEO_BLOCKED", blockSecondsRemaining: 600 }
+3) Store these counters in Replit DB for now, in a structure that can later move to Supabase easily:
+   Key pattern examples:
+   - security:{userId}:{videoId} -> { breachCount, blockedUntil, lastBreachAt, sessionId }
+
+G) FRONTEND: HLS PLAYER INTEGRATION (Minimal UI change)
+1) Replace MP4 playback ONLY when hlsEnabled = true.
+2) Use:
+   - hls.js for browsers that don’t support native HLS
+   - native <video src="...m3u8"> for iOS Safari (HLS supported natively)
+3) The player must request the manifest from:
+   GET /api/video/manifest?videoId=...
+   Then feed the returned manifest URL/content to the player correctly.
+
+H) MIGRATION / COMPATIBILITY
+1) Existing MP4 videos keep working (old mode).
+2) New “Secure HLS” can be enabled per video (hlsEnabled).
+3) Provide a backend job/endpoint to convert an existing MP4 video to HLS (admin-only), but do not alter UI unless already having admin panel.
+
+========================================================
+IMPLEMENTATION DETAILS (MANDATORY)
+========================================================
+- Use Node.js backend with Express (or existing server framework).
+- Add FFmpeg dependency:
+  - If Replit supports apt, install ffmpeg in replit.nix OR use a static ffmpeg binary.
+- B2 integration:
+  - Use Backblaze B2 S3-compatible API OR official B2 SDK (choose one).
+  - Store B2 credentials in env vars.
+- Rewrite playlists:
+  - If FFmpeg outputs playlist lines with local segment names, rewrite them to API URLs.
+- Streaming:
+  - Use efficient streaming from B2 to response; avoid buffering whole segments in memory.
+- Security headers:
+  - Set CORS properly for your domain (do not wildcard if avoidable).
+  - Disable caching for segments (or set very short cache) because tokens are short-lived.
+
+========================================================
+VERIFICATION REQUIREMENT (MUST DO)
+========================================================
+After implementation, you MUST verify each feature and produce a “PASS/FAIL” report.
+
+Create a new route for internal testing only (dev mode):
+- GET /api/_debug/secure-hls/selftest?videoId=...
+This endpoint runs checks and returns JSON:
+
+1) Transcode check:
+   - confirms master.m3u8 exists, variant playlist exists, segment count > 10
+2) Masking check:
+   - confirms returned manifest does NOT contain "backblazeb2.com" or raw bucket URL
+3) Token expiry check:
+   - request a segment with token, then wait > expiry and confirm it fails
+4) Rate limit check:
+   - simulate rapid segment requests and confirm breach increments
+5) Block check:
+   - trigger breachCount to violationLimit and confirm 10-min block triggers
+6) iOS compatibility notes:
+   - confirm manifests are standard HLS and video tag works with .m3u8
+
+Also provide a manual checklist in the final output:
+- [ ] Upload MP4 -> HLS generated
+- [ ] B2 contains HLS folder per video
+- [ ] Manifest returned has only API URLs
+- [ ] Playback works in Chrome (hls.js) and iOS Safari (native)
+- [ ] Token expiration blocks old segment links
+- [ ] Violation popup messages appear (X/6)
+- [ ] After 6/6 block triggers for 10 minutes
+
+========================================================
+DELIVERABLES (WHAT YOU MUST OUTPUT)
+========================================================
+1) The exact file changes made (new files + modified files list).
+2) The backend endpoint implementations with code.
+3) The FFmpeg command used (with segment duration settings).
+4) The player integration code (minimal changes).
+5) The self-test endpoint code and the final PASS/FAIL results after running it.
+6) A short “How to enable Secure HLS per video” note (developer-facing).
+
+BEGIN NOW. DO NOT ASK ME QUESTIONS. MAKE REASONABLE ASSUMPTIONS AND IMPLEMENT.

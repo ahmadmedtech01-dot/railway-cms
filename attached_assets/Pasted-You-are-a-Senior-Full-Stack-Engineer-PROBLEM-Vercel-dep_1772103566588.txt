@@ -1,0 +1,65 @@
+You are a Senior Full-Stack Engineer.
+
+PROBLEM
+Vercel deployment returns 500 FUNCTION_INVOCATION_FAILED.
+Vercel logs show:
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/var/task/server/db' imported from /var/task/api/index.js
+
+This means our deployed Vercel Function entry (/api/index.js) imports "server/db" which is missing in Vercel runtime bundle.
+
+GOAL
+Make /api/auth/login work on Vercel without crashing.
+Remove the dependency on /server/db from Vercel Functions.
+Do NOT change UI/UX or any frontend flows.
+
+ABSOLUTE RULES
+1) Do NOT change UI/UX.
+2) Keep all existing features.
+3) Only fix backend routing + imports so Vercel functions deploy and run.
+4) The deployed endpoint /api/auth/login must return:
+   - 200 {ok:true} for correct ADMIN_EMAIL/ADMIN_PASSWORD
+   - 401 for wrong creds
+   - 400 for missing fields
+   - 405 for non-POST
+   - never crash.
+
+MANDATORY TASKS
+
+A) Stop Vercel Function Crash
+1) Find /api/index.js (or any Vercel function entrypoint) that imports from "server/db".
+2) Remove that import and any code that depends on it.
+3) Ensure no Vercel Function imports "server/*" paths that won't exist in /var/task.
+
+B) Implement Dedicated Vercel Function Route
+1) Create this exact file at repo ROOT (not src):
+   /api/auth/login.ts  (or .js if project not using TS for functions)
+2) Implement handler WITHOUT importing server/db:
+   - Parse JSON body safely (handle if req.body is string)
+   - Compare email/password with process.env.ADMIN_EMAIL and process.env.ADMIN_PASSWORD
+   - Return JSON responses with correct status codes
+   - Wrap in try/catch and return {ok:false, error:"Server error", detail:...} on unexpected errors
+
+Use Node/Vercel function style export default handler(req,res).
+
+C) Ensure Vercel routes reach the function
+1) Check vercel.json for SPA rewrite rules.
+2) Ensure /api/* is not rewritten to index.html.
+If vercel.json exists, ensure it includes:
+{
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
+
+D) Build Compatibility
+1) Ensure the Vercel function code does not use ESM-only path imports that break bundling.
+2) Ensure no bare import like "server/db" remains anywhere in /api functions.
+3) Confirm the code works locally with a simple curl test command.
+
+OUTPUT REQUIRED
+1) Show full contents of /api/auth/login.ts (or .js)
+2) Show what you changed in /api/index.js (or state you removed it if unused)
+3) Show vercel.json if you changed it
+4) Provide curl test commands and expected outputs
+5) Explain in 4-6 lines why the crash happened and how the fix resolves it.

@@ -1,0 +1,176 @@
+SYSTEM ROLE:
+You are a Senior Full-Stack Engineer working on an EXISTING Video CMS (React + TypeScript + Vite) in Replit.
+This is a SURGICAL ADDITIVE FEATURE. Do NOT redesign UI. Keep existing layout/styles/routes intact.
+Minimal localized changes only. App must compile and work.
+
+====================================================================
+IMMUTABLE RULES
+====================================================================
+1) Do NOT change any existing UX/UI layout, spacing, styling, or flows.
+2) Do NOT refactor unrelated logic.
+3) Additive changes only: new helpers/hooks/components + minimal wiring.
+4) No breaking changes; default-safe behavior.
+5) Violation logic must respect each video’s EFFECTIVE security settings (global vs individual) if that system exists.
+
+====================================================================
+FEATURE: VIOLATION COUNTER + POPUPS + TEMP BLOCK (COOLDOWN)
+====================================================================
+
+GOAL:
+If "Violation Limit" is set (e.g., 6):
+- On each detected violation (screenshots/recording/devtools/focus/fullscreen/etc.), show a popup:
+  "Security breach X/6"
+- Increment counter per violation type occurrence (each event increments by 1).
+- When X reaches limit (6/6):
+  - Block video access for 10 minutes for that video (cooldown)
+  - During block, attempting to play shows overlay/message:
+    "Video access blocked for 10 minutes. Try again in MM:SS."
+  - After 10 minutes, automatically allow playback again (resume).
+- Counter resets:
+  - Option A (recommended): reset to 0 when cooldown ends
+  - Also reset when user refreshes ONLY if you decide not to persist (but we SHOULD persist).
+
+IMPORTANT: This is “best-effort client protection.” Implement deterministic behavior based on detected events.
+
+====================================================================
+DEFINITIONS
+====================================================================
+Violation events (trigger depending on enabled toggles):
+- DEVTOOLS_DETECTED (blockDevTools)
+- RIGHT_CLICK (disableRightClick)
+- DOWNLOAD_ATTEMPT (disableDownloads)
+- SCREENSHOT_SUSPECTED (blockScreenshots)
+- SCREEN_RECORD_SUSPECTED (blockVideoRecording)
+- SCREEN_SHARING_DETECTED (antiScreenSharing)
+- FOCUS_LOST (enableFocusMode)
+- FULLSCREEN_REQUIRED_BREACH (requireFullscreen)
+
+Each event increments violationCount by 1 (debounced to avoid spamming).
+
+====================================================================
+DATA PERSISTENCE
+====================================================================
+Persist per user + per video to prevent bypass via refresh:
+Use localStorage (client) for now:
+Key: `sec:violations:${userId || "anon"}:${videoId}`
+Value:
+{
+  count: number,
+  blockedUntil: number (epoch ms),
+  lastEventAt: number (epoch ms),
+  lastEventType: string
+}
+
+If backend session exists, optionally also POST to server for audit, but NOT required.
+
+Debounce rule:
+- Don’t increment for the same eventType more than once within 3 seconds
+  (prevents multiple increments from one action).
+
+====================================================================
+UI REQUIREMENTS (NO REDESIGN)
+====================================================================
+1) Use existing toast/snackbar/modal system if present.
+2) On violation:
+   - Show toast/popup: "Security breach X/LIMIT"
+   - Small subtext: event label (optional)
+3) On block:
+   - Show overlay within the video player area (not full page):
+     Title: "Video access blocked"
+     Body: "Try again in 09:59"
+   - Disable play controls while blocked.
+4) When time ends:
+   - Overlay disappears automatically.
+   - Playback can resume.
+
+Do NOT change the settings screen UI. Only implement behavior.
+
+====================================================================
+IMPLEMENTATION REQUIREMENTS
+====================================================================
+
+A) Create a reusable hook:
+File: src/security/useSecurityViolations.ts
+
+Responsibilities:
+- read effective security settings for video (passed in)
+- keep violation state (count, blockedUntil)
+- expose:
+  - reportViolation(eventType: ViolationType)
+  - isBlocked: boolean
+  - remainingMs: number
+  - count: number
+  - limit: number
+  - resetIfCooldownEnded()
+
+B) Integrate hook into the Video Player component (minimal edits):
+- On player mount:
+  - load state from localStorage
+  - start interval timer to update remaining time (every 1s)
+- Before playing:
+  - if isBlocked -> prevent play + show overlay
+- On block end -> auto-unblock and reset count to 0
+
+C) Detection wiring (best-effort):
+Only when corresponding toggles are ON:
+1) Disable Right Click:
+   - add contextmenu handler on player container
+   - preventDefault
+   - reportViolation("RIGHT_CLICK")
+
+2) Focus Mode:
+   - listen to visibilitychange + window blur
+   - when triggered, pause player
+   - reportViolation("FOCUS_LOST") (debounced)
+
+3) Require Fullscreen:
+   - on play attempt, if not fullscreen -> pause + prompt fullscreen
+   - reportViolation("FULLSCREEN_REQUIRED_BREACH")
+
+4) Block DevTools (best-effort):
+   - implement a lightweight devtools detection:
+     - measure window.innerWidth/outerWidth delta OR console timing trick
+   - if suspected -> pause + reportViolation("DEVTOOLS_DETECTED")
+   - keep it debounced (once per 10s max)
+
+5) Block Screenshots / Screen Recording / Screen Sharing:
+   - Web limitation: cannot truly detect screenshot/record reliably.
+   - Implement best-effort signals:
+     - if user switches tabs rapidly + loses focus while video playing -> count as suspected
+     - if screen sharing API is active (getDisplayMedia / captured stream) -> violation
+   - reportViolation("SCREENSHOT_SUSPECTED") / ("SCREEN_RECORD_SUSPECTED") / ("SCREEN_SHARING_DETECTED")
+
+6) Disable Downloads:
+   - remove/disable native download UI if any
+   - if a “download” button exists and clicked -> prevent + reportViolation("DOWNLOAD_ATTEMPT")
+   - If no download UI exists, keep no-op.
+
+D) Block logic:
+- limit = settings.violationLimit (default e.g. 4)
+- when count reaches limit:
+  blockedUntil = now + 10 minutes (600000ms)
+  persist state
+  show "blocked" overlay
+  pause video
+
+E) Timer & Resume:
+- show remaining time in MM:SS
+- when now >= blockedUntil:
+  - unblock
+  - reset count to 0
+  - persist cleared state
+
+====================================================================
+ACCEPTANCE TESTS
+====================================================================
+1) Set violationLimit=6.
+2) Trigger 1 violation -> popup shows "Security breach 1/6"
+3) Trigger again -> "2/6" ... "6/6"
+4) On 6/6:
+   - video stops
+   - overlay shows "Video access blocked for 10 minutes" with countdown
+5) Attempt play during cooldown -> blocked overlay persists
+6) After 10 minutes -> video can play again, violations reset to 0
+7) Refresh page during cooldown -> still blocked (persisted via localStorage)
+
+Now implement this feature in my Replit project with minimal localized edits and production-quality TypeScript code.

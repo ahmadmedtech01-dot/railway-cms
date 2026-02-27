@@ -1,0 +1,85 @@
+You are a Senior Full-Stack Engineer.
+
+CONTEXT
+We fixed Vercel 404 by creating /api/auth/login endpoint.
+Now login request:
+POST https://video-cms-chi.vercel.app/api/auth/login
+returns 500 Internal Server Error with:
+X-Vercel-Error: FUNCTION_INVOCATION_FAILED
+
+Frontend uses fetch with:
+- Content-Type: application/json
+- body JSON.stringify(payload)
+- credentials: "include"
+Frontend error handler reads response text:
+const e = await r.text() || r.statusText;
+throw new Error(`${r.status}: ${e}`)
+
+GOAL
+Fix the serverless function crash and make login work on Vercel.
+Do NOT change any UI/UX. Only backend and minimal config fixes.
+
+ABSOLUTE RULES
+1) No UI changes.
+2) Do NOT refactor unrelated code.
+3) Add safe debugging so we can see the exact error in Vercel logs.
+4) Return JSON errors (and also readable text) so frontend shows meaningful messages.
+
+MANDATORY TASKS
+
+A) Inspect current implementation of /api/auth/login
+- Locate the file that handles /api/auth/login (Vercel Function).
+- Verify it's at repo root: /api/auth/login.(ts|js)
+- Ensure it exports default handler correctly for Vercel.
+
+B) Fix common causes of FUNCTION_INVOCATION_FAILED
+1) If code imports "@vercel/node", ensure it's installed:
+   - add as dev dependency: @vercel/node
+2) Ensure handler does not rely on Express req/res objects.
+3) Ensure JSON parsing works even if req.body is string.
+   - if typeof req.body === "string" parse it safely.
+
+C) Environment Variables Validation (must be robust)
+- Read process.env.ADMIN_EMAIL and process.env.ADMIN_PASSWORD
+- If missing, return 500 with JSON:
+  { ok:false, error:"Missing env vars", missing:["ADMIN_EMAIL", ...] }
+- NEVER crash if env vars are missing.
+
+D) Implement safe handler with strong error capture
+- Wrap everything in try/catch
+- In catch, console.error("LOGIN_FUNCTION_ERROR", { message, stack })
+- Return 500 JSON: { ok:false, error:"Server error", detail: message }
+
+E) Response Format (important)
+For all responses set:
+- Content-Type: application/json
+Return:
+- 200: { ok:true }
+- 401: { ok:false, error:"Invalid credentials" }
+- 400: { ok:false, error:"Email and password required" }
+- 405: { ok:false, error:"Method not allowed" }
+- 500: { ok:false, error:"Server error", detail:"..." }
+
+F) Verify locally + Vercel behavior
+- Provide a curl command for POST testing.
+- Provide expected response examples.
+
+DELIVERABLES
+1) Show the final code of /api/auth/login.(ts|js).
+2) Show package.json changes (dependencies) if any.
+3) Mention if vercel.json exists and confirm /api/* rewrite is not broken.
+4) Explain in 3-5 lines why 500 happened and what was fixed.
+
+IMPLEMENTATION TEMPLATE (use this exact safe approach)
+
+- Handle req.method
+- Parse body safely:
+  let body = req.body;
+  if (typeof body === "string") body = JSON.parse(body);
+- Validate fields
+- Validate env vars
+- Compare credentials
+- Return JSON responses
+- try/catch with console.error including stack
+
+DO IT NOW.

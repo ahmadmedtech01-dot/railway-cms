@@ -1,0 +1,89 @@
+You are a Senior Full-Stack Engineer.
+
+GOAL
+Fix 500 FUNCTION_INVOCATION_FAILED on Vercel and keep everything working on Replit.
+We must support BOTH:
+1) Replit: run backend with Express (node server)
+2) Vercel: run backend as Vercel Serverless Functions (/api/*)
+
+CURRENT ERROR (VERCEL LOGS)
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/var/task/server/db' imported from /var/task/api/index.js
+So Vercel functions are importing server/db and crashing.
+
+ABSOLUTE RULES
+1) Do NOT change any UI/UX.
+2) Do NOT break Replit local dev.
+3) Do NOT duplicate login logic in two places.
+4) Only restructure backend to be compatible with Vercel + Replit.
+5) All existing frontend API calls must keep working (same paths).
+
+TARGET ARCHITECTURE (MANDATORY)
+A) Shared handlers (single source of truth)
+- Create folder: server/handlers/
+- Put pure request handlers there that contain the actual logic (no express app initialization).
+Example:
+  server/handlers/authLogin.ts  -> exports function authLogin(reqData) or (req,res) compatible wrapper
+
+B) Replit Express server
+- Create/keep: server/index.ts
+- Express routes:
+  POST /api/auth/login -> calls shared handler
+- This server runs on Replit using "npm run dev:server" or similar.
+
+C) Vercel Functions
+- Create Vercel functions at repo root:
+  /api/auth/login.ts
+- This Vercel function must NOT import from "/server/db" in a way that breaks bundling.
+- It must import ONLY from shared handler using RELATIVE PATH that exists in repo:
+  import { authLoginVercel } from "../../server/handlers/authLogin"
+(or convert shared handler to a pure function and call it from both places)
+
+IMPORTANT: Avoid any "api/index.js" that imports server/db globally.
+Each Vercel endpoint should be its own file under /api/... to avoid crashing at import time.
+
+LOGIN FUNCTION SPEC
+Implement POST /api/auth/login:
+- parse JSON safely (req.body may be string)
+- validate email/password
+- compare with env vars:
+  ADMIN_EMAIL, ADMIN_PASSWORD
+- return JSON:
+  200 { ok:true }
+  401 { ok:false, error:"Invalid credentials" }
+  400 { ok:false, error:"Email and password required" }
+  405 { ok:false, error:"Method not allowed" }
+- wrap in try/catch + console.error with stack
+- NEVER crash even if env vars missing; return 500 JSON with missing keys list.
+
+COOKIE / SESSION (ONLY if already used)
+If the frontend already relies on cookie sessions, then set HttpOnly cookie on success.
+If not required, do not add sessions now.
+
+VERCEL CONFIG
+If vercel.json exists and SPA rewrites exist, ensure /api/* is excluded:
+{
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
+
+BUILD COMPATIBILITY REQUIREMENTS
+1) Make sure server/ folder is committed and included in GitHub.
+2) No absolute imports like "server/db" that rely on tsconfig paths unless configured.
+Use relative imports everywhere for Vercel functions.
+3) If TypeScript is used in /api functions, ensure build works on Vercel.
+Prefer plain JS for Vercel functions if TS causes build issues.
+
+DELIVERABLES (MUST SHOW)
+1) Final file tree for:
+   - server/index.(ts|js)
+   - server/handlers/authLogin.(ts|js)
+   - api/auth/login.(ts|js)
+2) Full code for each created/modified file
+3) package.json scripts:
+   - "dev" for Vite
+   - "dev:server" for express (replit)
+4) Explain in 5 lines why Vercel crashed and how this structure prevents it.
+
+DO NOT change anything else.

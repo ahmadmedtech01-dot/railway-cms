@@ -1,0 +1,123 @@
+SYSTEM ROLE:
+You are a Principal Full-Stack Engineer working on the EXISTING Secure Video CMS (Single Admin) in Replit.
+Task: Fix Vimeo ingest failure handling and diagnostics.
+Do NOT change overall UX/UI. Only improve the Vimeo import pipeline error handling + add a clear “what to do next” message.
+Do NOT embed Vimeo player (strict requirement remains).
+
+PROBLEM:
+We show error:
+“Vimeo file not available for download. Please upgrade to Vimeo Pro or upload directly.”
+This message is often wrong or too generic. We need accurate diagnostics:
+- token scopes missing (video_files)
+- video privacy prevents file access
+- downloads disabled
+- not owner or not permitted to access files
+- files/download array missing due to plan/settings
+
+GOAL:
+1) Make Vimeo import endpoint return a precise error code + reason.
+2) Update UI to show exact next steps.
+3) Keep security: only OUR player, only OUR HLS.
+
+========================================================
+A) BACKEND: Improve Vimeo API parsing + diagnostics
+========================================================
+Update server/src/lib/vimeo.ts (or create it) with:
+
+1) vimeoFetchVideo(vimeoId)
+- GET https://api.vimeo.com/videos/{id}
+- Authorization: Bearer ${VIMEO_ACCESS_TOKEN}
+
+2) vimeoExtractFileLinks(videoJson)
+Return:
+{
+  progressiveMp4s: Array<{ quality: string, link: string, size?: number }>,
+  hasFilesField: boolean,
+  hasDownloadField: boolean,
+  rawPrivacy?: any
+}
+
+Try to parse BOTH (depending on Vimeo response):
+- videoJson.files (some accounts expose progressive mp4 or hls)
+- videoJson.download (some accounts expose downloadable mp4)
+Pick best MP4:
+- Highest resolution/bitrate among progressive mp4.
+
+3) vimeoDiagnoseNoFileAccess(videoJson, httpStatus)
+Return { code, message, hints[] } based on:
+- If status 401/403:
+  code="VIMEO_UNAUTHORIZED"
+  message="Vimeo token is invalid or lacks required scopes."
+  hints=["Generate a Personal Access Token with scopes: public, private, video_files.", "Ensure the token belongs to the Vimeo account that owns this video."]
+- If status 404:
+  code="VIMEO_NOT_FOUND"
+  message="Video not found or not accessible with this token."
+  hints=["Check the Vimeo ID", "Ensure the video is owned by the token account or shared appropriately."]
+- If status 200 but no MP4 links in files/download:
+  code="VIMEO_NO_DOWNLOAD_LINKS"
+  message="Vimeo did not expose any downloadable MP4/HLS links for this video."
+  hints MUST be accurate and not claim upgrade only:
+   - "In Vimeo video settings, enable downloads (if available)."
+   - "Check privacy: the API may hide file links for private videos depending on settings."
+   - "Ensure your token has video_files scope and you are the owner."
+   - "If file links cannot be exposed, upload the original file to CMS (recommended for security)."
+Optionally mention plan as “may be required”, not guaranteed:
+  - "Some Vimeo plans/settings may restrict access to video files via API."
+
+4) Update Vimeo import endpoint:
+POST /api/videos/import/vimeo
+- If no link:
+  return 422 with json:
+  { ok:false, code:"VIMEO_NO_DOWNLOAD_LINKS", message, hints:[...] }
+- Store in DB:
+  videos.status='error'
+  videos.last_error=message
+  videos.last_error_code=code (add column)
+  videos.last_error_hints=jsonb (add column)
+
+DB migration:
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS last_error_code text;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS last_error_hints jsonb DEFAULT '[]'::jsonb;
+
+========================================================
+B) FRONTEND: Show correct fix steps (minimal UI change)
+========================================================
+Where you currently show “Playback Error: HLS not available” or Vimeo import error:
+- If error code == VIMEO_NO_DOWNLOAD_LINKS:
+  Show a nice card:
+  Title: “Vimeo file links not available”
+  Body: show message
+  Bullet list: hints[] (from API)
+  Primary CTA: “Upload the file directly to CMS” (takes user to Upload-from-PC step)
+  Secondary CTA: “Retry import” (calls endpoint again)
+
+- If error code == VIMEO_UNAUTHORIZED:
+  Show:
+  “Your Vimeo token is missing scopes or is not allowed. Update token and try again.”
+  CTA: open System Settings → Vimeo token section.
+
+========================================================
+C) DO NOT MISLEAD
+========================================================
+Remove hard statement “Please upgrade to Vimeo Pro”.
+Replace with:
+“Vimeo may be restricting file links due to plan OR privacy settings OR token permissions.
+Best solution: upload original file to CMS for secure playback.”
+
+========================================================
+D) OPTIONAL: Add Vimeo Token Scope Check (nice-to-have)
+========================================================
+In /api/integrations/vimeo/health:
+- Call GET https://api.vimeo.com/me
+- If ok, show “Token valid”.
+- If Vimeo response includes scopes info (sometimes not), display it.
+NEVER display token.
+
+========================================================
+DELIVERABLES:
+- Updated Vimeo import endpoint returns structured error {code,message,hints}
+- DB stores last_error_code + last_error_hints
+- UI shows a clear actionable fix flow
+- No Vimeo iframe embeds introduced
+- No claim of guaranteed plan requirement unless confirmed by API
+IMPLEMENT NOW.

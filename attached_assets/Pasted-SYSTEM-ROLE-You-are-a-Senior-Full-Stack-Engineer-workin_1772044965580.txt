@@ -1,0 +1,123 @@
+SYSTEM ROLE:
+You are a Senior Full-Stack Engineer working on my EXISTING Replit app (React + TypeScript + Vite + Node/Express).
+This is a SURGICAL FEATURE ADD. Additive changes only.
+
+ABSOLUTE RULES:
+1) Do NOT change any existing UI/UX layout, routes, screens, flows, or styling except adding the exact controls requested.
+2) Do NOT refactor/rewrite. Minimal localized edits only.
+3) Do NOT break existing video upload/stream/security logic.
+4) Implement using the SAME storage bucket/config already used for videos (same provider + credentials + env vars).
+
+================================================================================
+FEATURE 1: Upload Watermark + Logo to SAME VIDEO BUCKET
+================================================================================
+Goal:
+When admin uploads watermark image / logo image, it must be stored in the SAME bucket that stores videos (same configuration), under separate folders/paths.
+
+Requirements:
+- Reuse existing bucket setup (same API keys, same client, same environment variables).
+- Save files in:
+  /assets/logos/<uniqueId>.<ext>
+  /assets/watermarks/<uniqueId>.<ext>
+- Store metadata in DB (existing DB system):
+  - id
+  - type: "logo" | "watermark"
+  - bucketKey/path
+  - publicAccess: false (keep private if you are proxy-serving assets)
+  - createdAt
+- Add backend endpoints:
+  1) POST /api/assets/logo/upload
+  2) POST /api/assets/watermark/upload
+  (multipart/form-data)
+- Response should return:
+  { assetId, bucketKey, previewUrl }
+- previewUrl must be my app URL (NOT the bucket URL). Serve via proxy:
+  GET /api/assets/:assetId/view  -> streams image securely.
+
+Front-end:
+- Wherever watermark/logo upload currently exists, wire it to these endpoints.
+- Show upload progress + success toast (no layout changes).
+
+================================================================================
+FEATURE 2: Ticker Appearance Controls (Color/Size/Background)
+================================================================================
+Goal:
+Allow admin to customize the ticker overlay appearance on videos.
+
+Add EXACT settings (no extra UI redesign):
+- Ticker Text Color (color picker + hex input)
+- Ticker Font Size (slider or number input, px)
+- Ticker Background Color (color picker + hex input)
+
+Rules:
+- Changes should update preview instantly.
+- Save settings per:
+  A) Global settings (applies to all videos when Global ON)
+  B) Video-level settings (overrides when Global OFF for that video)
+(Use your existing “Global vs Individual” toggle system — do not reimplement from scratch.)
+
+Data model:
+- tickerTextColor: string (hex)
+- tickerFontSizePx: number
+- tickerBgColor: string (hex)
+Provide sensible defaults if missing.
+
+Rendering:
+- Apply styles in the ticker overlay component only.
+- Do NOT change ticker position/behavior unless necessary.
+
+================================================================================
+FEATURE 3: Author Name Overlay (Top Right) + Styling Controls
+================================================================================
+Goal:
+Show Author Name on the TOP RIGHT corner of the video overlay.
+
+Requirements:
+- Display text: "Author: <authorName>" OR just "<authorName>" (follow existing content pattern).
+- Position: top-right, padding 12–16px, responsive safe area
+- Add controls:
+  1) Author Text Size (px)
+  2) Author Text Color (hex)
+  3) Author Opacity (0–100% slider)
+  4) Author Background Color (hex + allow transparent)
+  5) Author Text Style (dropdown):
+     - Normal
+     - Bold
+     - Italic
+     - Bold Italic
+
+Storage:
+- Save settings in the same settings structure as ticker (global + per-video).
+Fields:
+- authorEnabled: boolean (default ON if authorName exists)
+- authorName: string (pull from video metadata OR global author if you already have it)
+- authorFontSizePx: number
+- authorTextColor: string
+- authorOpacity: number (0–1)
+- authorBgColor: string
+- authorTextStyle: "normal"|"bold"|"italic"|"bold_italic"
+
+Rendering:
+- Implement as a separate overlay element layered above video, z-index higher than player controls but not blocking clicks (pointer-events: none).
+- Must not interfere with fullscreen or mobile.
+
+================================================================================
+DO NOT CHANGE ANYTHING ELSE
+================================================================================
+- No changes to security violation logic
+- No changes to video streaming endpoints
+- No changes to bucket keys for videos (only add new folders)
+- No UI redesign: just add the requested controls in existing settings area.
+
+================================================================================
+DELIVERABLES
+================================================================================
+1) Backend upload endpoints for logo/watermark using SAME bucket config
+2) Secure asset view endpoint (proxy stream) returning correct image content-type
+3) Frontend wiring for uploads + preview
+4) Add ticker styling settings (text color, size, bg color) global + per-video
+5) Add author overlay top-right + style controls global + per-video
+6) Persist + load settings correctly; defaults if missing
+7) Ensure no layout regressions and app compiles.
+
+IMPLEMENT NOW WITH SURGICAL CHANGES ONLY.

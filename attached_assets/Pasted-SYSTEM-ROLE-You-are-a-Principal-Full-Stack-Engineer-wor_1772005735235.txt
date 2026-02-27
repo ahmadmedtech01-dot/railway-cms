@@ -1,0 +1,135 @@
+SYSTEM ROLE:
+You are a Principal Full-Stack Engineer working on an EXISTING Replit project “Secure Video CMS (Single Admin)”.
+Fix ONLY the issue: Video shows “Ready” but player says “HLS not available” for Vimeo source URLs.
+Do NOT change UI layout/UX except adding minimal status messaging and a single “Start Import / Convert to HLS” action if needed.
+
+ROOT CAUSE (ASSUME THIS IS TRUE):
+- The player can only play HLS from our storage (hls_master_key).
+- For Vimeo source_type, app is saving only source_url, not ingesting/converting, so hls_master_key is NULL.
+- UI incorrectly shows status “Ready” even when hls_master_key is missing.
+
+GOAL:
+1) Prevent “Ready” state unless HLS exists.
+2) Implement Vimeo import pipeline so HLS becomes available.
+3) Improve error messaging: show exactly what is missing and how to fix.
+
+===========================================================
+A) DATA MODEL + RULES
+===========================================================
+Rule 1: A video is PLAYABLE ONLY IF:
+- status == 'ready'
+- hls_master_key is NOT NULL (or master manifest URL present)
+Rule 2: If source_type == 'vimeo' or 'youtube' or any external provider:
+- Never set status='ready' unless HLS has been generated/mirrored into our storage.
+
+DB migration:
+- Ensure videos table has:
+  - status (draft|uploading|processing|ready|error)
+  - hls_master_key text null
+  - last_error text null
+  - source_type text
+  - source_url text
+Add:
+- needs_hls boolean default false (optional)
+OR compute needs_hls dynamically (hls_master_key IS NULL).
+
+===========================================================
+B) FRONTEND FIXES (Minimal)
+===========================================================
+1) Wherever status badge is shown (“Ready”):
+- Compute derivedStatus:
+  - if status=='ready' AND !hls_master_key -> show “Needs HLS” (warning)
+  - if status=='processing' -> show Processing
+  - if status=='error' -> show Error
+  - else show status
+
+2) Live Preview panel:
+- If !hls_master_key:
+  - Show a friendly card instead of the player error:
+    Title: “HLS not available”
+    Body: “This video is not yet converted into HLS for the custom player.”
+    CTA button: “Start Import/Convert to HLS”
+- If hls_master_key exists: load our player normally.
+
+3) Video Details “Source Type = vimeo”:
+- Show a small notice:
+  “Vimeo URLs must be imported into CMS to generate HLS. The Vimeo iframe player is not used.”
+
+===========================================================
+C) BACKEND: ADD A SINGLE ENDPOINT TO FIX IT
+===========================================================
+Add endpoint:
+POST /api/videos/:id/build-hls-from-source
+
+Behavior:
+- Load video by id
+- Validate admin auth
+- If source_type == 'vimeo':
+  - Extract Vimeo ID from source_url (support vimeo.com/123 and player.vimeo.com/video/123)
+  - Call Vimeo API (requires VIMEO_ACCESS_TOKEN)
+  - Attempt to get a direct progressive MP4 file URL from Vimeo API response:
+    Prefer `files` where type='video/mp4' and link exists, pick highest quality.
+  - If no MP4 direct link found:
+    - Update videos.status='error'
+    - last_error = "Vimeo did not provide a downloadable MP4/HLS via API. Enable downloads/privacy settings or upload the file directly."
+    - Return 400 with message
+  - If MP4 found:
+    - Set videos.status='processing', last_error=NULL
+    - Download MP4 as stream (do NOT buffer entire file)
+    - Upload to storage (S3 or Supabase Storage):
+      raw/{videoId}/source.mp4
+    - Run ffmpeg to generate HLS variants and master manifest:
+      hls/{videoId}/master.m3u8 and segment files
+    - Upload HLS outputs to storage
+    - Update videos:
+      - hls_master_key='hls/{videoId}/master.m3u8'
+      - status='ready'
+      - available=true
+      - last_error=NULL
+    - Return {ok:true}
+
+- If source_type == 'upload' and raw file exists but hls missing:
+  - Run ffmpeg pipeline similarly.
+
+- If source_type == 'youtube':
+  - Set error with message: "YouTube links not supported for custom player; upload file."
+
+IMPORTANT:
+- Do NOT embed Vimeo player iframe anywhere. Only play from our HLS.
+
+===========================================================
+D) PLAYER API: FAIL FAST WITH CLEAR MESSAGE
+===========================================================
+Wherever you generate manifest URL for player (e.g. /api/player/:publicId/manifest):
+- If hls_master_key is NULL:
+  - return 409 with json:
+    { code:"HLS_NOT_AVAILABLE", message:"HLS not available for this video." }
+Frontend should show the nice “Needs HLS” card (not generic playback error).
+
+===========================================================
+E) FIX THE STATUS BUG
+===========================================================
+Find the logic that sets status='ready' for link sources.
+Change it:
+- On Vimeo link creation, set status='processing' or 'draft' and hls_master_key=NULL
+- Never set ready until build-hls-from-source completes.
+
+===========================================================
+F) REQUIRED ENV VARS (Replit)
+===========================================================
+- VIMEO_ACCESS_TOKEN=...
+- AWS creds + bucket OR Supabase storage creds
+- FFMPEG installed/available in Replit environment (or use static ffmpeg binary)
+
+===========================================================
+G) DELIVERABLES
+===========================================================
+- Code changes implementing:
+  1) derivedStatus “Needs HLS” UI behavior
+  2) POST /api/videos/:id/build-hls-from-source
+  3) player manifest endpoint returns HLS_NOT_AVAILABLE when missing
+  4) status setting bug fixed (no false “Ready”)
+- Add small button in Video Detail Preview: “Start Import/Convert to HLS”
+- Keep all existing UI unchanged otherwise.
+
+IMPLEMENT NOW.

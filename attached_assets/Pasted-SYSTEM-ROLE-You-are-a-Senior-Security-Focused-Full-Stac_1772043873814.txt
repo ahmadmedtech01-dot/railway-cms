@@ -1,0 +1,153 @@
+SYSTEM ROLE:
+You are a Senior Security-Focused Full-Stack Engineer working on my EXISTING Replit web app.
+Stack: React + TypeScript (Vite) frontend + Node/Express backend. Videos are currently being downloaded by extensions (e.g., CocoCut).
+GOAL: Hide the original video URL and add 2–3 real “layers” so the video cannot be batch-fetched/downloaded easily, while keeping playback smooth (no buffering).
+
+===============================================================================
+IMMUTABLE RULES (ABSOLUTE)
+===============================================================================
+1) Do NOT change existing UX/UI, layout, routes, styling, flows. Only minimal wiring.
+2) Do NOT refactor or rewrite. Additive changes only + localized edits.
+3) Security must be enforced server-side (client checks don’t count).
+4) Keep streaming smooth: no frequent buffering.
+5) Integrate with my existing “violation limit + popup + 10 min block” logic (already in app). Do NOT redesign it.
+
+===============================================================================
+IMPORTANT REALITY
+===============================================================================
+This is not DRM. It will not stop screen recording. The goal is to:
+- Stop “download full video at once”
+- Make downloader extensions unreliable (must follow playback pace)
+- Detect abnormal fetch patterns quickly and block
+
+===============================================================================
+LAYER 1 — HIDE ORIGIN LINK (MANDATORY)
+===============================================================================
+Never expose the real storage URL (Backblaze B2 / S3 / any direct file link) to the browser.
+- Make bucket PRIVATE.
+- Browser must only request my domain endpoints.
+- Backend fetches objects using server credentials and pipes bytes to client.
+
+Create endpoints:
+1) POST /api/stream/start
+   Input: { videoId }
+   Output: { sessionId, streamSessionToken, expiresAt }
+
+2) GET /api/stream/:videoId/playlist.m3u8
+   Auth: streamSessionToken (Authorization header or cookie)
+   Output: server-generated HLS playlist (text/plain)
+   IMPORTANT: playlist must contain ONLY my protected segment URLs (no real storage URLs)
+
+3) GET /api/stream/:videoId/segment
+   Query: seg=<segmentName>&t=<chunkToken>
+   Output: stream the segment bytes
+   IMPORTANT: This endpoint retrieves the real segment privately from storage and pipes it to response.
+   NEVER return storage URLs.
+
+===============================================================================
+LAYER 2 — SHORT-LIVED PER-CHUNK TOKEN (MANDATORY)
+===============================================================================
+Each segment request must require a short-lived signed token expiring in ~12–20 seconds.
+
+Chunk token MUST bind:
+- userId (from auth)
+- videoId
+- sessionId
+- deviceHash (hash(userAgent + optional stable fingerprint))
+- segmentName
+- exp timestamp
+
+Rules:
+- Reject invalid/expired token with 403
+- On every 403 due to auth/token => increment security violation counter
+- Return response payload that frontend uses to show: “Security breach X/Y”
+
+Clock skew tolerance:
+- allow ±3 seconds to avoid buffering
+
+===============================================================================
+LAYER 3 — SLIDING WINDOW PLAYLIST + WINDOW ENFORCEMENT (MANDATORY)
+===============================================================================
+Do NOT return a full playlist containing all segments of the whole video.
+
+Instead:
+- Serve a rolling window playlist containing only NEXT 3–6 segments.
+- Force the player to refresh playlist every 10–12 seconds.
+- Backend tracks current segment index per session and enforces:
+  allowedIndexRange = [currentIndex - 1, currentIndex + 6]
+If requests arrive far ahead/out-of-window repeatedly -> violation.
+
+This prevents “batch download entire video” because the downloader can’t see all future segments and can’t request ahead.
+
+===============================================================================
+ABUSE DETECTION (REQUIRED)
+===============================================================================
+Add server-side behavior-based detection (NOT extension name based).
+
+Mark violations when:
+- Segment requests/min exceed normal playback (e.g., > 2x expected)
+- Too many out-of-order segments
+- Same sessionId used from multiple IPs/deviceHashes
+- Many parallel segment requests (concurrency > 2)
+
+On reaching violationLimit:
+- Block that video for 10 minutes (existing app behavior)
+- Return blockedUntil timestamp
+- Frontend shows existing “blocked for 10 min” UI (do not redesign)
+
+===============================================================================
+KEEP PLAYBACK SMOOTH (NO BUFFERING)
+===============================================================================
+HLS settings:
+- Segment duration: 2–4 seconds (NOT micro 0.5s)
+- Playlist refresh: every 10–12 seconds
+- Pre-sign segments in playlist for next window (3–6 segments)
+- Playlist response: Cache-Control: no-store
+- Segment response: allow short cache 5–15 seconds if safe
+- Use streaming/pipe response; avoid loading full file into memory
+
+===============================================================================
+PLAYER INTEGRATION (MINIMAL CHANGES)
+===============================================================================
+Update existing player to:
+1) call /api/stream/start when video opens
+2) load HLS from /api/stream/:videoId/playlist.m3u8
+3) refresh playlist every 10–12 seconds (or use hls.js live reload strategy)
+4) keep sending playback progress to server for window tracking:
+   POST /api/stream/:videoId/progress  { sessionId, currentIndex or currentTime } every 15 seconds
+
+NOTE:
+- Do not change player UI
+- Only update source URL and add background refresh/progress calls
+
+===============================================================================
+STORAGE ADAPTER (REQUIRED)
+===============================================================================
+Implement a storage fetcher module:
+- If Backblaze B2: use S3-compatible API or B2 SDK server-side
+- If local FS: read from disk
+- MUST support streaming segments by key/name
+- MUST never leak origin URL to client
+
+===============================================================================
+DELIVERABLES (WHAT TO BUILD NOW)
+===============================================================================
+1) Implement the new streaming endpoints (/start, /playlist.m3u8, /segment, /progress)
+2) Implement token signing/verification (JWT or HMAC signed string)
+3) Implement rolling playlist generator (windowed segments + signed URLs)
+4) Implement segment proxy that streams from private storage
+5) Add detection rules + integrate with existing violation popup + 10min block
+6) Add logs: reason codes (RATE_LIMIT, OUT_OF_WINDOW, TOKEN_EXPIRED, MULTI_IP, CONCURRENCY)
+7) Verify in browser Network tab: NO direct B2/S3 links appear
+8) Verify: normal viewing plays smoothly without buffering
+9) Verify: downloader extensions cannot fetch the full video rapidly; they get 403/blocked
+
+===============================================================================
+DO NOT DO
+===============================================================================
+- Do NOT add fake obfuscation (base64, renaming) as “security”
+- Do NOT expose real storage links
+- Do NOT return entire segment list in playlist
+- Do NOT change UI/UX
+
+NOW IMPLEMENT THIS IN MY EXISTING REPLIT CODEBASE WITH SURGICAL CHANGES ONLY.

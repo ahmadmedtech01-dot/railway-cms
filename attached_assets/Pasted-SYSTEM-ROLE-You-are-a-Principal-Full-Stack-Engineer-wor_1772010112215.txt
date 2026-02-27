@@ -1,0 +1,186 @@
+SYSTEM ROLE:
+You are a Principal Full-Stack Engineer working on my EXISTING Replit project: “Secure Video CMS (Single Admin)”.
+Task: Add Backblaze B2 (S3-Compatible) Storage integration end-to-end:
+- Storage connection settings in the app
+- Upload raw videos + HLS outputs to B2 bucket
+- Player should generate short-lived signed URLs from B2 for master.m3u8 and segments (playlist rewrite optional)
+- Save all configuration/metadata in Supabase Postgres DB (existing tables).
+
+ABSOLUTE RULES:
+1) Never hardcode secrets in code or frontend.
+2) B2 Application Key (secretAccessKey) must be stored ONLY in Replit Secrets (env vars).
+3) UI must NEVER display secrets; show masked “********”.
+4) Keep existing UX/UI intact. Only add B2 option inside existing “System Settings → Storage Connections”.
+
+MY ACTUAL B2 DETAILS (USE AS DEFAULTS IN UI):
+- Bucket name: mytestvideo
+- S3 endpoint: https://s3.ca-east-006.backblazeb2.com
+- Region label: ca-east-006  (for display only; endpoint is most important)
+- Access Key ID (keyID): a54c2d711411
+- Secret Application Key: stored in env var only
+
+========================================================
+A) ENV VARS IN REPLIT (REQUIRED)
+========================================================
+I will set these in Replit Secrets:
+- B2_KEY_ID=a54c2d711411
+- B2_APPLICATION_KEY=<MY_SECRET_APPLICATION_KEY>   (do not print it anywhere)
+- B2_S3_ENDPOINT=https://s3.ca-east-006.backblazeb2.com
+- B2_BUCKET=mytestvideo
+
+IMPORTANT:
+- Backend should read env vars for credentials.
+- App Settings UI will store only non-secret config in DB (bucket/endpoint/prefixes).
+
+========================================================
+B) DB (Supabase Postgres) CHANGES
+========================================================
+If storage_connections table exists:
+- Ensure provider allows 'backblaze_b2'
+- config jsonb for backblaze_b2 must store:
+  {
+    "endpoint": "https://s3.ca-east-006.backblazeb2.com",
+    "bucket": "mytestvideo",
+    "rawPrefix": "raw/",
+    "hlsPrefix": "hls/"
+  }
+
+NOTE:
+- Do NOT store B2_APPLICATION_KEY in DB.
+
+Add migration if needed:
+- ALTER TABLE storage_connections ... provider enum/constraint update to include 'backblaze_b2'
+- No secret fields added.
+
+========================================================
+C) BACKEND IMPLEMENTATION (Node/Express TS)
+========================================================
+1) Create: server/src/lib/b2.ts
+Implement a Backblaze S3-compatible client using AWS SDK v3:
+
+- import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
+- import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
+
+makeB2Client(config):
+- endpoint = config.endpoint || process.env.B2_S3_ENDPOINT
+- credentials:
+   accessKeyId = process.env.B2_KEY_ID
+   secretAccessKey = process.env.B2_APPLICATION_KEY
+- region: "us-east-1" is acceptable for S3-compatible signing OR use config.region if you store it
+- forcePathStyle: true
+
+Functions:
+- presignPutObject(bucket, key, contentType, ttl=300)
+- presignGetObject(bucket, key, ttl=90)
+- headObject(bucket, key)
+
+2) Extend existing storage abstraction:
+Where the code currently supports AWS S3 or Supabase Storage,
+add provider case: 'backblaze_b2'
+- For upload: presignPutObject
+- For playback: presignGetObject
+
+3) Add admin-only endpoint:
+POST /api/storage-connections/test
+Body: { connectionId }
+Behavior:
+- Load connection from DB
+- If provider == backblaze_b2:
+  - Create presigned PUT URL for key: raw/__healthcheck.txt
+  - Server performs PUT small "ok" using fetch to that signed URL
+  - Then HEAD the same key via SDK headObject
+Return { ok:true, message:"B2 connection working" } else { ok:false, message:"..." }
+DO NOT return secrets.
+
+4) Upload Pipeline updates:
+When Admin uploads a file OR when ffmpeg generates HLS:
+- Determine active_storage_connection from DB
+If provider == backblaze_b2:
+- Raw upload key: raw/{videoId}/{originalFilename}
+- HLS output prefix: hls/{videoId}/
+- Save:
+  videos.raw_object_key
+  videos.hls_master_key = hls/{videoId}/master.m3u8
+  videos.active_storage_connection_id
+- Ensure status updates: uploading -> processing -> ready
+
+5) Player manifest signing:
+Update existing /api/player/:publicId/manifest (or equivalent):
+- Verify token/security as already implemented
+- Read video.hls_master_key
+- Load active storage connection
+If provider == backblaze_b2:
+- Return a short-lived signed URL for master.m3u8:
+  presignGetObject(bucket, hls_master_key, ttl = video_security_settings.signed_url_ttl (default 90))
+If playlist rewrite feature exists:
+- Serve playlist through backend and rewrite segment URIs into signed URLs using presignGetObject per segment.
+
+========================================================
+D) FRONTEND SETTINGS UI (System Settings → Storage Connections)
+========================================================
+Add Backblaze B2 option:
+Provider dropdown:
+- AWS S3
+- Supabase Storage
+- Backblaze B2 (S3 Compatible)
+
+When Backblaze selected show fields with defaults:
+- Connection Name (default: “Backblaze B2 - mytestvideo”)
+- Bucket Name (default: mytestvideo)
+- S3 Endpoint (default: https://s3.ca-east-006.backblazeb2.com)
+- Raw Prefix (default raw/)
+- HLS Prefix (default hls/)
+- Credentials note (read-only text):
+  “B2 credentials are stored in server secrets:
+   B2_KEY_ID and B2_APPLICATION_KEY (not shown in UI).”
+
+Buttons:
+- Test Connection
+- Set Active
+- Edit
+- Delete
+
+Show Active badge.
+
+IMPORTANT:
+Never show the application key. Never ask for it in UI.
+(Only optional: ask keyID as display-only; but keyID already in env.)
+
+========================================================
+E) B2 BUCKET CORS (IMPORTANT NOTE)
+========================================================
+Add a help text in UI “CORS Rules recommended”:
+- If you serve HLS signed URLs directly from B2 to browser, B2 must allow CORS for GET.
+- Provide a copy-paste CORS JSON example in UI help text (not required to auto-set).
+
+Example CORS rules to display:
+[
+  {
+    "corsRuleName":"cms-hls",
+    "allowedOrigins":["https://YOUR_PLAYER_DOMAIN"],
+    "allowedHeaders":["*"],
+    "allowedOperations":["b2_download_file_by_name","b2_download_file_by_id"],
+    "exposeHeaders":["ETag","Content-Range","Accept-Ranges"],
+    "maxAgeSeconds":3600
+  }
+]
+(Show as guidance only; do not auto apply.)
+
+========================================================
+F) QA CHECKS
+========================================================
+1) Add a smoke test flow:
+- Create storage connection Backblaze B2
+- Set Active
+- Test connection
+- Upload mp4 -> raw stored in B2
+- Generate HLS -> stored in B2 under hls/{videoId}/
+- Player loads master.m3u8 via signed URL and plays in our custom player
+
+2) Ensure no secrets appear in:
+- frontend state
+- api responses
+- server logs
+
+DELIVERABLE:
+Implement B2 provider fully with minimal changes to existing system and a working test button.

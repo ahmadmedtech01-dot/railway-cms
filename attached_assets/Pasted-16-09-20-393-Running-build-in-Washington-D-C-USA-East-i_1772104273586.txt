@@ -1,0 +1,62 @@
+16:09:20.393 Running build in Washington, D.C., USA (East) – iad1
+16:09:20.393 Build machine configuration: 2 cores, 8 GB
+16:09:20.552 Cloning github.com/ahmadmedtech01-dot/video-cms (Branch: main, Commit: 0eed16c)
+16:09:21.663 Cloning completed: 1.110s
+16:09:21.821 Found .vercelignore
+16:09:21.831 Removed 1 ignored files defined in .vercelignore
+16:09:21.831   /api/index.ts
+16:09:21.948 Restored build cache from previous deployment (5WCmVjqkJAYq9qERMSk5qpcqTX3G)
+16:09:23.348 Running "vercel build"
+16:09:23.948 Vercel CLI 50.23.2
+16:09:24.595 Installing dependencies...
+16:09:26.319 
+16:09:26.320 up to date in 1s
+16:09:26.320 
+16:09:26.320 81 packages are looking for funding
+16:09:26.321   run `npm fund` for details
+16:09:26.559 
+16:09:26.559 > rest-express@1.0.0 build
+16:09:26.559 > tsx script/build.ts
+16:09:26.560 
+16:09:27.647 building client...
+16:09:27.758 [36mvite v7.3.0 [32mbuilding client environment for production...[36m[39m
+16:09:28.066 transforming...
+16:09:29.420 
+16:09:29.421 A PostCSS plugin did not pass the `from` option to `postcss.parse`. This may cause imported assets to be incorrectly transformed. If you've recently added a PostCSS plugin that raised this warning, please contact the package author to fix the issue.
+16:09:33.665 [32m✓[39m 2051 modules transformed.
+16:09:34.263 rendering chunks...
+16:09:34.285 computing gzip size...
+16:09:34.320 [2m../dist/public/[22m[32mindex.html                 [39m[1m[2m    2.01 kB[22m[1m[22m[2m │ gzip:   0.76 kB[22m
+16:09:34.320 [2m../dist/public/[22m[2massets/[22m[35mindex-Dm7cxQg6.css  [39m[1m[2m   82.06 kB[22m[1m[22m[2m │ gzip:  13.72 kB[22m
+16:09:34.321 [2m../dist/public/[22m[2massets/[22m[36mindex-Dr09vC6u.js   [39m[1m[33m1,064.91 kB[39m[22m[2m │ gzip: 324.20 kB[22m
+16:09:34.321 [32m✓ built in 6.29s[39m
+16:09:34.321 [33m
+16:09:34.321 (!) Some chunks are larger than 500 kB after minification. Consider:
+16:09:34.321 - Using dynamic import() to code-split the application
+16:09:34.321 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+16:09:34.321 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+16:09:34.322 building server...
+16:09:34.652 
+16:09:34.652   dist/index.cjs  1.4mb ⚠️
+16:09:34.652 
+16:09:34.652 ⚡ Done in 320ms
+16:09:34.654 building vercel api function (ESM)...
+16:09:34.657 ✘ [ERROR] Could not resolve "api/index.ts"
+16:09:34.657 
+16:09:34.659 1 error
+16:09:34.661 Error: Build failed with 1 error:
+16:09:34.661 error: Could not resolve "api/index.ts"
+16:09:34.661     at failureErrorWithLog (/vercel/path0/node_modules/esbuild/lib/main.js:1467:15)
+16:09:34.661     at /vercel/path0/node_modules/esbuild/lib/main.js:926:25
+16:09:34.661     at /vercel/path0/node_modules/esbuild/lib/main.js:878:52
+16:09:34.661     at buildResponseToResult (/vercel/path0/node_modules/esbuild/lib/main.js:924:7)
+16:09:34.662     at /vercel/path0/node_modules/esbuild/lib/main.js:951:16
+16:09:34.662     at responseCallbacks.<computed> (/vercel/path0/node_modules/esbuild/lib/main.js:603:9)
+16:09:34.662     at handleIncomingPacket (/vercel/path0/node_modules/esbuild/lib/main.js:658:12)
+16:09:34.662     at Socket.readFromStdout (/vercel/path0/node_modules/esbuild/lib/main.js:581:7)
+16:09:34.662     at Socket.emit (node:events:508:28)
+16:09:34.662     at addChunk (node:internal/streams/readable:559:12) {
+16:09:34.662   errors: [Getter/Setter],
+16:09:34.662   warnings: [Getter/Setter]
+16:09:34.662 }
+16:09:34.714 Error: Command "npm run build" exited with 1

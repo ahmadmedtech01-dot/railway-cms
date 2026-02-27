@@ -1,0 +1,160 @@
+SYSTEM ROLE:
+You are a Senior Full-Stack Engineer working on an EXISTING Video CMS on Replit.
+Frontend: React + TypeScript + Vite.
+Backend: Node/Express (or existing server routes).
+DB for now: Replit Database (@replit/database).
+In future: Supabase. So build a DB-agnostic repository layer now.
+
+This is an ADDITIVE feature only. Do NOT redesign UI. Keep existing screens/layout/styles/routes intact.
+Minimal localized changes only. App must compile and run.
+
+====================================================================
+IMMUTABLE RULES (ABSOLUTE)
+====================================================================
+1) Do NOT change existing UX/UI layout, styling, spacing, or flows.
+2) Do NOT refactor unrelated code.
+3) Do NOT rename/move files unless strictly required.
+4) Keep the current Security tab UI (toggle cards etc.) EXACTLY.
+5) Additive changes only, default-safe behavior.
+6) DB is Replit DB now, but MUST be swappable to Supabase later by changing ONLY the repository implementation file.
+
+====================================================================
+FEATURE: GLOBAL + INDIVIDUAL VIDEO SECURITY SETTINGS
+====================================================================
+
+GOAL:
+A) Add a "Global Security" settings page in the main navigation.
+B) Keep "Security" inside each individual video settings page.
+C) Add per-video toggle: "Use Global Settings".
+   - If ON: global settings apply to that video; individual settings ignored.
+   - If OFF: only the individual settings apply to that video.
+D) All enforcement/player logic must use EFFECTIVE settings (resolved global vs individual).
+
+====================================================================
+ARCHITECTURE REQUIREMENT: REPOSITORY LAYER
+====================================================================
+Create an interface that abstracts storage so we can later swap to Supabase:
+
+File: server/security/securityRepo.ts
+Export:
+- type SecuritySettings
+- const defaultSecuritySettings
+- interface SecurityRepo {
+    getGlobal(): Promise<SecuritySettings>
+    saveGlobal(settings: SecuritySettings): Promise<void>
+    getVideo(videoId: string): Promise<SecuritySettings | null>
+    saveVideo(videoId: string, settings: SecuritySettings): Promise<void>
+    getUseGlobal(videoId: string): Promise<boolean>
+    setUseGlobal(videoId: string, useGlobal: boolean): Promise<void>
+  }
+
+Then implement Replit DB version in:
+File: server/security/securityRepo.replitdb.ts
+This is the ONLY file to replace later with Supabase implementation.
+
+Create a small factory:
+File: server/security/securityRepoFactory.ts
+- choose repo implementation based on env var STORAGE_DRIVER = "replitdb" | "supabase"
+- default to replitdb for now
+
+IMPORTANT: Keep API routes calling repo via factory only (never import @replit/database directly outside repo file).
+
+====================================================================
+DATA MODEL (Replit Database Keys)
+====================================================================
+Use keys (inside securityRepo.replitdb.ts only):
+- "security:global"
+- `security:video:${videoId}`
+- `security:useGlobal:${videoId}`
+
+Fallback:
+- If global missing -> initialize with defaults and store it.
+- If video settings missing -> return null (and effective settings will fallback to global).
+
+====================================================================
+SECURITY SETTINGS SCHEMA (match existing UI)
+====================================================================
+type SecuritySettings = {
+  blockVideoRecording: boolean
+  blockScreenshots: boolean
+  disableRightClick: boolean
+  blockDevTools: boolean
+  enableFocusMode: boolean
+  disableDownloads: boolean
+  requireFullscreen: boolean
+  antiScreenSharing: boolean
+  violationLimit: number
+  allowedBrowsers: string[]
+  // optional future fields (store-ready):
+  signedUrlTTLSeconds?: number
+  maxConcurrentSessions?: number
+  watermarkEnabled?: boolean
+  watermarkFields?: { name:boolean; email:boolean; userId:boolean; timestamp:boolean }
+  maxPlaybackSpeed?: number
+}
+
+Provide defaultSecuritySettings with sane defaults.
+
+====================================================================
+BACKEND API ROUTES
+====================================================================
+Implement these routes in server (Express/router):
+
+GET  /api/security/global
+POST /api/security/global
+
+GET  /api/security/video/:videoId
+POST /api/security/video/:videoId
+
+GET  /api/security/video/:videoId/use-global
+POST /api/security/video/:videoId/use-global   body: { useGlobal: boolean }
+
+GET  /api/security/effective/:videoId
+- if useGlobal true -> global
+- else -> video settings if exists, else global
+
+Validation:
+- Validate videoId
+- Validate payload types (zod preferred)
+Headers:
+- Cache-Control: no-store
+
+====================================================================
+FRONTEND UI REQUIREMENTS
+====================================================================
+1) Add navigation item: "Global Security"
+2) Create a GlobalSecurity page that reuses the SAME SecuritySettings UI component.
+3) Update individual video Security page:
+   - Add a top toggle: "Use Global Settings" (small row, no layout change)
+   - When ON:
+     a) show pill label "Using Global Settings"
+     b) disable all settings controls (read-only) except the toggle
+     c) disable/hide individual Save
+   - When OFF:
+     a) enable controls
+     b) Save writes to video settings endpoint
+4) Player/security enforcement must fetch effective settings only:
+   use GET /api/security/effective/:videoId
+
+====================================================================
+IMPLEMENTATION STEPS
+====================================================================
+1) Create shared types: src/types/security.ts (client) and server/security/securityTypes.ts (server)
+   Keep schemas aligned; optionally export from one place if project structure supports.
+2) Create shared UI component: <SecuritySettingsForm />
+   Props: value, onChange, disabled, onSave, showSaveButton
+   MUST render existing card toggles EXACTLY (reuse existing components).
+3) Add GlobalSecurity page and route.
+4) Add "Use Global" toggle in video security screen and wire endpoints.
+5) Update enforcement to use effective settings.
+
+====================================================================
+TEST CASES (must pass)
+====================================================================
+1) Global settings persist and reload.
+2) Video with useGlobal=ON follows global instantly.
+3) Video with useGlobal=OFF stays independent.
+4) Missing video settings falls back safely to global.
+5) No UI layout changes (only disabled state/pill label).
+
+Now implement this in my Replit project with clean, type-safe code, minimal localized edits, and future migration readiness (only repo file should change later).
