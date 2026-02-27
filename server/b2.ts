@@ -11,8 +11,8 @@ export interface B2Config {
 export function makeB2Client(config: B2Config = {}): S3Client {
   const endpoint = config.endpoint || process.env.B2_S3_ENDPOINT || "";
   if (!endpoint) throw new Error("B2_S3_ENDPOINT not configured");
-  const accessKeyId = process.env.B2_KEY_ID || "";
-  const secretAccessKey = process.env.B2_APPLICATION_KEY || "";
+  const accessKeyId = (process.env.B2_KEY_ID || "").trim();
+  const secretAccessKey = (process.env.B2_APPLICATION_KEY || "").trim();
   if (!accessKeyId || !secretAccessKey) throw new Error("B2_KEY_ID or B2_APPLICATION_KEY not set in environment");
   return new S3Client({
     endpoint,
