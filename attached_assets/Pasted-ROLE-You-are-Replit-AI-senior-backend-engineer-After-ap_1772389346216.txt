@@ -1,0 +1,149 @@
+ROLE
+You are Replit AI (senior backend engineer). After applying my AES-128 “single transcode” changes, the transcoding progress UI is now stuck:
+“Transcoding: 00:00:00 encoded at 0x speed” and % no longer increases.
+Previously it showed ~5x speed and progress increased.
+
+You must FIX the transcoding job + progress reporting so it works again WITH AES-128 enabled.
+
+IMPORTANT
+- Do NOT revert the AES-128 single-pass requirement.
+- Keep encryption on first transcode.
+- Fix the progress tracking + worker execution so jobs actually run and UI updates correctly.
+
+========================================================
+SYMPTOMS
+========================================================
+- Video status shows Processing/Available but progress reads:
+  “00:00:00 encoded at 0x speed”
+- Progress percent does not increase.
+- Previously: “encoded at 5.7x speed” and time updated.
+
+========================================================
+LIKELY ROOT CAUSES (check all, fix the real one)
+========================================================
+A) FFMPEG is not actually running (spawn failing / path / permissions)
+- command changed to use key info file and now fails instantly
+- error is swallowed, job remains “processing” forever
+
+B) Parsing of ffmpeg progress got broken
+- ffmpeg stderr format differs when using AES flags
+- current regex expects “speed=5.7x” but encryption command emits different spacing/fields
+- or you switched from stderr to stdout incorrectly
+
+C) Background job not being awaited / job finishes before progress starts
+- upload route triggers async but returns, but now job function moved and promise not handled
+- or queue worker not started
+
+D) You are reading wrong log stream
+- progress reader uses a temp file or pipe that no longer exists
+- you switched to `-progress pipe:1` but UI still parses stderr
+
+E) “0x speed” appears when ffmpeg is waiting on input or stuck
+- input path wrong (file not found) or not accessible after upload
+- encryption key info file points to a non-existent key URI or path
+- output directory not writable
+
+========================================================
+REQUIRED FIXES (IMPLEMENT)
+========================================================
+1) Make ffmpeg progress reliable (do this even if current method exists)
+Update runFfmpegHls() to ALWAYS run ffmpeg with:
+- `-progress pipe:1`
+- `-nostats`
+Then parse key=value lines from STDOUT:
+Examples:
+out_time_ms=1234567
+speed=5.75x
+progress=continue
+progress=end
+
+Store:
+- out_time_ms
+- speed
+- percent = out_time_ms / duration_ms * 100
+
+Get duration_ms with ffprobe at job start (or parse from metadata).
+Do NOT depend on fragile stderr regex anymore.
+
+2) Ensure encryption paths are valid
+When AES-128 enabled:
+- Ensure key file exists on disk before starting ffmpeg
+- Ensure key_info.txt paths are correct:
+  key_info.txt must contain 3 lines:
+    1) key URI (what playlist references)  -> can be an API URL
+    2) key file path on disk (local path where ffmpeg reads key bytes)
+    3) optional IV (hex) OR blank
+- Ensure ffmpeg receives `-hls_key_info_file <path>` (or equivalent you use)
+
+Add explicit checks BEFORE spawn:
+- fs.existsSync(inputPath)
+- fs.existsSync(keyFilePath)
+- fs.existsSync(keyInfoPath)
+- ensure outputDir exists & writable
+
+If any check fails:
+- mark job failed with error message
+- do NOT keep “processing”.
+
+3) Do not swallow ffmpeg errors
+- Capture stderr fully into logs
+- If ffmpeg exits non-zero:
+  - update DB status = failed
+  - store lastError (first 2k chars)
+  - return/throw
+
+4) Fix “0x speed stuck” by ensuring input remains available
+If you transcode from an uploaded temp file:
+- Ensure the temp upload file is not deleted before ffmpeg completes.
+- If you moved transcode into background after uploading to B2:
+  - download file first OR keep local copy until done.
+
+5) Fix UI polling of progress
+- Ensure the endpoint/UI is reading progress fields that you update.
+- If UI expects “transcodeProgress” table/fields, write them.
+- If you previously parsed ffmpeg logs and stored “speed” and “time”, restore those fields.
+
+========================================================
+WHAT TO DO IN CODE (STEP BY STEP)
+========================================================
+A) Locate runFfmpegHls() in server utilities (where ffmpeg spawn happens).
+- Add `-progress pipe:1 -nostats`
+- Parse stdout lines into a progress object:
+  { out_time_ms, speed, progress }
+- Update DB every 1 second (throttle) with:
+  processedMs, speed, percent
+
+B) Locate transcodeAndStoreHls() / job runner.
+- Before calling ffmpeg:
+  - run ffprobe to get durationMs (store it)
+  - validate all file paths exist
+- After job completes:
+  - set progress=100, status=ready, encryptionKid set, etc.
+
+C) Update API endpoint used by UI for the “Transcoding: … encoded at …x speed”
+- Ensure it uses the new stored fields.
+- If speed missing, display “—” not 0x.
+
+D) Add console logs to verify:
+- “Starting ffmpeg … command …”
+- “progress: out_time_ms=… speed=… percent=…”
+- “ffmpeg exited with code …”
+
+========================================================
+ACCEPTANCE TESTS
+========================================================
+1) Upload a video with AES enabled:
+- Progress starts moving within 5 seconds.
+- Speed shows non-zero (e.g. 1x–10x).
+- Percent increases.
+- On completion, status becomes ready and AES banner not shown.
+
+2) If ffmpeg fails:
+- status becomes failed with meaningful error (not stuck “processing”).
+
+DELIVERABLE
+- Implement changes.
+- Show the exact files changed and the final code blocks for:
+  - runFfmpegHls progress parsing
+  - transcode job validation + failure handling
+  - progress fields updates

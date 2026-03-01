@@ -627,11 +627,28 @@ iframe.addEventListener('load', () => {
                   <div>
                     <p className="text-sm font-medium text-amber-700 dark:text-amber-400">Video is being processed</p>
                     {(video as any).processingProgress ? (
-                      <p className="text-xs text-muted-foreground mt-0.5" data-testid="text-processing-progress">
-                        {(video as any).processingProgress.stage === "uploading"
-                          ? "Transcoding complete — uploading segments to storage..."
-                          : `Transcoding: ${(video as any).processingProgress.time || "starting..."} encoded at ${(video as any).processingProgress.speed || "0x"} speed. This page refreshes automatically.`}
-                      </p>
+                      <>
+                        <p className="text-xs text-muted-foreground mt-0.5" data-testid="text-processing-progress">
+                          {(video as any).processingProgress.stage === "uploading"
+                            ? "Transcoding complete — uploading segments to storage..."
+                            : (() => {
+                                const p = (video as any).processingProgress;
+                                const time = p.time || "starting...";
+                                const speed = p.speed && p.speed !== "0x" ? p.speed : "—";
+                                const pct = p.percent != null ? ` (${p.percent}%)` : "";
+                                return `Transcoding: ${time} at ${speed} speed${pct}. Page auto-refreshes.`;
+                              })()}
+                        </p>
+                        {(video as any).processingProgress.percent != null && (
+                          <div className="mt-2 h-1.5 w-full rounded-full bg-amber-500/20 overflow-hidden">
+                            <div
+                              className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                              style={{ width: `${(video as any).processingProgress.percent}%` }}
+                              data-testid="bar-transcode-progress"
+                            />
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <div className="mt-1">
                         <p className="text-xs text-muted-foreground">Processing may be stalled. You can restart it below.</p>

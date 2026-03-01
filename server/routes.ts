@@ -137,6 +137,10 @@ async function uploadHlsDir(localDir: string, prefix: string, activeConn: Awaite
 async function transcodeAndStoreHls(videoId: string, inputPath: string, qualities: number[], connOverride?: any): Promise<void> {
   const hlsOutputDir = path.join(os.tmpdir(), "vcms-hls", videoId);
 
+  // Get duration up-front for accurate percent progress
+  const durationMs = await ffprobeDuration(inputPath);
+  log(`[transcode] Video ${videoId}: duration=${durationMs}ms, inputPath=${inputPath}`);
+
   const enc = generateEncryptionKey();
   const keyFilePath = path.join(hlsOutputDir, "enc.key");
   const keyInfoPath = path.join(hlsOutputDir, "key_info.txt");
@@ -144,7 +148,7 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
   fs.writeFileSync(keyFilePath, enc.keyBytes);
   createKeyInfoFile("enc.key", keyFilePath, enc.iv, keyInfoPath);
 
-  await runFfmpegHls(inputPath, hlsOutputDir, qualities, { keyInfoPath }, videoId);
+  await runFfmpegHls(inputPath, hlsOutputDir, qualities, { keyInfoPath }, videoId, durationMs);
 
   // Verify AES-128 was applied — every variant playlist must have EXT-X-KEY METHOD=AES-128
   const variantPlaylists: string[] = [];
@@ -361,10 +365,28 @@ function checkEntitlement(_userId: string, _videoId: string): { allowed: boolean
 }
 
 // ffmpeg HLS processing
-const transcodeProgress = new Map<string, { time: string; speed: string; stage: string }>();
+const transcodeProgress = new Map<string, { time: string; speed: string; stage: string; percent?: number }>();
 
-function getTranscodeProgress(videoId: string): { time: string; speed: string; stage: string } | null {
+function getTranscodeProgress(videoId: string): { time: string; speed: string; stage: string; percent?: number } | null {
   return transcodeProgress.get(videoId) || null;
+}
+
+async function ffprobeDuration(inputPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    const ff = spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      inputPath,
+    ]);
+    let out = "";
+    ff.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+    ff.on("close", () => {
+      const dur = parseFloat(out.trim());
+      resolve(isNaN(dur) || dur <= 0 ? 0 : Math.round(dur * 1000));
+    });
+    ff.on("error", () => resolve(0));
+  });
 }
 
 async function runFfmpegHls(
@@ -373,11 +395,25 @@ async function runFfmpegHls(
   qualities: number[],
   encryption?: { keyInfoPath: string },
   videoId?: string,
+  durationMs?: number,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-    const args: string[] = ["-i", inputPath, "-y"];
+    // Validate input before spawning — fail fast with a clear error
+    if (!fs.existsSync(inputPath)) {
+      return reject(new Error(`Input file not found: ${inputPath}`));
+    }
+    if (encryption) {
+      if (!fs.existsSync(encryption.keyInfoPath)) {
+        return reject(new Error(`AES key info file not found: ${encryption.keyInfoPath}`));
+      }
+      const keyInfoLines = fs.readFileSync(encryption.keyInfoPath, "utf8").split("\n");
+      const keyFilePath = (keyInfoLines[1] || "").trim();
+      if (!keyFilePath || !fs.existsSync(keyFilePath)) {
+        return reject(new Error(`AES key file not found at path referenced by key_info: ${keyFilePath}`));
+      }
+    }
 
     const qualityMap: Record<number, { vf: string; b: string; ba: string; maxrate: string; bufsize: string }> = {
       240: { vf: "scale=-2:240", b: "400k", ba: "64k", maxrate: "500k", bufsize: "1000k" },
@@ -390,13 +426,22 @@ async function runFfmpegHls(
     const selectedQualities = qualities.filter(q => qualityMap[q]);
     if (selectedQualities.length === 0) selectedQualities.push(720);
 
+    // -progress pipe:1 sends key=value progress blocks to stdout; -nostats suppresses the
+    // per-frame stderr line so stderr stays clean for error messages only.
+    const args: string[] = [
+      "-progress", "pipe:1",
+      "-nostats",
+      "-i", inputPath,
+      "-y",
+    ];
+
     selectedQualities.forEach((q, i) => {
       const cfg = qualityMap[q];
       args.push(
         `-map`, `0:v:0`, `-map`, `0:a:0`,
         `-c:v:${i}`, `libx264`, `-b:v:${i}`, cfg.b,
         `-maxrate:v:${i}`, cfg.maxrate, `-bufsize:v:${i}`, cfg.bufsize,
-        `-filter:v:${i}`, cfg.vf, `-c:a:${i}`, `aac`, `-b:a:${i}`, cfg.ba
+        `-filter:v:${i}`, cfg.vf, `-c:a:${i}`, `aac`, `-b:a:${i}`, cfg.ba,
       );
     });
 
@@ -417,36 +462,85 @@ async function runFfmpegHls(
 
     args.push(path.join(outputDir, "v%v/index.m3u8"));
 
-    log(`Running ffmpeg for HLS${encryption ? " (AES-128 encrypted)" : ""}...`);
-    if (videoId) transcodeProgress.set(videoId, { time: "00:00:00", speed: "0x", stage: "transcoding" });
+    log(`[ffmpeg] Starting HLS transcode${encryption ? " (AES-128)" : ""} | qualities=${selectedQualities.join(",")} | input=${inputPath}`);
+    log(`[ffmpeg] Command: ffmpeg ${args.join(" ")}`);
+
+    if (videoId) transcodeProgress.set(videoId, { time: "00:00:00", speed: "—", stage: "transcoding", percent: 0 });
+
     const proc = spawn("ffmpeg", args);
+    let stdoutBuf = "";
     let stderrBuf = "";
-    proc.stderr.on("data", (d) => {
-      process.stdout.write(d);
-      if (videoId) {
-        stderrBuf += d.toString();
-        const lines = stderrBuf.split("\r");
-        stderrBuf = lines[lines.length - 1];
-        for (const line of lines) {
-          const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
-          const speedMatch = line.match(/speed=\s*([\d.]+x)/);
-          if (timeMatch) {
-            transcodeProgress.set(videoId, {
-              time: timeMatch[1],
-              speed: speedMatch ? speedMatch[1] : "0x",
-              stage: "transcoding",
-            });
+
+    // Accumulate current progress block values
+    let curTimeMicros = -1;
+    let curSpeed = "";
+    let lastProgressUpdate = 0;
+
+    proc.stdout.on("data", (d: Buffer) => {
+      stdoutBuf += d.toString();
+      const lines = stdoutBuf.split("\n");
+      stdoutBuf = lines.pop() || "";
+
+      for (const line of lines) {
+        const eq = line.indexOf("=");
+        if (eq === -1) continue;
+        const key = line.slice(0, eq).trim();
+        const val = line.slice(eq + 1).trim();
+
+        if (key === "out_time_ms") {
+          // ffmpeg names this "out_time_ms" but value is in microseconds
+          curTimeMicros = parseInt(val, 10);
+        } else if (key === "out_time_us") {
+          curTimeMicros = parseInt(val, 10);
+        } else if (key === "speed") {
+          curSpeed = val;
+        } else if (key === "progress") {
+          // Flush accumulated values on each progress report
+          if (videoId && curTimeMicros >= 0) {
+            const now = Date.now();
+            if (now - lastProgressUpdate >= 500) {
+              lastProgressUpdate = now;
+              const outMs = Math.round(curTimeMicros / 1000);
+              const seconds = Math.floor(outMs / 1000);
+              const h = Math.floor(seconds / 3600).toString().padStart(2, "0");
+              const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, "0");
+              const s = (seconds % 60).toString().padStart(2, "0");
+              const time = `${h}:${m}:${s}`;
+              const pct = durationMs && durationMs > 0
+                ? Math.min(99, Math.round((outMs / durationMs) * 100))
+                : undefined;
+              const speed = curSpeed && curSpeed !== "N/A" ? curSpeed : "—";
+              log(`[ffmpeg] progress: time=${time} speed=${speed}${pct != null ? ` percent=${pct}%` : ""}`);
+              transcodeProgress.set(videoId, { time, speed, percent: pct, stage: "transcoding" });
+            }
+          }
+          if (val === "end" && videoId) {
+            transcodeProgress.set(videoId, { time: "", speed: "", stage: "uploading" });
           }
         }
       }
     });
+
+    proc.stderr.on("data", (d: Buffer) => {
+      stderrBuf += d.toString();
+      process.stdout.write(d);
+    });
+
+    proc.on("error", (err) => {
+      if (videoId) transcodeProgress.delete(videoId);
+      reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
+    });
+
     proc.on("close", (code) => {
-      if (videoId) {
-        if (code === 0) transcodeProgress.set(videoId, { time: "", speed: "", stage: "uploading" });
-        else transcodeProgress.delete(videoId);
+      log(`[ffmpeg] exited with code ${code}`);
+      if (code === 0) {
+        if (videoId) transcodeProgress.set(videoId, { time: "", speed: "", stage: "uploading" });
+        resolve();
+      } else {
+        if (videoId) transcodeProgress.delete(videoId);
+        const errTail = stderrBuf.split("\n").filter(Boolean).slice(-10).join(" | ");
+        reject(new Error(`ffmpeg exited with code ${code}. ${errTail}`));
       }
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited with code ${code}`));
     });
   });
 }
