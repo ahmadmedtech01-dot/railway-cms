@@ -1,0 +1,107 @@
+ROLE
+You are Replit AI (senior full-stack engineer). Add a “Video Thumbnail” feature to my existing Video CMS. It must work end-to-end (DB + API + UI + usage in player listings/detail). Use Backblaze B2 / S3 bucket for storage (same storage connection system already in the app). Do NOT break existing upload/transcode/security flows.
+
+========================================
+FEATURE: CUSTOM VIDEO THUMBNAIL
+========================================
+GOAL
+Allow admin to upload a custom thumbnail image for each video, stored in Backblaze B2/S3, shown across:
+- Video list/cards (library)
+- Video detail page
+- Player Live Preview placeholder (before play)
+- Embed player poster image (if supported)
+
+CONSTRAINTS
+- Storage must be bucket-based (B2/S3). No local file storage.
+- Keep existing UI style and patterns.
+- Validate file type and size.
+- Provide remove/replace functionality.
+- Make sure thumbnail URL is resolvable (public or signed URLs) like other assets.
+
+========================================
+PART A — DB / MODEL CHANGES
+========================================
+1) Add fields to videos table OR video_player_settings (choose best; prefer videos table):
+- thumbnailAssetId string nullable
+- thumbnailUrl string nullable (optional if you resolve via asset lookup)
+- thumbnailUpdatedAt timestamp
+
+If you already have an assets table, reuse it:
+assets.kind = "image"
+
+========================================
+PART B — BACKEND API
+========================================
+1) Upload thumbnail
+POST /api/videos/:id/thumbnail
+- Auth: admin only (same as video edit)
+- Input: multipart/form-data file
+- Validate:
+  - mimeType: image/png, image/jpeg, image/webp
+  - max size: 5MB (or 10MB if you prefer; but enforce a limit)
+  - recommended aspect ratio: 16:9 (1280x720). If not 16:9, still allow but warn in response.
+- Upload to Backblaze B2/S3 using existing storage connection logic:
+  path: assets/videos/:id/thumbnail/<timestamp>_<originalname>
+- Create asset record (id, bucket, key, size, mime)
+- Update video.thumbnailAssetId = asset.id
+- Return:
+  { thumbnailAssetId, thumbnailUrl }  // url must be usable by browser (public or signed)
+
+2) Remove thumbnail
+DELETE /api/videos/:id/thumbnail
+- Set thumbnailAssetId = null
+- (Optional) keep old asset in bucket (don’t hard delete) OR delete if your app does that elsewhere.
+
+3) Ensure GET /api/videos/:id and list endpoints include thumbnailUrl
+- If using signed URLs, generate a signed URL for the thumbnail on each response.
+- If public, return public URL.
+
+========================================
+PART C — FRONTEND UI
+========================================
+1) Add “Thumbnail” section in Player/Overview (where it fits best):
+- Title: Thumbnail
+- Enable “Upload Thumbnail” (button)
+- Show preview image (16:9) with:
+  - Replace button
+  - Remove button
+- Help tooltip:
+  “Recommended 1280×720 (16:9), PNG/JPG/WebP, max 5–10MB.”
+
+2) Upload flow:
+- On file select → call POST /api/videos/:id/thumbnail
+- Update local state so the preview updates immediately
+- Show toast on success/error
+
+3) Use thumbnail everywhere:
+A) Video list/cards:
+- If thumbnailUrl exists → show it
+- else fallback:
+  - generated poster frame (if you have) OR
+  - default placeholder
+
+B) Video detail:
+- Show thumbnail at top near video info
+
+C) Player component:
+- Set <video poster={thumbnailUrl}> (or the player wrapper placeholder) for preview.
+
+========================================
+PART D — QA / ACCEPTANCE TESTS
+========================================
+1) Upload thumbnail → shows immediately in UI.
+2) Refresh page → thumbnail persists.
+3) Replace thumbnail → updates everywhere.
+4) Remove thumbnail → falls back to default placeholder.
+5) Thumbnail loads with signed/public URL (no CORS issues).
+
+========================================
+DELIVERABLES
+========================================
+- List files changed
+- DB migration code
+- API route/controller code
+- UI code changes
+- Quick test results checklist
+
+IMPLEMENT NOW. DO NOT ASK QUESTIONS. USE REASONABLE DEFAULTS.

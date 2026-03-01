@@ -157,6 +157,7 @@ export default function EmbedPlayerPage() {
   const [popPosition, setPopPosition] = useState("top-3 right-3");
   const [playerSettings, setPlayerSettings] = useState<PlayerSettings>({});
   const [watermarkSettings, setWatermarkSettings] = useState<WatermarkSettings>({});
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [videoId, setVideoId] = useState("");
   const [effectiveSecurity, setEffectiveSecurity] = useState<Record<string, any>>({ blockDevTools: true });
   const [isAdminPreview, setIsAdminPreview] = useState(false);
@@ -309,6 +310,7 @@ export default function EmbedPlayerPage() {
               const s = await r.json();
               setPlayerSettings(s.playerSettings || {});
               setWatermarkSettings(s.watermarkSettings || {});
+              if (s.thumbnailUrl) setThumbnailUrl(s.thumbnailUrl);
               const activeBanners = (s.banners || []).filter((b: PlayerBanner) => b.enabled);
               setPlayerBanners(activeBanners);
               const initOffsets: Record<string | number, number> = {};
@@ -896,6 +898,7 @@ export default function EmbedPlayerPage() {
             style={{ filter: `brightness(${brightness}%)` }}
             playsInline
             preload="metadata"
+            poster={thumbnailUrl || undefined}
             controlsList={effectiveSecurity.disableDownloads ? "nodownload" : undefined}
             onContextMenu={effectiveSecurity.disableRightClick ? e => e.preventDefault() : undefined}
           />

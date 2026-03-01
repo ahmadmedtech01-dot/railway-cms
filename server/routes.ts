@@ -1044,31 +1044,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/videos/:id/thumbnail", requireAuth, upload.single("thumbnail"), async (req: any, res) => {
     const file = req.file;
     if (!file) return res.status(400).json({ message: "No file" });
+
+    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowed.includes(file.mimetype)) {
+      try { fs.unlinkSync(file.path); } catch {}
+      return res.status(400).json({ message: "Invalid file type. Allowed: JPEG, PNG, WebP." });
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      try { fs.unlinkSync(file.path); } catch {}
+      return res.status(400).json({ message: "File too large. Max 10 MB." });
+    }
+
     const video = await storage.getVideoById(req.params.id);
     if (!video) return res.status(404).json({ message: "Not found" });
 
     try {
-      const client = await getS3Client();
-      const cfg = await getS3Config();
-      let thumbUrl = "";
-      if (client && cfg.bucket) {
-        const key = `thumbnails/${video.id}/${file.originalname}`;
-        await uploadToS3(file.path, key, file.mimetype);
-        thumbUrl = await generateSignedS3Url(key, 3600 * 24 * 30);
-      } else {
-        // Store locally and serve
-        const dir = path.join("client/public/thumbnails");
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        const dest = path.join(dir, `${video.id}-${file.originalname}`);
-        fs.copyFileSync(file.path, dest);
-        thumbUrl = `/thumbnails/${video.id}-${file.originalname}`;
-      }
-      await storage.updateVideo(video.id, { thumbnailUrl: thumbUrl });
-      try { fs.rmSync(file.path); } catch {}
-      res.json({ thumbnailUrl: thumbUrl });
+      const conn = await storage.getActiveStorageConnection();
+      if (!conn) return res.status(400).json({ message: "No active storage connection configured." });
+      const cfg = conn.config as any;
+
+      const ext = path.extname(file.originalname) || ".jpg";
+      const uniqueId = nanoid(12);
+      const bucketKey = `assets/videos/${video.id}/thumbnail/${uniqueId}${ext}`;
+
+      await b2UploadFile(cfg.bucket, bucketKey, fs.readFileSync(file.path), file.mimetype, cfg.endpoint);
+      try { fs.unlinkSync(file.path); } catch {}
+
+      const asset = await storage.createMediaAsset({
+        type: "thumbnail",
+        bucketKey,
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        storageConnectionId: conn.id,
+      });
+
+      const thumbnailUrl = `/api/assets/${asset.id}/view`;
+      await storage.updateVideo(video.id, {
+        thumbnailAssetId: asset.id,
+        thumbnailUrl,
+        thumbnailUpdatedAt: new Date(),
+      } as any);
+
+      await storage.createAuditLog({ action: "thumbnail_uploaded", meta: { videoId: video.id, assetId: asset.id }, ip: req.ip });
+      res.json({ thumbnailAssetId: asset.id, thumbnailUrl });
     } catch (e: any) {
+      try { fs.unlinkSync(file.path); } catch {}
+      log(`Thumbnail upload error: ${e.message}`);
       res.status(500).json({ message: e.message });
     }
+  });
+
+  app.delete("/api/videos/:id/thumbnail", requireAuth, async (req, res) => {
+    const video = await storage.getVideoById(req.params.id);
+    if (!video) return res.status(404).json({ message: "Not found" });
+    await storage.updateVideo(video.id, { thumbnailAssetId: null, thumbnailUrl: null, thumbnailUpdatedAt: new Date() } as any);
+    await storage.createAuditLog({ action: "thumbnail_removed", meta: { videoId: video.id }, ip: req.ip });
+    res.json({ ok: true });
   });
 
   // Settings
@@ -2145,7 +2176,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } catch {}
     }
 
-    res.json({ playerSettings, watermarkSettings, banners });
+    const thumbnailUrl = video.thumbnailUrl || null;
+    res.json({ playerSettings, watermarkSettings, banners, thumbnailUrl });
   });
 
   // Playback ping

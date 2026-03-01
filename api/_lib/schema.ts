@@ -29,6 +29,8 @@ export const videos = pgTable("videos", {
   author: text("author").default(""),
   tags: text("tags").array().default(sql`'{}'::text[]`),
   thumbnailUrl: text("thumbnail_url"),
+  thumbnailAssetId: uuid("thumbnail_asset_id"),
+  thumbnailUpdatedAt: timestamp("thumbnail_updated_at"),
   status: text("status").notNull().default("uploading"),
   available: boolean("available").notNull().default(true),
   sourceType: text("source_type").notNull().default("upload"),

@@ -238,6 +238,8 @@ export default function VideoDetailPage() {
   const [localPs, setLocalPs] = useState<PlayerSettings>({});
   const [localWs, setLocalWs] = useState<Record<string, any>>({});
   const [logoUploading, setLogoUploading] = useState(false);
+  const [thumbnailUploading, setThumbnailUploading] = useState(false);
+  const thumbnailInputRef = useRef<HTMLInputElement>(null);
   const [localSs, setLocalSs] = useState<Record<string, any>>({});
   const [localCss, setLocalCss] = useState<ClientSecuritySettings>({ ...defaultClientSecuritySettings });
   const [localUseGlobal, setLocalUseGlobal] = useState(true);
@@ -856,6 +858,101 @@ iframe.addEventListener('load', () => {
               <div className="space-y-1.5">
                 <Label>Description</Label>
                 <Textarea defaultValue={video.description} onBlur={e => updateVideo.mutate({ description: e.target.value })} rows={3} />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Thumbnail */}
+          <Card className="border border-card-border">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-1.5">
+                  Thumbnail
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <HelpCircle className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent>Recommended: 1280×720 (16:9), PNG/JPG/WebP, max 10 MB. Shows in library and as video poster.</TooltipContent>
+                  </Tooltip>
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" disabled={thumbnailUploading}
+                    onClick={() => thumbnailInputRef.current?.click()}
+                    data-testid="button-upload-thumbnail">
+                    {thumbnailUploading ? <><RefreshCw className="h-3 w-3 mr-1 animate-spin" />Uploading…</> : video.thumbnailUrl ? <><RefreshCw className="h-3 w-3 mr-1" />Replace</> : <><Upload className="h-3 w-3 mr-1" />Upload</>}
+                  </Button>
+                  {video.thumbnailUrl && (
+                    <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive"
+                      disabled={thumbnailUploading}
+                      onClick={async () => {
+                        try {
+                          await apiRequest("DELETE", `/api/videos/${video.id}/thumbnail`);
+                          queryClient.invalidateQueries({ queryKey: ["/api/videos", id] });
+                          toast({ title: "Thumbnail removed" });
+                        } catch (e: any) {
+                          toast({ title: "Failed to remove", description: e.message, variant: "destructive" });
+                        }
+                      }}
+                      data-testid="button-remove-thumbnail">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <input
+                ref={thumbnailInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  e.target.value = "";
+                  setThumbnailUploading(true);
+                  try {
+                    const form = new FormData();
+                    form.append("thumbnail", file);
+                    const res = await fetch(`/api/videos/${video.id}/thumbnail`, {
+                      method: "POST",
+                      credentials: "include",
+                      body: form,
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.message || "Upload failed");
+                    queryClient.invalidateQueries({ queryKey: ["/api/videos", id] });
+                    toast({ title: "Thumbnail uploaded" });
+                  } catch (err: any) {
+                    toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+                  } finally {
+                    setThumbnailUploading(false);
+                  }
+                }}
+              />
+              <div
+                className="relative rounded-lg overflow-hidden bg-muted border border-card-border"
+                style={{ aspectRatio: "16/9", maxWidth: 480 }}
+                data-testid="thumbnail-preview-container"
+              >
+                {video.thumbnailUrl ? (
+                  <img
+                    src={video.thumbnailUrl}
+                    alt="Video thumbnail"
+                    className="w-full h-full object-cover"
+                    data-testid="img-thumbnail"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                    <Image className="h-10 w-10 opacity-30" />
+                    <p className="text-xs">No thumbnail — click Upload to add one</p>
+                  </div>
+                )}
+                {thumbnailUploading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
