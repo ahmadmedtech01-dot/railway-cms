@@ -1547,10 +1547,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const ttls = getTokenTTL();
 
-      // Read suspiciousDetectionEnabled from global security settings
-      // Admin preview sessions always have suspicious detection disabled
+      // Compute effective suspiciousDetectionEnabled:
+      // Use per-video setting when the video is NOT set to inherit from global.
+      // Admin preview sessions always have suspicious detection disabled.
       const globalSec = await secRepo.getGlobal();
-      const suspiciousEnabled = isAdminPreview ? false : (globalSec.suspiciousDetectionEnabled !== false);
+      const videoUseGlobal = await secRepo.getUseGlobal(video.id);
+      const effectiveClientSec = videoUseGlobal
+        ? globalSec
+        : ((await secRepo.getVideo(video.id)) ?? globalSec);
+      const suspiciousEnabled = isAdminPreview ? false : (effectiveClientSec.suspiciousDetectionEnabled !== false);
 
       if (conn?.provider === "backblaze_b2") {
         const cfg = conn.config as any;
@@ -2083,7 +2088,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ua = req.headers["user-agent"] || "";
       const dh = computeDeviceHash(ua);
       const globalSec = await secRepo.getGlobal();
-      const suspiciousEnabled = globalSec.suspiciousDetectionEnabled !== false;
+      const videoUseGlobal2 = await secRepo.getUseGlobal(video.id);
+      const effectiveClientSec2 = videoUseGlobal2
+        ? globalSec
+        : ((await secRepo.getVideo(video.id)) ?? globalSec);
+      const suspiciousEnabled = effectiveClientSec2.suspiciousDetectionEnabled !== false;
       const ttls = getTokenTTL();
       let manifestUrl: string | null = null;
       if (conn?.provider === "backblaze_b2") {
@@ -2230,7 +2239,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const altUa = req.headers["user-agent"] || "";
       const altDh = computeDeviceHash(altUa);
       const altTtls = getTokenTTL();
-      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa);
+      const altGlobalSec = await secRepo.getGlobal();
+      const altVideoUseGlobal = await secRepo.getUseGlobal(video.id);
+      const altEffectiveSec = altVideoUseGlobal
+        ? altGlobalSec
+        : ((await secRepo.getVideo(video.id)) ?? altGlobalSec);
+      const altSuspiciousEnabled = altEffectiveSec.suspiciousDetectionEnabled !== false;
+      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled);
       const proxyBase = `/hls/${video.publicId}/master.m3u8`;
       const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", altTtls.manifest, altDh);
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
