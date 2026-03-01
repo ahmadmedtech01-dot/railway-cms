@@ -191,7 +191,7 @@ async function seedDefaultSettings() {
       { key: "s3_bucket", value: "" },
       { key: "s3_private_prefix", value: "raw/" },
       { key: "s3_hls_prefix", value: "hls/" },
-      { key: "signing_secret", value: process.env.SIGNING_SECRET || "change-me-secret" },
+      { key: "signing_secret", value: process.env.SIGNING_SECRET || "" },
       { key: "ffmpeg_enabled", value: "true" },
       { key: "max_upload_size_mb", value: "2048" },
     ];
@@ -261,6 +261,7 @@ async function seedDefaultSettings() {
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, async () => {
     log(`serving on port ${port}`);
+    console.log("[security] SIGNING_SECRET loaded:", !!process.env.SIGNING_SECRET);
     await seedAdmin();
     await seedDefaultSettings();
     recoverProcessingVideos();

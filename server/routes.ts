@@ -298,19 +298,24 @@ async function generateSignedS3Url(key: string, ttlSeconds = 120): Promise<strin
   return getSignedUrl(client, new GetObjectCommand({ Bucket: cfg.bucket, Key: key }), { expiresIn: ttlSeconds });
 }
 
-async function getSigningSecret(): Promise<string> {
-  return (await storage.getSetting("signing_secret")) || "default-secret";
+function getSigningSecret(): string {
+  const s = process.env.SIGNING_SECRET;
+  if (!s) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("SIGNING_SECRET env var is required. Generate one via GET /api/admin/generate-signing-secret and set it in Railway + Cloudflare Worker.");
+    }
+    return "insecure-dev-only-signing-key";
+  }
+  return s;
 }
 
 function generateToken(payload: object, ttlSeconds: number): string {
-  const secret = process.env.SIGNING_SECRET || "signing-secret";
-  return jwt.sign(payload, secret, { expiresIn: ttlSeconds });
+  return jwt.sign(payload, getSigningSecret(), { expiresIn: ttlSeconds });
 }
 
 function verifyToken(token: string): any {
-  const secret = process.env.SIGNING_SECRET || "signing-secret";
   try {
-    return jwt.verify(token, secret);
+    return jwt.verify(token, getSigningSecret());
   } catch {
     return null;
   }
@@ -804,6 +809,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/auth/me", (req, res) => {
     if (!req.session?.adminId) return res.status(401).json({ message: "Not authenticated" });
     res.json({ id: req.session.adminId, email: req.session.adminEmail });
+  });
+
+  // ── Admin: generate signing secret ───────────────────────
+  app.get("/api/admin/generate-signing-secret", requireAuth, (_req, res) => {
+    const secret = crypto.randomBytes(32).toString("hex");
+    res.json({ signing_secret: secret });
   });
 
   // ── Videos ────────────────────────────────────────────────

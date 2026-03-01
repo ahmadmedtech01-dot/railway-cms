@@ -103,7 +103,7 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 
 **Client-Side Protection** (useSecurityViolations hook): Violation counter with per-video localStorage persistence, 3s debounce per event type, configurable limit. On limit reached: 10-minute cooldown with countdown overlay. Events: RIGHT_CLICK, FOCUS_LOST, DEVTOOLS_DETECTED, FULLSCREEN_REQUIRED_BREACH, DOWNLOAD_ATTEMPT.
 
-Signing secret: auto-derived from `SESSION_SECRET`; override with `SIGNING_SECRET` env var
+Signing secret: `SIGNING_SECRET` env var (REQUIRED in production). No fallbacks — server crashes on startup if missing in production. Generate a new one via `GET /api/admin/generate-signing-secret` (admin-only). Must set the SAME value in Railway env vars AND Cloudflare Worker env vars, then redeploy both.
 
 ## Database Tables
 
@@ -157,7 +157,7 @@ Signing secret: auto-derived from `SESSION_SECRET`; override with `SIGNING_SECRE
 - `DATABASE_URL` — PostgreSQL connection string (auto-provisioned)
 - `SESSION_SECRET` — Session encryption secret
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD` — Seeded admin credentials
-- `SIGNING_SECRET` — JWT signing secret for embed tokens
+- `SIGNING_SECRET` — HMAC signing secret for HLS tokens + embed JWTs (REQUIRED in production, no fallback)
 - `VIMEO_ACCESS_TOKEN` — Vimeo Personal Access Token (or set via System Settings)
 - `B2_KEY_ID` — Backblaze B2 Application Key ID (required for B2 uploads)
 - `B2_APPLICATION_KEY` — Backblaze B2 Application Key secret (required for B2 uploads)
@@ -213,7 +213,7 @@ The app is Vercel-compatible via:
 | `SESSION_SECRET` | Strong random string |
 | `ADMIN_EMAIL` | Admin login email |
 | `ADMIN_PASSWORD` | Admin login password |
-| `SIGNING_SECRET` | JWT signing secret |
+| `SIGNING_SECRET` | HMAC signing secret (REQUIRED — generate via admin endpoint) |
 | `B2_KEY_ID` | Backblaze B2 Key ID |
 | `B2_APPLICATION_KEY` | Backblaze B2 Application Key |
 | `B2_S3_ENDPOINT` | e.g. `https://s3.ca-east-006.backblazeb2.com` |

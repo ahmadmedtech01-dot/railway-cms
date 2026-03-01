@@ -48,6 +48,7 @@ waitForPort = 5000
 ADMIN_EMAIL = "syanmedtechadmen@gmail.com"
 B2_S3_ENDPOINT = "https://s3.ca-east-006.backblazeb2.com"
 B2_BUCKET = "mytestvideo"
+SIGNING_SECRET = "0e7c24aec7dc6c97057b791e5d7e25893c04bbd5b9eccea0ad47d2d9ecf3614b"
 
 [agent]
 expertMode = true

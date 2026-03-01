@@ -1,12 +1,15 @@
 import crypto from "crypto";
 
 function resolveSecret(): string {
-  if (process.env.SIGNING_SECRET) return process.env.SIGNING_SECRET;
-  if (process.env.SESSION_SECRET) {
-    return crypto.createHash("sha256").update("vcms-video-signing:" + process.env.SESSION_SECRET).digest("hex");
+  const s = process.env.SIGNING_SECRET;
+  if (!s) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("SIGNING_SECRET env var is required. Generate one via GET /api/admin/generate-signing-secret and set it in Railway + Cloudflare Worker.");
+    }
+    console.warn("[video-session] WARNING: SIGNING_SECRET not set — using insecure dev-only key. Never deploy without it.");
+    return "insecure-dev-only-signing-key";
   }
-  console.warn("[video-session] WARNING: No SIGNING_SECRET or SESSION_SECRET set — playback security degraded");
-  return "insecure-dev-only-signing-key";
+  return s;
 }
 
 const SECRET = resolveSecret();
