@@ -1,0 +1,66 @@
+ROLE: You are Replit AI acting as a senior full-stack engineer for my Video CMS (Node/Express + React). You must implement a bug fix in my EXISTING code (no redesign). Goal: AES-128 must be applied in the FIRST transcode run, not after a second “Re-transcode” click.
+
+CURRENT BUG (CONFIRMED IN CODE):
+- Direct upload route does an unencrypted HLS transcode first, marks video “ready”, and does NOT set encryptionKid.
+- UI then shows “AES-128 Encryption Not Applied”.
+- When I click “Re-transcode with AES-128”, a different pipeline runs (transcodeAndStoreHls) which DOES encryption and sets encryptionKid.
+This causes me to transcode twice. I want ONE transcode only.
+
+FILES INVOLVED:
+1) server/routes.ts
+   - POST /api/videos/:id/upload  (currently calls runFfmpegHls(..., undefined, ...))
+   - function transcodeAndStoreHls(videoId, inputPath, qualities) (already supports encryption via keyInfoPath + updates encryptionKid)
+2) client/src/pages/video-detail.tsx
+   - AES banner uses: derivedStatus === "ready" && !(video as any).encryptionKid
+
+WHAT YOU MUST DO (REQUIRED FIX):
+A) UNIFY PIPELINE: Direct upload must use the SAME encrypted pipeline as retranscode.
+- In POST /api/videos/:id/upload:
+  - REMOVE the async block that calls runFfmpegHls(file.path, hlsOutputDir, qualities, undefined, video.id)
+  - DO NOT produce unencrypted HLS first.
+  - Instead call transcodeAndStoreHls(...) so encryption is produced on first pass.
+
+B) ENSURE storage connection consistency:
+Right now upload route may use a selected storage connection for raw upload, but transcodeAndStoreHls uses getActiveStorageConnection().
+Refactor transcodeAndStoreHls signature to accept optional connOverride:
+  async function transcodeAndStoreHls(videoId, inputPath, qualities, connOverride?)
+Inside:
+  const activeConn = connOverride ?? await storage.getActiveStorageConnection();
+
+Then in POST /api/videos/:id/upload pass the same connection object you already have in that route.
+
+C) DB UPDATE MUST SET ENCRYPTION FIELDS DURING FIRST TRANSCODE:
+When encryption is enabled:
+- Ensure the final DB update sets:
+  - status = "ready"
+  - hlsS3Prefix / hlsMasterUrl (whatever your schema uses)
+  - encryptionKid (and encryptionKeyPath for B2)
+So UI never shows “AES not applied”.
+
+D) AVAILABLE/READY SHOULD ONLY BE TRUE AFTER VERIFYING ENCRYPTION:
+Before marking video ready, verify generated playlists contain:
+- #EXT-X-KEY
+- METHOD=AES-128
+If missing, treat as failure and do NOT mark ready.
+
+E) DO NOT CHANGE UI/UX (only bug fix):
+- Keep existing screens. Only remove the need to click “Re-transcode with AES-128” for normal upload flow.
+- Button can remain as emergency/manual.
+
+ACCEPTANCE TESTS (MUST PASS):
+1) Upload video with AES enabled:
+   - Only ONE transcode run
+   - On completion: no “AES-128 Encryption Not Applied” banner
+   - encryptionKid exists in DB
+   - HLS variant playlist includes EXT-X-KEY with METHOD=AES-128
+2) Refresh page after some time:
+   - Banner must NOT reappear
+3) Upload video with AES disabled (if you have a toggle):
+   - Playlist has NO EXT-X-KEY
+   - No false warning
+
+DELIVERABLE:
+- Implement the code changes with exact edits in:
+  - server/routes.ts (upload route + transcodeAndStoreHls signature + callsite)
+- Show me the final updated code blocks (not explanations only).
+- After changes, run the app and confirm logs show encryption during first transcode.

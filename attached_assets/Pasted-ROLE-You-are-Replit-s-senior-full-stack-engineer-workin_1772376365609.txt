@@ -1,0 +1,124 @@
+ROLE: You are Replit’s senior full-stack engineer working on my Video CMS (upload → transcode to HLS → optional AES-128 segment encryption).
+
+PROBLEM (BUG):
+Right now, when I upload a video and transcoding completes, the app shows “AES-128 Encryption Not Applied”. Then I must click “Re-transcode with AES-128” and it works, but later the same AES warning comes back again. I do NOT want to run transcoding twice. In ONE run, the video should be transcoded AND AES-128 should be applied (if encryption is enabled). No repeated manual re-transcode.
+
+WHAT I WANT (GOAL):
+Make the transcode pipeline idempotent + consistent:
+- If AES-128 encryption is enabled globally (or for that video), the FIRST transcode must produce encrypted HLS (manifests must contain EXT-X-KEY).
+- If AES is disabled, produce non-encrypted HLS.
+- The UI must NEVER show “Available: Yes” unless the produced HLS actually matches the expected encryption state.
+- No “do it once, then need to re-transcode” behavior.
+
+ROOT CAUSE (MOST LIKELY):
+There is a race / state mismatch:
+- The first transcode job is created with encryption=false or without passing encryption params to the packager.
+- Later UI or DB shows encryption enabled, so it complains “not applied”.
+OR:
+- Encryption setting is saved AFTER job starts.
+OR:
+- Job writes unencrypted HLS to same output path; later the UI checks a flag rather than verifying manifest content.
+OR:
+- “Available” flips true when transcoding finishes, without verifying encryption markers.
+
+FIX REQUIREMENTS (IMPLEMENT EXACTLY):
+1) Single source of truth in DB
+Add (or ensure) these fields per video:
+- encryption_expected: boolean  (what we WANT for this video)
+- encryption_applied: boolean   (what we ACTUALLY produced)
+- transcode_status: enum('queued','processing','done','failed')
+- transcode_job_id: string
+- hls_master_url: string
+- hls_output_path: string
+- encryption_key_id: string (or key file reference)
+- last_transcode_started_at, last_transcode_finished_at
+- transcode_version / pipeline_hash (optional, for future migrations)
+
+2) Job creation MUST lock expected encryption BEFORE starting work
+When user uploads OR changes encryption setting:
+- Compute encryption_expected at that moment:
+   if globalSecurity.useGlobal == true => use global setting
+   else => use per-video setting
+- Save encryption_expected to DB BEFORE enqueueing job
+- Enqueue ONE job with payload: { videoId, encryption_expected, outputPathVersion }
+- Do NOT read encryption setting again later from UI state—job must use payload/DB snapshot.
+
+3) Output isolation + no stale overwrite
+Never write encrypted + unencrypted outputs to the same folder without versioning.
+Use output path like:
+- /hls/{videoId}/v{transcode_version}/master.m3u8
+So the UI always points to the latest successful version only.
+After job success, atomically update video.hls_master_url to the new version.
+
+4) Apply AES-128 correctly during HLS packaging
+In the transcode command (ffmpeg or packaging layer), when encryption_expected = true:
+- Generate/store key material server-side
+  - Create 16-byte AES key (random)
+  - Create IV (optional; can be random per playlist or derived)
+  - Store key securely (DB encrypted field or storage file with restricted access)
+- Ensure playlists include EXT-X-KEY:
+  - MASTER/variant playlists must reference key URI
+  - Example marker: #EXT-X-KEY:METHOD=AES-128,URI="...",IV=0x...
+- Key URI must be served from an authenticated endpoint (recommended):
+  GET /api/hls/key?videoId=...&token=...
+  Validate session/token and return raw key bytes (Content-Type: application/octet-stream)
+- If encryption_expected = false:
+  - Do NOT include EXT-X-KEY
+  - Do NOT generate/use keys
+
+5) Verification step (this is critical)
+After transcoding finishes but BEFORE marking “done/available”:
+- Load the produced variant playlist(s) (at least one) and check:
+  if encryption_expected == true:
+     playlist MUST contain “#EXT-X-KEY” and “METHOD=AES-128”
+  if encryption_expected == false:
+     playlist MUST NOT contain “#EXT-X-KEY”
+- Set encryption_applied accordingly.
+- Only if (encryption_applied == encryption_expected) mark:
+  transcode_status='done' AND available=true
+- If mismatch:
+  transcode_status='failed'
+  Save reason: “encryption_mismatch”
+  Auto retry ONCE (only once) with a fresh output version folder.
+  If still mismatch, stop and show error in UI.
+
+6) UI logic changes (stop showing wrong badge)
+- “AES-128 Encryption Not Applied” banner should be driven by:
+   encryption_expected == true AND encryption_applied == false
+- “Available: Yes” should be driven by:
+   transcode_status == 'done' AND encryption_applied == encryption_expected
+- While processing: always show “Processing Video”
+- Remove the need for manual “Re-transcode with AES-128” in normal flow.
+Keep the button only as an admin emergency action (optional).
+
+7) Prevent duplicate jobs
+- If a job is already queued/processing for the same video, do not enqueue another.
+- If settings changed mid-job:
+   mark a flag “needs_retranscode=true” and enqueue a new job AFTER current finishes,
+   OR cancel current job if your system supports it.
+
+8) Add server logs for debugging
+Log at job start:
+- videoId, jobId, encryption_expected, outputPath
+Log after verification:
+- encryption_expected, encryption_applied, sample playlist first 3 lines containing EXT-X-KEY or “none”
+
+ACCEPTANCE TESTS (must pass):
+A) With AES enabled:
+- Upload new video → single transcode → after completion:
+  - Banner NOT shown
+  - Available = Yes
+  - Playlist includes EXT-X-KEY METHOD=AES-128
+B) With AES disabled:
+- Upload new video → single transcode → Available = Yes
+  - Playlist has NO EXT-X-KEY
+C) Toggle AES ON for an existing unencrypted video:
+- One re-transcode happens automatically (no second manual click)
+- After done, encryption_applied=true
+D) Refresh page / revisit later:
+- AES banner does NOT reappear incorrectly.
+
+DELIVERABLE:
+Implement the above changes in the backend job worker + DB schema + UI state logic.
+Do not change unrelated UI/UX except where required to stop wrong “available/encryption” status.
+Show me the exact files you changed and explain the final flow in 10 lines.

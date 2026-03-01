@@ -133,7 +133,7 @@ async function uploadHlsDir(localDir: string, prefix: string, activeConn: Awaite
   }
 }
 
-async function transcodeAndStoreHls(videoId: string, inputPath: string, qualities: number[]): Promise<void> {
+async function transcodeAndStoreHls(videoId: string, inputPath: string, qualities: number[], connOverride?: any): Promise<void> {
   const hlsOutputDir = path.join(os.tmpdir(), "vcms-hls", videoId);
 
   const enc = generateEncryptionKey();
@@ -145,8 +145,27 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
 
   await runFfmpegHls(inputPath, hlsOutputDir, qualities, { keyInfoPath }, videoId);
 
+  // Verify AES-128 was applied — every variant playlist must have EXT-X-KEY METHOD=AES-128
+  const variantPlaylists: string[] = [];
+  function findVariantM3u8(dir: string) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) findVariantM3u8(full);
+      else if (entry.name.endsWith(".m3u8") && !entry.name.startsWith("master")) variantPlaylists.push(full);
+    }
+  }
+  findVariantM3u8(hlsOutputDir);
+  if (variantPlaylists.length === 0) throw new Error("FFmpeg produced no variant playlists — transcode failed");
+  for (const m3u8 of variantPlaylists) {
+    const content = fs.readFileSync(m3u8, "utf8");
+    if (!content.includes("#EXT-X-KEY") || !content.includes("METHOD=AES-128")) {
+      throw new Error(`Playlist ${path.basename(m3u8)} is missing AES-128 EXT-X-KEY — refusing to mark video ready`);
+    }
+  }
+  log(`AES-128 validation passed: ${variantPlaylists.length} variant playlist(s) all contain EXT-X-KEY METHOD=AES-128`);
+
   if (videoId) transcodeProgress.set(videoId, { time: "", speed: "", stage: "uploading" });
-  const activeConn = await storage.getActiveStorageConnection();
+  const activeConn = connOverride ?? await storage.getActiveStorageConnection();
 
   if (activeConn?.provider === "backblaze_b2") {
     const cfg = activeConn.config as any;
@@ -951,39 +970,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
-      // ffmpeg HLS processing (async) — use the same connection selected above
-      const hlsOutputDir = path.join(os.tmpdir(), "vcms-hls", video.id);
+      // AES-128 encrypted HLS transcode — same unified pipeline as re-transcode
       storage.updateVideo(video.id, { status: "processing" });
 
       (async () => {
         try {
-          await runFfmpegHls(file.path, hlsOutputDir, qualities, undefined, video.id);
-          if (conn?.provider === "backblaze_b2") {
-            const cfg = conn.config as any;
-            const hlsPrefix = `${cfg.hlsPrefix || "hls/"}${video.id}/`;
-            await uploadHlsDir(hlsOutputDir, hlsPrefix, conn);
-            await storage.updateVideo(video.id, { status: "ready", hlsS3Prefix: hlsPrefix, storageConnectionId: conn.id, qualities } as any);
-          } else {
-            const s3cfg = await getS3Config();
-            const hlsPrefix = `${s3cfg.hlsPrefix}${video.id}/`;
-            const client = await getS3Client();
-            if (client && s3cfg.bucket) {
-              await uploadHlsToS3(hlsOutputDir, hlsPrefix);
-              await storage.updateVideo(video.id, { status: "ready", hlsS3Prefix: hlsPrefix, qualities });
-            } else {
-              const localHlsDir = path.join(uploadDir, "hls", video.id);
-              if (fs.existsSync(localHlsDir)) fs.rmSync(localHlsDir, { recursive: true });
-              fs.cpSync(hlsOutputDir, localHlsDir, { recursive: true });
-              await storage.updateVideo(video.id, { status: "ready", hlsS3Prefix: localHlsDir, qualities });
-            }
-          }
+          await transcodeAndStoreHls(video.id, file.path, qualities, conn);
           try { fs.rmSync(file.path); } catch {}
-          try { fs.rmSync(hlsOutputDir, { recursive: true }); } catch {}
-          transcodeProgress.delete(video.id);
-          log(`HLS processing complete for video ${video.id}`);
+          log(`Upload+AES-128 HLS transcode complete for video ${video.id}`);
         } catch (e) {
           log(`HLS processing failed for video ${video.id}: ${e}`);
-          await storage.updateVideo(video.id, { status: "error" });
+          await storage.updateVideo(video.id, { status: "error", lastError: String(e) } as any);
+          try { fs.rmSync(file.path); } catch {}
         }
       })();
 
