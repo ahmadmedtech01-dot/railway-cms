@@ -32,8 +32,8 @@ const ABUSE_THRESHOLDS = {
 };
 
 const TOKEN_TTL = {
-  manifest: 60,
-  playlist: 60,
+  manifest: 300,
+  playlist: 300,
   segment: 10,
   key: 10,
 };
