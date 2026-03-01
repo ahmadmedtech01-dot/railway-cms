@@ -15,12 +15,13 @@ const SESSION_MAX_AGE_MS = 5 * 60 * 1000;
 export const SESSION_ROTATION_MS = 3 * 60 * 1000;
 
 const ABUSE_THRESHOLDS = {
-  requestsPerWindow: 10,
-  requestWindowMs: 1000,
-  burstLimit: 15,
-  concurrentSegments: 6,
-  playlistFetchesPerMin: 30,
-  keyHitsPerMin: 3,
+  // Only used when suspiciousDetectionEnabled=true
+  concurrentSegments: 3,           // max parallel segment downloads at any instant
+  segmentsPerSec: 15,              // segment requests/sec that triggers rate spike signal
+  segmentRateSpikeWindowMs: 3000,  // must sustain above segmentsPerSec for this long
+  playlistPerSec: 1,               // playlist fetches/sec that triggers scraper signal
+  playlistSpikeWindowMs: 5000,     // must sustain above playlistPerSec for this long
+  keyHitsPerMin: 3,                // extra key requests per minute (keyIssued flag is primary check)
   keyHitsTotal: 20,
   scoreToRevoke: 15,
   windowSize: 6,
@@ -85,6 +86,13 @@ export interface VideoSession {
   keyIssuedCount: number;
   keyExp: number;
   keySig: string;
+
+  // Whether suspicious-activity blocking is enabled for this session
+  suspiciousDetectionEnabled: boolean;
+
+  // Track spike detection: timestamp when rate first exceeded threshold
+  segmentRateSpikeStart: number | null;
+  playlistSpikeStart: number | null;
 }
 
 const sessions = new Map<string, VideoSession>();
@@ -108,6 +116,7 @@ export function createSession(
   connId: string | null,
   deviceHash?: string,
   userAgent?: string,
+  suspiciousDetectionEnabled = true,
 ): string {
   const sid = crypto.randomBytes(16).toString("hex");
   const uaHash = userAgent ? crypto.createHash("sha256").update(userAgent).digest("hex").slice(0, 32) : "";
@@ -144,6 +153,9 @@ export function createSession(
     keyIssuedCount: 0,
     keyExp,
     keySig,
+    suspiciousDetectionEnabled,
+    segmentRateSpikeStart: null,
+    playlistSpikeStart: null,
   });
   return sid;
 }
@@ -178,6 +190,8 @@ export function rotateSession(oldSid: string): string | null {
     keyIssuedCount: 0,
     keyExp,
     keySig,
+    segmentRateSpikeStart: null,
+    playlistSpikeStart: null,
   });
 
   old.revoked = true;
@@ -244,12 +258,17 @@ function addAbuse(s: VideoSession, delta: number, reason: AbuseReason): { abused
     s.revoked = true;
     s.blockedUntil = Date.now() + BLOCK_DURATION_MS;
     if (!s.revokeReason) s.revokeReason = reason;
-    console.log(`[video-session] SECURITY_BULK_DOWNLOAD: Session ${reason.signal} — ${reason.detail}`);
+    console.log(`[video-session] SECURITY_BLOCK_REASON: ${reason.signal} — ${reason.detail} | publicId=${s.publicId}`);
     return { abused: true };
   }
   return { abused: false };
 }
 
+/**
+ * Validates session is alive and checks IP binding.
+ * Only does suspicious-activity rate checks when suspiciousDetectionEnabled=true.
+ * Always enforces: session expiry, IP binding (for proxy/scraping detection), UA binding.
+ */
 export function trackRequest(sid: string, ip?: string): { abused: boolean; reason?: AbuseReason } {
   const s = sessions.get(sid);
   if (!s) return { abused: true, reason: { signal: "rate_limit", detail: "Session not found" } };
@@ -260,28 +279,15 @@ export function trackRequest(sid: string, ip?: string): { abused: boolean; reaso
     return { abused: true, reason: { signal: "rate_limit", detail: "Session expired" } };
   }
 
+  // IP binding is always enforced (proxy/session-hijack detection, not rate-limit)
   if (ip) {
     if (!s.boundIp) {
       s.boundIp = ip;
     } else if (s.boundIp !== ip) {
       const reason: AbuseReason = { signal: "ip_mismatch", detail: `Session used from multiple IPs (${s.boundIp} → ${ip})` };
+      console.log(`[video-session] SECURITY_BLOCK_REASON: ip_mismatch | sid=${sid} publicId=${s.publicId}`);
       return addAbuse(s, 8, reason);
     }
-  }
-
-  const now = Date.now();
-  s.requestLog = s.requestLog.filter(t => t > now - ABUSE_THRESHOLDS.requestWindowMs);
-
-  if (s.requestLog.length >= ABUSE_THRESHOLDS.burstLimit) {
-    const reason: AbuseReason = { signal: "rate_limit", detail: `${s.requestLog.length + 1} requests in ${ABUSE_THRESHOLDS.requestWindowMs}ms (burst limit: ${ABUSE_THRESHOLDS.burstLimit})` };
-    return addAbuse(s, 5, reason);
-  }
-
-  s.requestLog.push(now);
-
-  if (s.requestLog.length > ABUSE_THRESHOLDS.requestsPerWindow) {
-    const reason: AbuseReason = { signal: "rate_limit", detail: `${s.requestLog.length} requests in ${ABUSE_THRESHOLDS.requestWindowMs}ms (limit: ${ABUSE_THRESHOLDS.requestsPerWindow})` };
-    return addAbuse(s, 3, reason);
   }
 
   return { abused: false };
@@ -292,13 +298,30 @@ export function trackPlaylistFetch(sid: string, ip?: string): { abused: boolean;
   if (base.abused) return base;
 
   const s = sessions.get(sid)!;
+
+  // When suspicious detection is disabled, skip rate-based checks
+  if (!s.suspiciousDetectionEnabled) return { abused: false };
+
   const now = Date.now();
-  s.playlistFetchLog = s.playlistFetchLog.filter(t => t > now - 60000);
+  // Keep playlist fetches in a 5-second window
+  s.playlistFetchLog = s.playlistFetchLog.filter(t => t > now - 5000);
   s.playlistFetchLog.push(now);
 
-  if (s.playlistFetchLog.length > ABUSE_THRESHOLDS.playlistFetchesPerMin) {
-    const reason: AbuseReason = { signal: "playlist_abuse", detail: `${s.playlistFetchLog.length} playlist fetches in 60s (limit: ${ABUSE_THRESHOLDS.playlistFetchesPerMin})` };
-    return addAbuse(s, 3, reason);
+  // Signal: playlist fetch rate > 1/sec sustained for 5 seconds
+  // 1/sec × 5 seconds = 5 fetches in 5s window
+  if (s.playlistFetchLog.length > 5) {
+    if (!s.playlistSpikeStart) {
+      s.playlistSpikeStart = now;
+    } else if (now - s.playlistSpikeStart >= ABUSE_THRESHOLDS.playlistSpikeWindowMs) {
+      const reason: AbuseReason = {
+        signal: "playlist_abuse",
+        detail: `${s.playlistFetchLog.length} playlist fetches in 5s (sustained scraping) | publicId=${s.publicId}`,
+      };
+      console.log(`[video-session] SECURITY_BLOCK_REASON: PLAYLIST_SPAM | sid=${sid} fetches_5s=${s.playlistFetchLog.length}`);
+      return addAbuse(s, 5, reason);
+    }
+  } else {
+    s.playlistSpikeStart = null;
   }
 
   return { abused: false };
@@ -311,20 +334,39 @@ export function acquireSegment(sid: string, ip?: string): { abused: boolean; rea
   const s = sessions.get(sid)!;
   s.concurrentSegments += 1;
 
+  // When suspicious detection is disabled, allow all concurrent downloads
+  if (!s.suspiciousDetectionEnabled) return { abused: false };
+
+  // Signal: concurrent parallel segment downloads > 3 at the same moment
   if (s.concurrentSegments > ABUSE_THRESHOLDS.concurrentSegments) {
-    const reason: AbuseReason = { signal: "concurrent", detail: `${s.concurrentSegments} concurrent segment requests (limit: ${ABUSE_THRESHOLDS.concurrentSegments})` };
+    const reason: AbuseReason = {
+      signal: "concurrent",
+      detail: `${s.concurrentSegments} concurrent segment requests (limit: ${ABUSE_THRESHOLDS.concurrentSegments})`,
+    };
     s.concurrentSegments -= 1;
+    console.log(`[video-session] SECURITY_BLOCK_REASON: CONCURRENT_SEGMENTS | sid=${sid} concurrent=${s.concurrentSegments + 1} publicId=${s.publicId}`);
     return addAbuse(s, 5, reason);
   }
 
   const now = Date.now();
-  s.segmentFetchLog = s.segmentFetchLog.filter(t => t > now - 5000);
+  // Keep segment fetches in a 3-second window for rate spike detection
+  s.segmentFetchLog = s.segmentFetchLog.filter(t => t > now - 3000);
   s.segmentFetchLog.push(now);
 
-  if (s.segmentFetchLog.length > 30) {
-    const reason: AbuseReason = { signal: "bulk_download", detail: `${s.segmentFetchLog.length} segments in 5s — bulk download detected` };
-    console.log(`[video-session] SECURITY_BULK_DOWNLOAD: sid=${sid}, segments_in_5s=${s.segmentFetchLog.length}`);
-    return addAbuse(s, 8, reason);
+  // Signal: > 15 segments/sec sustained for 3 seconds = 45 fetches in 3s window
+  if (s.segmentFetchLog.length > ABUSE_THRESHOLDS.segmentsPerSec * 3) {
+    if (!s.segmentRateSpikeStart) {
+      s.segmentRateSpikeStart = now;
+    } else if (now - s.segmentRateSpikeStart >= ABUSE_THRESHOLDS.segmentRateSpikeWindowMs) {
+      const reason: AbuseReason = {
+        signal: "bulk_download",
+        detail: `${s.segmentFetchLog.length} segments in 3s — RATE_SPIKE bulk download | publicId=${s.publicId}`,
+      };
+      console.log(`[video-session] SECURITY_BLOCK_REASON: RATE_SPIKE | sid=${sid} segments_3s=${s.segmentFetchLog.length}`);
+      return addAbuse(s, 8, reason);
+    }
+  } else {
+    s.segmentRateSpikeStart = null;
   }
 
   return { abused: false };
@@ -340,20 +382,28 @@ export function trackKeyHit(sid: string, ip?: string): { abused: boolean; reason
   if (base.abused) return base;
 
   const s = sessions.get(sid)!;
+
+  // Key-hit abuse is always checked (it's an AES security signal, not just rate limiting)
   const now = Date.now();
   s.keyHitLog = s.keyHitLog.filter(t => t > now - 60000);
   s.keyHitLog.push(now);
   s.keyIssuedCount += 1;
 
   if (s.keyHitLog.length > ABUSE_THRESHOLDS.keyHitsPerMin) {
-    const reason: AbuseReason = { signal: "key_abuse", detail: `${s.keyHitLog.length} key requests in 60s (limit: ${ABUSE_THRESHOLDS.keyHitsPerMin}) — SECURITY_KEY_SPAM` };
-    console.log(`[video-session] SECURITY_KEY_SPAM: sid=${sid}, hits_per_min=${s.keyHitLog.length}`);
+    const reason: AbuseReason = {
+      signal: "key_abuse",
+      detail: `${s.keyHitLog.length} key requests in 60s (limit: ${ABUSE_THRESHOLDS.keyHitsPerMin}) — KEY_SPAM | publicId=${s.publicId}`,
+    };
+    console.log(`[video-session] SECURITY_BLOCK_REASON: KEY_SPAM | sid=${sid} hits_per_min=${s.keyHitLog.length}`);
     return addAbuse(s, 5, reason);
   }
 
   if (s.keyIssuedCount > ABUSE_THRESHOLDS.keyHitsTotal) {
-    const reason: AbuseReason = { signal: "key_abuse", detail: `${s.keyIssuedCount} total key requests this session (limit: ${ABUSE_THRESHOLDS.keyHitsTotal}) — SECURITY_KEY_REPLAY` };
-    console.log(`[video-session] SECURITY_KEY_REPLAY: sid=${sid}, total_issued=${s.keyIssuedCount}`);
+    const reason: AbuseReason = {
+      signal: "key_abuse",
+      detail: `${s.keyIssuedCount} total key requests this session (limit: ${ABUSE_THRESHOLDS.keyHitsTotal}) — KEY_REPLAY | publicId=${s.publicId}`,
+    };
+    console.log(`[video-session] SECURITY_BLOCK_REASON: KEY_REPLAY | sid=${sid} total_issued=${s.keyIssuedCount}`);
     return addAbuse(s, 5, reason);
   }
 
@@ -416,7 +466,7 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
 
   s.outOfWindowCount += 1;
   if (s.outOfWindowCount >= 3) {
-    const reason: AbuseReason = { signal: "out_of_window", detail: `Segment ${segIndex} outside window [${start},${end}] (${s.outOfWindowCount} violations)` };
+    const reason: AbuseReason = { signal: "out_of_window", detail: `Segment ${segIndex} outside window [${start},${end}] (${s.outOfWindowCount} violations) | publicId=${s.publicId}` };
     return { allowed: !addAbuse(s, ABUSE_THRESHOLDS.outOfWindowPenalty, reason).abused, reason };
   }
 
@@ -490,6 +540,7 @@ export function getSessionAbuseSummary(sid: string) {
     boundIp: s.boundIp,
     currentSegmentIndex: s.currentSegmentIndex,
     outOfWindowCount: s.outOfWindowCount,
+    suspiciousDetectionEnabled: s.suspiciousDetectionEnabled,
   };
 }
 
@@ -509,5 +560,13 @@ export function getTokenTTL() {
 }
 
 export function getAllSessions() {
-  return sessions;
+  return Array.from(sessions.entries()).map(([sid, s]) => ({
+    sid,
+    publicId: s.publicId,
+    createdAt: s.createdAt,
+    expiresAt: s.expiresAt,
+    revoked: s.revoked,
+    abuseScore: s.abuseScore,
+    concurrentSegments: s.concurrentSegments,
+  }));
 }

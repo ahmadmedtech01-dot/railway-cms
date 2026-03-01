@@ -16,6 +16,7 @@ export type ClientSecuritySettings = {
   antiScreenSharing: boolean;
   violationLimit: number;
   allowedBrowsers: string[];
+  suspiciousDetectionEnabled?: boolean;
 };
 
 export const defaultClientSecuritySettings: ClientSecuritySettings = {
@@ -29,6 +30,7 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   antiScreenSharing: false,
   violationLimit: 3,
   allowedBrowsers: [],
+  suspiciousDetectionEnabled: true,
 };
 
 function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
@@ -44,6 +46,7 @@ function SettingRow({ label, description, children }: { label: string; descripti
 }
 
 const TOGGLES: { key: keyof ClientSecuritySettings; label: string; desc: string }[] = [
+  { key: "suspiciousDetectionEnabled", label: "Suspicious Activity Detection", desc: "Blocks bulk-download patterns (parallel segment scraping, key spamming). Turn off if it blocks normal users." },
   { key: "blockDevTools", label: "Block DevTools", desc: "Pause playback when browser developer tools are detected" },
   { key: "disableRightClick", label: "Disable Right-Click", desc: "Prevent context menu on the video player" },
   { key: "disableDownloads", label: "Disable Downloads", desc: "Block native browser download actions" },

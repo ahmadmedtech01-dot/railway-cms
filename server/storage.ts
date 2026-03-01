@@ -131,6 +131,25 @@ export const storage = {
     await db.delete(embedTokens).where(eq(embedTokens.id, id));
   },
 
+  // Per-user token helpers — for LMS / per-student token minting
+  async getActiveUserTokens(videoId: string, userId: string): Promise<EmbedToken[]> {
+    const all = await db
+      .select()
+      .from(embedTokens)
+      .where(and(eq(embedTokens.videoId, videoId), eq(embedTokens.userId as any, userId)));
+    const now = new Date();
+    return all.filter(t => !t.revoked && (!t.expiresAt || t.expiresAt > now));
+  },
+
+  async revokeUserTokensExcept(videoId: string, userId: string, exceptTokenValue: string): Promise<void> {
+    const tokens = await this.getActiveUserTokens(videoId, userId);
+    for (const t of tokens) {
+      if (t.token !== exceptTokenValue) {
+        await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
+      }
+    }
+  },
+
   // Playback Sessions
   async createSession(data: Partial<PlaybackSession>): Promise<PlaybackSession> {
     const [s] = await db.insert(playbackSessions).values(data as any).returning();

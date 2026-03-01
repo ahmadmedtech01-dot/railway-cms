@@ -1,0 +1,108 @@
+You are a senior full-stack engineer. Implement the following fixes in my Video CMS WITHOUT weakening the current security (proxy-only HLS, signed URLs, sliding playlists, AES session re-encryption, etc.). Keep UI/design the same except where explicitly asked.
+
+========================================
+GOALS (3 PROBLEMS TO FIX)
+========================================
+
+PROBLEM #1 (False “Too many requests / suspicious activity” after ~1 minute):
+- Normal HLS playback generates many requests (playlist refresh + segments). Our current “suspicious activity” logic is blocking normal users.
+- We must only block when behavior matches DOWNLOADERS (parallel segment scraping, key spamming, playlist scraping), NOT sequential streaming.
+- Add a GLOBAL toggle in Global Security Settings:
+  "Suspicious Activity Detection" ON/OFF
+  - When OFF: disable only suspicious-activity blocking (bulk detection + devtools-based blocking if exists)
+  - Keep token requirement, signed URLs, hotlink protection, session binding, encryption, and all other security enabled.
+
+PROBLEM #2 (1 embed token works only for 1 user / 2nd user blocked):
+- Right now we are using ONE embed token like a shared link, and enforcing concurrent session limit on that token.
+- For LMS, thousands of users must watch simultaneously.
+- Correct approach: DO NOT use one shared embed token.
+  Instead: generate a NEW embed token PER USER PER PLAY request (server-generated) while keeping concurrent session limit per user.
+
+PROBLEM #3 (After 1 hour the video becomes unavailable “everywhere”):
+- This happens because the same shared embed token is used for all users, so when it expires the shared link dies.
+- Fix: embed token expiry must apply to EACH USER’s token independently. Expired token should only affect that specific session/user, not all users.
+
+========================================
+REQUIRED BEHAVIOR
+========================================
+
+A) Per-User Token Minting (MUST)
+1) Remove dependency on manually created embed token for students.
+2) When a logged-in student opens a video:
+   - Backend creates a short-lived “playback session” for that user (already exists or create).
+   - Backend mints an EMBED TOKEN automatically:
+     - Bound to userId + videoId + sessionId
+     - Includes issuedAt + expiresAt (default 1 hour)
+     - Cannot be reused by another user.
+3) Player should receive a playback URL that includes this per-user embed token.
+4) Concurrent session limit must be enforced PER USER (not per global token):
+   - Allow the same video to be watched by many users at the same time.
+   - But prevent the SAME USER from opening too many sessions (keep existing concurrent limit setting but apply it to userId).
+5) If user opens video on second device and limit is 1:
+   - Show “Session limit reached” with option “End other session and continue” (simple modal/toast allowed).
+   - Implement an API endpoint to revoke the older session and continue.
+
+B) Token Expiry That Doesn’t Break Everyone
+1) Expiry is per-user token:
+   - When token expires, only that user’s playback fails.
+2) Implement seamless refresh:
+   - When the player receives 401/403 due to token expiry, it should call /api/player/:publicId/refresh-token
+   - Backend verifies user still has access, then mints a new per-user token and returns updated signed HLS URL.
+   - Player resumes without restarting from 0 (preserve currentTime if possible).
+
+C) Fix Suspicious Activity Detection (No False Positives)
+1) Add Global Security Setting toggle:
+   - globalSecurity.suspiciousDetectionEnabled = true/false
+2) When suspiciousDetectionEnabled=false:
+   - Do NOT block playback due to “too many requests” heuristics.
+   - Still enforce: require token, signed URLs, hotlink/referrer checks, encryption, session binding.
+3) Replace current simplistic request-count blocks with robust downloader signals:
+   - Allow normal streaming pattern:
+     - sequential segment fetch ~1 every 1-3 seconds (depends on segment duration/buffering)
+   - Block ONLY if any of these happen (when suspiciousDetectionEnabled=true):
+     a) Concurrent segment downloads > 3 at the same moment for the same session/user.
+     b) Segment request rate sustained > 15/sec for 3 seconds.
+     c) Playlist fetch rate > 1/sec sustained for 5 seconds (normal is much lower).
+     d) Key endpoint called more than 1 time per session (or >3/min as fallback).
+     e) Token/session used from multiple User-Agents (already exists) OR rapid UA changes.
+4) When blocked:
+   - Block should be scoped to that user session (not global) for 10 minutes.
+   - Show the existing overlay message, but only trigger for real abuse.
+
+D) UI/Settings Changes (Minimal)
+1) In Global Security Settings add:
+   - Toggle: Suspicious Activity Detection (ON/OFF)
+   - Helper text: “Blocks bulk-download patterns. Turn off if it blocks normal users.”
+2) Keep existing settings:
+   - Signed URL TTL
+   - Token TTL
+   - Concurrent session limit (but enforce per user)
+
+========================================
+TECHNICAL NOTES / ACCEPTANCE TESTS
+========================================
+
+1) With suspiciousDetectionEnabled=true:
+   - Normal playback of a 2+ minute video must NOT show “too many requests”.
+2) Open the same video by 10 different accounts simultaneously:
+   - ALL must play (no blocking).
+3) Use the same account on 2 devices:
+   - If limit=1, second device should get “session limit reached”.
+4) After 1 hour:
+   - Only that user token expires.
+   - Refresh-token flow renews and video continues.
+5) DevTools Network must still only show /hls /seg /key routes (no B2/S3 URLs).
+6) Do not weaken AES per-session re-encryption or sliding window playlist.
+
+========================================
+IMPLEMENTATION STEPS (DO THIS)
+========================================
+1) Identify current “embed token” model and replace shared token usage with per-user minting.
+2) Move concurrency checks from token-based to userId-based.
+3) Add refresh-token endpoint + player recovery logic.
+4) Rework suspicious detection to concurrency-based + rate-based heuristics, behind a global toggle.
+5) Add logging:
+   - SECURITY_BLOCK_REASON: CONCURRENT_SEGMENTS / KEY_SPAM / PLAYLIST_SPAM / RATE_SPIKE / UA_MISMATCH
+   - and include userId, videoId, sessionId.
+
+Deliver code updates with clear comments. No unnecessary refactors.

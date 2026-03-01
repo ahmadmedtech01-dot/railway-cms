@@ -116,6 +116,7 @@ export const embedTokens = pgTable("embed_tokens", {
   expiresAt: timestamp("expires_at"),
   revoked: boolean("revoked").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  userId: text("user_id"),
 });
 
 export const playbackSessions = pgTable("playback_sessions", {

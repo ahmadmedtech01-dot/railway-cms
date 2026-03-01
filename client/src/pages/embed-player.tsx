@@ -63,7 +63,13 @@ function formatTime(s: number): string {
 export default function EmbedPlayerPage() {
   const { publicId } = useParams<{ publicId: string }>();
   const search = useSearch();
-  const token = new URLSearchParams(search).get("token") || "";
+  const urlParams = new URLSearchParams(search);
+  const urlToken = urlParams.get("token") || "";
+  const userId = urlParams.get("userId") || "";
+
+  // activeTokenRef tracks the token currently in use (either from URL or auto-minted for userId)
+  const activeTokenRef = useRef(urlToken);
+  const token = urlToken;
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -108,6 +114,9 @@ export default function EmbedPlayerPage() {
   const [denialSignal, setDenialSignal] = useState<string>("");
   const [retryKey, setRetryKey] = useState(0);
 
+  // Session limit state — when userId concurrent limit is reached
+  const [sessionLimitInfo, setSessionLimitInfo] = useState<{ activeSessions: any[] } | null>(null);
+
   // Keep ref in sync so DevTools detector can read current signal without stale closure
   useEffect(() => { denialSignalRef.current = denialSignal; }, [denialSignal]);
 
@@ -131,8 +140,36 @@ export default function EmbedPlayerPage() {
   useEffect(() => {
     const init = async () => {
       try {
+        // If userId is provided and no token in URL, auto-mint a per-user token
+        let activeToken = token;
+        if (userId && !token) {
+          const mintRes = await fetch(`/api/player/${publicId}/session-token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId }),
+          });
+          if (mintRes.status === 429) {
+            const d = await mintRes.json().catch(() => ({}));
+            if (d.code === "SESSION_LIMIT") {
+              setSessionLimitInfo({ activeSessions: d.activeSessions || [] });
+              setStatus("error");
+              setErrorMsg("SESSION_LIMIT");
+              return;
+            }
+          }
+          if (!mintRes.ok) {
+            const d = await mintRes.json().catch(() => ({}));
+            setStatus("error");
+            setErrorMsg(d.message || "Could not start session");
+            return;
+          }
+          const mintData = await mintRes.json();
+          activeToken = mintData.token;
+          activeTokenRef.current = activeToken;
+        }
+
         // Fetch manifest
-        const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+        const qs = activeToken ? `?token=${encodeURIComponent(activeToken)}` : "";
         const referrer = document.referrer;
         const manifestRes = await fetch(`/api/player/${publicId}/manifest${qs}`, {
           headers: referrer ? { "x-embed-referrer": referrer } : {},
@@ -224,11 +261,40 @@ export default function EmbedPlayerPage() {
                 hls.stopLoad();
                 videoRef.current?.pause();
                 let signal = "rate_limit";
+                let errorCode = "";
                 try {
                   const parsed = JSON.parse(responseText);
                   if (parsed?.signal) signal = parsed.signal;
+                  if (parsed?.code) errorCode = parsed.code;
                 } catch {}
-                triggerDenial(signal);
+
+                // If token expired and we have a userId, attempt seamless refresh
+                const canRefresh = userId && activeTokenRef.current && (errorCode === "TOKEN_EXPIRED" || signal === "token_expired" || code === 401);
+                if (canRefresh) {
+                  const savedTime = videoRef.current?.currentTime || 0;
+                  fetch(`/api/player/${publicId}/refresh-token`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ token: activeTokenRef.current }),
+                  }).then(async r => {
+                    if (!r.ok) { triggerDenial(signal); return; }
+                    const rd = await r.json();
+                    if (rd.token) activeTokenRef.current = rd.token;
+                    if (rd.manifestUrl) {
+                      hls.loadSource(rd.manifestUrl);
+                      hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                        if (videoRef.current) {
+                          videoRef.current.currentTime = savedTime;
+                          videoRef.current.play().catch(() => {});
+                        }
+                      });
+                    } else {
+                      triggerDenial(signal);
+                    }
+                  }).catch(() => triggerDenial(signal));
+                } else {
+                  triggerDenial(signal);
+                }
               } else {
                 setStatus("error");
                 setErrorMsg("Stream error");
@@ -562,6 +628,71 @@ export default function EmbedPlayerPage() {
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-white border-t-transparent mx-auto" />
           <p className="text-lg font-semibold">Processing Video</p>
           <p className="text-sm opacity-60">Your video is being ingested and converted to HLS. Please check back in a few minutes.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error" && errorMsg === "SESSION_LIMIT") {
+    const endOtherAndContinue = async () => {
+      if (!userId || !activeTokenRef.current) return;
+      const video = await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, currentToken: activeTokenRef.current }),
+      });
+      if (video.ok) {
+        setSessionLimitInfo(null);
+        setErrorMsg("");
+        setStatus("loading");
+        setRetryKey(k => k + 1);
+      }
+    };
+
+    const mintAndContinue = async () => {
+      const mintRes = await fetch(`/api/player/${publicId}/session-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      if (mintRes.status === 429) {
+        const d = await mintRes.json().catch(() => ({}));
+        if (d.code === "SESSION_LIMIT") {
+          activeTokenRef.current = "";
+          await endOtherAndContinue();
+        }
+        return;
+      }
+      if (mintRes.ok) {
+        const d = await mintRes.json();
+        activeTokenRef.current = d.token;
+        setSessionLimitInfo(null);
+        setErrorMsg("");
+        setStatus("loading");
+        setRetryKey(k => k + 1);
+      }
+    };
+
+    return (
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        <div className="text-center space-y-4 max-w-sm px-6">
+          <div className="text-5xl select-none">📺</div>
+          <p className="text-lg font-semibold">Session Limit Reached</p>
+          <p className="text-sm opacity-60">
+            You are already watching this video in another tab or device. Only one active session is allowed at a time.
+          </p>
+          <div className="flex flex-col gap-2 pt-2">
+            <button
+              onClick={mintAndContinue}
+              className="w-full px-5 py-2.5 rounded-md bg-white text-black text-sm font-semibold hover:bg-white/90 transition-colors"
+              data-testid="button-end-other-session"
+            >
+              End Other Session &amp; Continue Here
+            </button>
+          </div>
+          <p className="text-xs opacity-40 pt-1">
+            Ending other sessions will immediately stop playback on those devices.
+          </p>
         </div>
       </div>
     );

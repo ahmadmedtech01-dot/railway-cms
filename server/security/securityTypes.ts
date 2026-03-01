@@ -14,6 +14,7 @@ export type ClientSecuritySettings = {
   watermarkEnabled?: boolean;
   watermarkFields?: { name: boolean; email: boolean; userId: boolean; timestamp: boolean };
   maxPlaybackSpeed?: number;
+  suspiciousDetectionEnabled?: boolean;
 };
 
 export const defaultClientSecuritySettings: ClientSecuritySettings = {
@@ -27,4 +28,5 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   antiScreenSharing: false,
   violationLimit: 3,
   allowedBrowsers: [],
+  suspiciousDetectionEnabled: true,
 };
