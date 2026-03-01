@@ -232,6 +232,8 @@ export default function VideoDetailPage() {
   const [tokenLabel, setTokenLabel] = useState("Embed Token");
   const [tokenDomain, setTokenDomain] = useState("");
   const [tokenTtl, setTokenTtl] = useState("24");
+  const [embedWidth, setEmbedWidth] = useState("100%");
+  const [embedHeight, setEmbedHeight] = useState("500");
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
   const [domainInput, setDomainInput] = useState("");
   const [baseUrl, setBaseUrl] = useState(() => window.location.origin);
@@ -445,6 +447,22 @@ export default function VideoDetailPage() {
     onSuccess: () => { refetchTokens(); toast({ title: "Token deleted" }); },
   });
 
+  const resetShareLink = useMutation({
+    mutationFn: async () => {
+      const oldShareToken = tokens.find(t => !t.revoked && t.label === "Share Link") ?? firstToken;
+      await apiRequest("POST", `/api/videos/${id}/tokens`, {
+        label: "Share Link",
+        allowedDomain: null,
+        ttlHours: 87600,
+      });
+      if (oldShareToken) {
+        await apiRequest("POST", `/api/tokens/${oldShareToken.id}/revoke`);
+      }
+    },
+    onSuccess: () => { refetchTokens(); toast({ title: "Share link reset — new link generated" }); },
+    onError: () => toast({ title: "Failed to reset share link", variant: "destructive" }),
+  });
+
   const toggle = useMutation({
     mutationFn: () => apiRequest("POST", `/api/videos/${id}/toggle-availability`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/videos", id] }),
@@ -563,8 +581,8 @@ export default function VideoDetailPage() {
   const iframeCode = `<iframe
   id="secure-video-player"
   src="${embedSrc}"
-  width="100%"
-  height="500"
+  width="${embedWidth}"
+  height="${embedHeight}"
   allow="fullscreen"
   referrerpolicy="no-referrer-when-downgrade"
   sandbox="allow-scripts allow-same-origin allow-presentation"
@@ -2051,6 +2069,43 @@ iframe.addEventListener('load', () => {
 
         {/* Embed & Share */}
         <TabsContent value="embed" className="mt-4 space-y-4">
+
+          {/* Embed Settings — applies to all sharing methods */}
+          <Card className="border border-card-border">
+            <CardHeader>
+              <CardTitle className="text-base">Embed Settings</CardTitle>
+              <CardDescription>These settings apply to all sharing methods below</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="embed-width">Width</Label>
+                  <Input
+                    id="embed-width"
+                    value={embedWidth}
+                    onChange={e => setEmbedWidth(e.target.value)}
+                    placeholder="100%"
+                    className="font-mono text-sm"
+                    data-testid="input-embed-width"
+                  />
+                  <p className="text-xs text-muted-foreground">e.g. 100%, 800px, 640</p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="embed-height">Height</Label>
+                  <Input
+                    id="embed-height"
+                    value={embedHeight}
+                    onChange={e => setEmbedHeight(e.target.value)}
+                    placeholder="500"
+                    className="font-mono text-sm"
+                    data-testid="input-embed-height"
+                  />
+                  <p className="text-xs text-muted-foreground">e.g. 500, 360px, 56.25%</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card className="border border-card-border">
             <CardHeader className="flex flex-row items-center justify-between gap-2">
               <div>
@@ -2085,11 +2140,25 @@ iframe.addEventListener('load', () => {
               </div>
 
               <div className="space-y-2">
-                <Label>Masked Share Link</Label>
+                <div className="flex items-center justify-between">
+                  <Label>Masked Share Link</Label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => resetShareLink.mutate()}
+                    disabled={resetShareLink.isPending}
+                    data-testid="button-reset-share-link"
+                    className="h-7 text-xs gap-1"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    {resetShareLink.isPending ? "Resetting…" : "Reset Link"}
+                  </Button>
+                </div>
                 <div className="flex items-center gap-2">
                   <Input value={shareLink} readOnly className="font-mono text-xs" />
                   <CopyButton text={shareLink} />
                 </div>
+                <p className="text-xs text-muted-foreground">Reset generates a new link and invalidates the current one.</p>
               </div>
 
               <div className="space-y-2">
