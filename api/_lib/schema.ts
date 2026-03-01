@@ -221,6 +221,7 @@ export const videoClientSecurity = pgTable("video_client_security", {
   disableDownloads: boolean("disable_downloads").notNull().default(false),
   requireFullscreen: boolean("require_fullscreen").notNull().default(false),
   antiScreenSharing: boolean("anti_screen_sharing").notNull().default(false),
+  suspiciousDetectionEnabled: boolean("suspicious_detection_enabled").notNull().default(true),
   violationLimit: integer("violation_limit").notNull().default(3),
   allowedBrowsers: text("allowed_browsers").array().default(sql`'{}'::text[]`),
 });

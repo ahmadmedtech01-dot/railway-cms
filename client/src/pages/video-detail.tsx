@@ -366,27 +366,43 @@ export default function VideoDetailPage() {
     queryKey: ["/api/security/video", id],
     queryFn: () => fetch(`/api/security/video/${id}`).then(r => r.json()),
     enabled: !!id,
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
   });
 
   const { data: useGlobalData } = useQuery<{ useGlobal: boolean }>({
     queryKey: ["/api/security/video", id, "use-global"],
     queryFn: () => fetch(`/api/security/video/${id}/use-global`).then(r => r.json()),
     enabled: !!id,
+    refetchOnWindowFocus: false,
   });
+
+  // Ref-guard so localCss is only seeded from the server once per custom-mode session.
+  // Without this, every TanStack Query background-refetch would silently undo the user's
+  // unsaved toggle changes.
+  const cssLoadedRef = useRef(false);
 
   useEffect(() => {
     if (useGlobalData !== undefined) setLocalUseGlobal(useGlobalData.useGlobal ?? true);
   }, [useGlobalData]);
 
   useEffect(() => {
-    if (clientSecData && !localUseGlobal) {
+    if (localUseGlobal) {
+      // Reset the guard so we re-seed when switching back to custom mode
+      cssLoadedRef.current = false;
+      return;
+    }
+    if (clientSecData && !cssLoadedRef.current) {
       setLocalCss({ ...defaultClientSecuritySettings, ...clientSecData });
+      cssLoadedRef.current = true;
     }
   }, [clientSecData, localUseGlobal]);
 
   const saveClientSecurity = useMutation({
     mutationFn: () => apiRequest("POST", `/api/security/video/${id}`, localCss),
     onSuccess: () => {
+      // Don't reset cssLoadedRef — localCss already matches what we just saved.
+      // The query invalidation will refetch but the ref guard will prevent overwriting.
       qc.invalidateQueries({ queryKey: ["/api/security/video", id] });
       toast({ title: "Client protection settings saved" });
     },
@@ -397,6 +413,8 @@ export default function VideoDetailPage() {
     mutationFn: (val: boolean) => apiRequest("POST", `/api/security/video/${id}/use-global`, { useGlobal: val }),
     onSuccess: (_data, val) => {
       setLocalUseGlobal(val);
+      // When switching to custom mode, clear the guard so localCss reloads from server
+      if (!val) cssLoadedRef.current = false;
       qc.invalidateQueries({ queryKey: ["/api/security/video", id, "use-global"] });
       toast({ title: val ? "Now using global settings" : "Now using individual settings" });
     },

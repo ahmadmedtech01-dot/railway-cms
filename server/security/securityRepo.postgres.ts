@@ -51,6 +51,7 @@ export class PostgresSecurityRepo implements SecurityRepo {
       disableDownloads: row.disableDownloads,
       requireFullscreen: row.requireFullscreen,
       antiScreenSharing: row.antiScreenSharing,
+      suspiciousDetectionEnabled: row.suspiciousDetectionEnabled,
       violationLimit: row.violationLimit,
       allowedBrowsers: row.allowedBrowsers ?? [],
     };
@@ -71,6 +72,7 @@ export class PostgresSecurityRepo implements SecurityRepo {
       disableDownloads: settings.disableDownloads,
       requireFullscreen: settings.requireFullscreen,
       antiScreenSharing: settings.antiScreenSharing,
+      suspiciousDetectionEnabled: settings.suspiciousDetectionEnabled ?? true,
       violationLimit: settings.violationLimit,
       allowedBrowsers: settings.allowedBrowsers,
     };
