@@ -1556,10 +1556,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? globalSec
         : ((await secRepo.getVideo(video.id)) ?? globalSec);
       const suspiciousEnabled = isAdminPreview ? false : (effectiveClientSec.suspiciousDetectionEnabled !== false);
+      const effectiveViolationLimit = effectiveClientSec.violationLimit ?? 3;
 
       if (conn?.provider === "backblaze_b2") {
         const cfg = conn.config as any;
-        const sid = createSession(video.publicId, hlsPrefix, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled);
+        const sid = createSession(video.publicId, hlsPrefix, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
         return res.json({ manifestUrl, sourceType: "b2_proxy", sessionId: sid, videoId: video.id, ...(isAdminPreview ? { adminPreview: true } : {}) });
@@ -1569,7 +1570,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const s3cfg = await getS3Config();
 
       if (client && s3cfg.bucket) {
-        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled);
+        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
         return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, ...(isAdminPreview ? { adminPreview: true } : {}) });
@@ -2093,11 +2094,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? globalSec
         : ((await secRepo.getVideo(video.id)) ?? globalSec);
       const suspiciousEnabled = effectiveClientSec2.suspiciousDetectionEnabled !== false;
+      const effectiveViolationLimit2 = effectiveClientSec2.violationLimit ?? 3;
       const ttls = getTokenTTL();
       let manifestUrl: string | null = null;
       if (conn?.provider === "backblaze_b2") {
         const cfg = conn.config as any;
-        const newSid = createSession(video.publicId, video.hlsS3Prefix!, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled);
+        const newSid = createSession(video.publicId, video.hlsS3Prefix!, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest, dh);
       }
 
@@ -2245,7 +2247,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? altGlobalSec
         : ((await secRepo.getVideo(video.id)) ?? altGlobalSec);
       const altSuspiciousEnabled = altEffectiveSec.suspiciousDetectionEnabled !== false;
-      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled);
+      const altViolationLimit = altEffectiveSec.violationLimit ?? 3;
+      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled, altViolationLimit);
       const proxyBase = `/hls/${video.publicId}/master.m3u8`;
       const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", altTtls.manifest, altDh);
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();

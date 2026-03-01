@@ -161,11 +161,14 @@ export default function EmbedPlayerPage() {
   const [videoId, setVideoId] = useState("");
   const [effectiveSecurity, setEffectiveSecurity] = useState<Record<string, any>>({ blockDevTools: true });
   const [isAdminPreview, setIsAdminPreview] = useState(false);
+  const [securityReady, setSecurityReady] = useState(false);
 
   // Violation counter — loaded from localStorage so it persists across refreshes
-  // Disabled entirely for admin preview so the overlay never appears in the admin panel
+  // Disabled entirely for admin preview and when suspiciousDetectionEnabled is off
   const { reportViolation, isBlocked, remainingMs, toast: violationToast } =
-    useSecurityViolations(videoId, effectiveSecurity, { disabled: isAdminPreview });
+    useSecurityViolations(videoId, effectiveSecurity, {
+      disabled: isAdminPreview || !securityReady || effectiveSecurity?.suspiciousDetectionEnabled === false,
+    });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [tickerOffset, setTickerOffset] = useState(0);
   const [playbackDenied, setPlaybackDenied] = useState(false);
@@ -181,6 +184,7 @@ export default function EmbedPlayerPage() {
   useEffect(() => { denialSignalRef.current = denialSignal; }, [denialSignal]);
 
   const triggerDenial = (signal: string) => {
+    if (effectiveSecurity?.suspiciousDetectionEnabled === false && signal !== "devtools") return;
     denialSignalRef.current = signal;
     setDenialSignal(signal);
     setPlaybackDenied(true);
@@ -195,6 +199,18 @@ export default function EmbedPlayerPage() {
     setStatus("loading");
     setRetryKey(k => k + 1);
   };
+
+  useEffect(() => {
+    if (
+      effectiveSecurity?.suspiciousDetectionEnabled === false &&
+      playbackDenied &&
+      denialSignal !== "devtools"
+    ) {
+      setPlaybackDenied(false);
+      setDenialSignal("");
+      denialSignalRef.current = "";
+    }
+  }, [effectiveSecurity?.suspiciousDetectionEnabled]);
 
   // Iframe-only enforcement + postMessage receiver for LMS launch tokens
   useEffect(() => {
@@ -320,7 +336,11 @@ export default function EmbedPlayerPage() {
           }),
           resolvedVideoId
             ? fetch(`/api/security/effective/${resolvedVideoId}`).then(async r => {
-                if (r.ok) setEffectiveSecurity(await r.json());
+                if (r.ok) {
+                  const secData = await r.json();
+                  setEffectiveSecurity(secData);
+                  setSecurityReady(true);
+                }
               })
             : Promise.resolve(),
         ]);

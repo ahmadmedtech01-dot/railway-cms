@@ -90,6 +90,8 @@ export interface VideoSession {
   // Whether suspicious-activity blocking is enabled for this session
   suspiciousDetectionEnabled: boolean;
 
+  violationLimit: number;
+
   // Track spike detection: timestamp when rate first exceeded threshold
   segmentRateSpikeStart: number | null;
   playlistSpikeStart: number | null;
@@ -117,6 +119,7 @@ export function createSession(
   deviceHash?: string,
   userAgent?: string,
   suspiciousDetectionEnabled = true,
+  violationLimit = DEFAULT_VIOLATION_LIMIT,
 ): string {
   const sid = crypto.randomBytes(16).toString("hex");
   const uaHash = userAgent ? crypto.createHash("sha256").update(userAgent).digest("hex").slice(0, 32) : "";
@@ -154,6 +157,7 @@ export function createSession(
     keyExp,
     keySig,
     suspiciousDetectionEnabled,
+    violationLimit,
     segmentRateSpikeStart: null,
     playlistSpikeStart: null,
   });
@@ -247,14 +251,16 @@ export function verifySignedPath(sid: string, resourcePath: string, exp: number,
   }
 }
 
-const VIOLATION_LIMIT = 6;
+const DEFAULT_VIOLATION_LIMIT = 6;
 const BLOCK_DURATION_MS = 10 * 60 * 1000;
 
 function addAbuse(s: VideoSession, delta: number, reason: AbuseReason): { abused: boolean } {
+  if (!s.suspiciousDetectionEnabled) return { abused: false };
+
   s.abuseScore += delta;
   s.breachEvents += 1;
 
-  if (s.breachEvents >= VIOLATION_LIMIT || s.abuseScore >= ABUSE_THRESHOLDS.scoreToRevoke) {
+  if (s.breachEvents >= s.violationLimit || s.abuseScore >= ABUSE_THRESHOLDS.scoreToRevoke) {
     s.revoked = true;
     s.blockedUntil = Date.now() + BLOCK_DURATION_MS;
     if (!s.revokeReason) s.revokeReason = reason;
@@ -457,6 +463,8 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
   if (!s) return { allowed: false, reason: { signal: "rate_limit", detail: "Session not found" } };
   if (s.revoked) return { allowed: false, reason: s.revokeReason ?? { signal: "rate_limit", detail: "Session revoked" } };
 
+  if (!s.suspiciousDetectionEnabled) return { allowed: true };
+
   const { start, end } = getWindowRange(sid);
 
   if (segIndex >= start && segIndex <= end) {
@@ -548,9 +556,9 @@ export function getSessionAbuseSummary(sid: string) {
 
 export function getBreachInfo(sid: string): { breachCount: number; violationLimit: number; blocked: boolean; blockSecondsRemaining: number } {
   const s = sessions.get(sid);
-  if (!s) return { breachCount: 0, violationLimit: VIOLATION_LIMIT, blocked: true, blockSecondsRemaining: 0 };
+  if (!s) return { breachCount: 0, violationLimit: DEFAULT_VIOLATION_LIMIT, blocked: true, blockSecondsRemaining: 0 };
   const remaining = s.blockedUntil ? Math.max(0, Math.ceil((s.blockedUntil - Date.now()) / 1000)) : 0;
-  return { breachCount: s.breachEvents, violationLimit: VIOLATION_LIMIT, blocked: s.revoked, blockSecondsRemaining: remaining };
+  return { breachCount: s.breachEvents, violationLimit: s.violationLimit, blocked: s.revoked, blockSecondsRemaining: remaining };
 }
 
 export function getAbuseThresholds() {

@@ -81,7 +81,7 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 
 **Session Binding**: Each session stores: sessionId, userAgent hash, deviceHash, boundIp, createdAt, expiresAt (10 min max). All /hls, /seg, /key requests validate token + session validity + UA match + device hash.
 
-**Abuse Detection** (server/video-session.ts): Sessions revoked when abuse score reaches 15:
+**Abuse Detection** (server/video-session.ts): Controlled by `suspiciousDetectionEnabled` (per-video or global). When OFF, all abuse scoring, segment window enforcement, session revocation, and denial overlays are completely bypassed. When ON:
 - Rate limit: >10 requests/second (burst 15) → +3/+5 score
 - Concurrent segments: >6 simultaneous → +5
 - Bulk download detection: >30 segments in 5s → +8 (logged as SECURITY_BULK_DOWNLOAD)
@@ -89,8 +89,9 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 - IP mismatch: different IP on same session → +8
 - Out-of-window: segment request outside [current-1, current+6] → +3 (after 3 violations)
 - Key abuse: >30 key requests/min → +5
+- Violation limit: configurable per-video via `violationLimit` (default 6), stored in session object
 - On breach: session blocked for 10 minutes, returns 429/403
-- Breach response format: `{ error: "SECURITY_BREACH", breach: "X/6" }` in denial responses
+- Breach response format: `{ error: "SECURITY_BREACH", breach: "X/limit" }` in denial responses
 
 **CORS Policy**: Origin-restricted (not wildcard). In production, only configured ALLOWED_ORIGINS + Replit domains permitted. Dev mode allows all origins.
 

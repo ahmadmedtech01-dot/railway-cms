@@ -1,0 +1,169 @@
+We need to fix a critical logic issue in the secure video playback system.
+
+PROBLEM:
+When "Suspicious Activity Detection" is turned OFF (either globally or per-video),
+the "Video playback denied due to suspicious activity" overlay still appears,
+and server still blocks playback due to window/abuse logic.
+
+OFF must mean FULLY OFF:
+- No session revocation due to suspicious behavior
+- No abuse score increment
+- No segment window enforcement
+- No playback denied overlay for suspicious
+- No rate limit denial
+- Client overlay must not appear
+
+We are using Supabase database.
+The effective security config comes from:
+GET /api/security/effective/:videoId
+
+-----------------------------------------
+STEP 1 — SERVER SIDE FIX (video-session.ts)
+-----------------------------------------
+
+In server/video-session.ts:
+
+1) Remove any hardcoded violation limit.
+   DO NOT use:
+   const VIOLATION_LIMIT = 6;
+
+2) The VideoSession object must include:
+   violationLimit: number
+   suspiciousDetectionEnabled: boolean
+
+3) In createSession(...):
+   Ensure violationLimit is passed from routes.ts
+   and stored in session.
+
+4) In addAbuse():
+   If suspiciousDetectionEnabled is false:
+       RETURN immediately without increasing abuseScore
+       RETURN without revoking session
+
+   Example:
+
+   if (!s.suspiciousDetectionEnabled) return;
+
+5) In validateSegmentWindow():
+   At top of function add:
+
+   if (!s.suspiciousDetectionEnabled) {
+       return { allowed: true };
+   }
+
+   This ensures window enforcement does NOT block playback.
+
+6) In any logic where:
+   s.revoked = true
+   s.blockedUntil = ...
+
+   Wrap inside:
+
+   if (s.suspiciousDetectionEnabled) {
+       // revoke logic
+   }
+
+-----------------------------------------
+STEP 2 — ROUTES FIX (routes.ts)
+-----------------------------------------
+
+When calling createSession(...),
+pass violationLimit from effective security settings.
+
+Replace:
+
+createSession(..., suspiciousEnabled)
+
+With:
+
+createSession(
+  ...,
+  suspiciousEnabled,
+  effectiveClientSec.violationLimit ?? 3
+)
+
+Ensure violationLimit comes from:
+GET /api/security/effective/:videoId
+
+-----------------------------------------
+STEP 3 — CLIENT FIX (embed-player.tsx)
+-----------------------------------------
+
+Problem:
+Overlay appears even when suspiciousDetectionEnabled = false.
+
+Fix:
+
+1) Add:
+
+const [securityReady, setSecurityReady] = useState(false);
+
+2) After fetching effective security:
+   setEffectiveSecurity(data);
+   setSecurityReady(true);
+
+3) Modify useSecurityViolations call:
+
+useSecurityViolations(videoId, effectiveSecurity, {
+   disabled: isAdminPreview || !securityReady
+});
+
+4) Modify triggerDenial():
+
+Replace:
+
+const triggerDenial = (signal) => {
+  setPlaybackDenied(true);
+};
+
+With:
+
+const triggerDenial = (signal) => {
+  if (effectiveSecurity?.suspiciousDetectionEnabled === false) {
+      if (signal !== "devtools") return;
+  }
+  setPlaybackDenied(true);
+};
+
+5) Add effect to auto-hide overlay when suspicious disabled:
+
+useEffect(() => {
+  if (
+    effectiveSecurity?.suspiciousDetectionEnabled === false &&
+    playbackDenied &&
+    denialSignal !== "devtools"
+  ) {
+    setPlaybackDenied(false);
+    setDenialSignal("");
+  }
+}, [effectiveSecurity?.suspiciousDetectionEnabled]);
+
+-----------------------------------------
+EXPECTED RESULT
+-----------------------------------------
+
+When Suspicious Activity Detection = OFF:
+
+✔ No session revocation
+✔ No abuse score increment
+✔ No segment window block
+✔ No playback denied overlay
+✔ Video plays normally
+
+When ON:
+
+✔ All protection logic works normally
+
+-----------------------------------------
+
+After implementing:
+- Test by turning suspicious OFF globally
+- Reload video 5–10 times
+- Open devtools
+- Confirm no suspicious overlay appears
+- Confirm no "too many requests" denial
+
+Do not change any other security logic.
+Only fix suspiciousDetectionEnabled behavior.
+
+Apply changes carefully and do not break HLS flow.
