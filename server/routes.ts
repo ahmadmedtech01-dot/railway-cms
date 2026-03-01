@@ -1423,8 +1423,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ttls = getTokenTTL();
 
       // Read suspiciousDetectionEnabled from global security settings
+      // Admin preview sessions always have suspicious detection disabled
       const globalSec = await secRepo.getGlobal();
-      const suspiciousEnabled = globalSec.suspiciousDetectionEnabled !== false;
+      const suspiciousEnabled = isAdminPreview ? false : (globalSec.suspiciousDetectionEnabled !== false);
 
       if (conn?.provider === "backblaze_b2") {
         const cfg = conn.config as any;
@@ -2496,13 +2497,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const rateSid = createSession(video.publicId, `videos/${video.id}/hls/`, "backblaze_b2", {}, null, "ratetest");
       let tripped = false;
       const thresholds = getAbuseThresholds();
-      for (let i = 0; i < thresholds.requestsPerWindow + 10; i++) {
+      for (let i = 0; i < thresholds.scoreToRevoke * 5 + 10; i++) {
         const r = trackRequest(rateSid, "127.0.0.1");
         if (r.abused) { tripped = true; break; }
       }
       revokeSession(rateSid);
       results["rate_limit_check"] = tripped
-        ? { status: "PASS", detail: `Rate limit triggered after flooding ${thresholds.requestsPerWindow}+ requests` }
+        ? { status: "PASS", detail: `Rate limit triggered after flooding requests` }
         : { status: "FAIL", detail: "Rate limit did not trigger" };
     } catch (e: any) {
       results["rate_limit_check"] = { status: "FAIL", detail: e.message };
@@ -2540,7 +2541,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const tokenTtls = getTokenTTL();
     results["security_summary"] = {
       status: "PASS",
-      detail: `Rate limit: ${thresholds.requestsPerWindow} req/${thresholds.requestWindowMs}ms (burst ${thresholds.burstLimit}), ` +
+      detail: `Key limit: ${thresholds.keyHitsPerMin}/min (total ${thresholds.keyHitsTotal}), ` +
         `Concurrent: ${thresholds.concurrentSegments} max, ` +
         `Window: ${thresholds.windowSize} segments, ` +
         `Revoke threshold: ${thresholds.scoreToRevoke}, ` +

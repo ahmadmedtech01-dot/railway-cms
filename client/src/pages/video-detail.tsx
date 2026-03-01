@@ -893,8 +893,8 @@ iframe.addEventListener('load', () => {
         <TabsContent value="player" className="mt-4">
           <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-5 items-start">
 
-            {/* LEFT: Live Preview */}
-            <div className="space-y-3">
+            {/* LEFT: Live Preview — sticky on desktop */}
+            <div className="space-y-3 xl:sticky xl:top-4 xl:self-start">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-foreground">Live Preview</span>
                 <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1" onClick={refreshPreview} data-testid="button-refresh-preview">
@@ -1328,9 +1328,35 @@ iframe.addEventListener('load', () => {
                     <SettingRow label="Show Display Names" description="Display user names in overlays">
                       <Switch checked={!!localBrandPs.showDisplayNames} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, showDisplayNames: val }))} data-testid="switch-show-display-names" />
                     </SettingRow>
+                    {localBrandPs.showDisplayNames && (
+                      <div className="space-y-1">
+                        <Label className="text-xs">Display Name Text</Label>
+                        <Input
+                          value={localBrandPs.displayNameText ?? ""}
+                          placeholder="e.g. John Smith"
+                          maxLength={60}
+                          onChange={e => setLocalBrandPs(p => ({ ...p, displayNameText: e.target.value }))}
+                          data-testid="input-display-name-text"
+                        />
+                        <p className="text-xs text-muted-foreground">{(localBrandPs.displayNameText ?? "").length}/60 chars</p>
+                      </div>
+                    )}
                     <SettingRow label="Show Headlines" description="Display headline text in overlays">
                       <Switch checked={!!localBrandPs.showHeadlines} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, showHeadlines: val }))} data-testid="switch-show-headlines" />
                     </SettingRow>
+                    {localBrandPs.showHeadlines && (
+                      <div className="space-y-1">
+                        <Label className="text-xs">Headline Text</Label>
+                        <Input
+                          value={localBrandPs.headlineText ?? ""}
+                          placeholder="e.g. Session 3: Advanced Topics"
+                          maxLength={120}
+                          onChange={e => setLocalBrandPs(p => ({ ...p, headlineText: e.target.value }))}
+                          data-testid="input-headline-text"
+                        />
+                        <p className="text-xs text-muted-foreground">{(localBrandPs.headlineText ?? "").length}/120 chars</p>
+                      </div>
+                    )}
                     <Button size="sm" className="w-full" onClick={() => updateBrandSettings.mutate(localBrandPs)} disabled={updateBrandSettings.isPending}>
                       {updateBrandSettings.isPending ? "Saving…" : "Save Style Settings"}
                     </Button>

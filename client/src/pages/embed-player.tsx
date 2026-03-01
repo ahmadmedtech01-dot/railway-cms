@@ -49,6 +49,12 @@ interface PlayerSettings {
   qrOpacity?: number;
   qrBgEnabled?: boolean;
   qrBgOpacity?: number;
+  showDisplayNames?: boolean;
+  displayNameText?: string;
+  showHeadlines?: boolean;
+  headlineText?: string;
+  fontFamily?: string;
+  brandColor?: string;
 }
 
 interface PlayerBanner {
@@ -1008,130 +1014,9 @@ export default function EmbedPlayerPage() {
             </div>
           )}
 
-          {/* ── Player Brand: Full Overlay Image ── */}
-          {playerSettings.overlayEnabled && playerSettings.overlayUrl && (() => {
-            const mode = playerSettings.overlayMode ?? "full";
-            const styleMap: Record<string, React.CSSProperties> = {
-              full:   { inset: 0 },
-              top:    { top: 0, left: 0, right: 0, height: "30%" },
-              bottom: { bottom: 0, left: 0, right: 0, height: "30%" },
-              left:   { top: 0, bottom: 0, left: 0, width: "30%" },
-              right:  { top: 0, bottom: 0, right: 0, width: "30%" },
-            };
-            return (
-              <div
-                className="absolute pointer-events-none"
-                style={{ ...styleMap[mode] ?? styleMap.full, opacity: playerSettings.overlayOpacity ?? 0.6 }}
-                data-testid="overlay-player-overlay"
-              >
-                <img src={playerSettings.overlayUrl} alt="" className="w-full h-full object-cover" />
-              </div>
-            );
-          })()}
-
-          {/* ── Player Brand: Logo ── */}
-          {playerSettings.logoEnabled && playerSettings.logoUrl && (() => {
-            const pos: Record<string, React.CSSProperties> = {
-              "top-left":     { top: 12, left: 12 },
-              "top-right":    { top: 12, right: 12 },
-              "bottom-left":  { bottom: 48, left: 12 },
-              "bottom-right": { bottom: 48, right: 12 },
-            };
-            const sizePercent = playerSettings.logoSizePercent ?? 12;
-            return (
-              <div
-                className="absolute pointer-events-none"
-                style={{ ...pos[playerSettings.logoPlacement ?? "top-right"] ?? pos["top-right"], opacity: playerSettings.logoOpacity ?? 0.9, width: `${sizePercent}%` }}
-                data-testid="overlay-player-logo"
-              >
-                <img src={playerSettings.logoUrl} alt="" className="w-full h-auto object-contain" />
-              </div>
-            );
-          })()}
-
-          {/* ── Player Brand: QR Code ── */}
-          {playerSettings.qrEnabled && playerSettings.qrDataUrl && (() => {
-            const pos: Record<string, React.CSSProperties> = {
-              "top-left":     { top: 12, left: 12 },
-              "top-right":    { top: 12, right: 12 },
-              "bottom-left":  { bottom: 48, left: 12 },
-              "bottom-right": { bottom: 48, right: 12 },
-            };
-            const sizePercent = playerSettings.qrSizePercent ?? 14;
-            return (
-              <div
-                className="absolute pointer-events-none rounded-lg overflow-hidden"
-                style={{
-                  ...pos[playerSettings.qrPlacement ?? "bottom-right"] ?? pos["bottom-right"],
-                  opacity: playerSettings.qrOpacity ?? 1,
-                  width: `${sizePercent}%`,
-                  backgroundColor: playerSettings.qrBgEnabled ? `rgba(0,0,0,${playerSettings.qrBgOpacity ?? 0.5})` : "transparent",
-                  padding: playerSettings.qrBgEnabled ? "6px" : 0,
-                }}
-                data-testid="overlay-player-qr"
-              >
-                <img src={playerSettings.qrDataUrl} alt={playerSettings.qrTitle ?? "QR Code"} className="w-full h-auto block" />
-                {playerSettings.qrTitle && (
-                  <p className="text-white text-center text-[10px] mt-0.5 leading-tight truncate">
-                    {playerSettings.qrTitle}
-                  </p>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* ── Player Brand: Banners & Tickers ── */}
-          {playerBanners.map(banner => {
-            const isTicker = banner.type === "ticker";
-            const isTop = banner.position === "top";
-            const posStyle: React.CSSProperties = isTop
-              ? { top: 0, left: 0, right: 0 }
-              : { bottom: 40, left: 0, right: 0 };
-            const bgColor = banner.backgroundColor ?? "#0b3a66";
-            const textColor = banner.textColor ?? "#ffffff";
-            const fontSize = banner.fontSize ?? 18;
-            const opacity = banner.opacity ?? 1;
-            const paddingY = banner.paddingY ?? 8;
-            const paddingX = banner.paddingX ?? 14;
-            const offset = bannerTickerOffsets[banner.id] ?? 0;
-            const textLen = banner.text.length;
-            const wrapAt = textLen * (fontSize * 0.65) + 400;
-            return (
-              <div
-                key={banner.id}
-                className="absolute overflow-hidden pointer-events-none"
-                style={{ ...posStyle, backgroundColor: bgColor, opacity, paddingTop: paddingY, paddingBottom: paddingY }}
-                data-testid={`overlay-banner-${banner.id}`}
-              >
-                {isTicker ? (
-                  <div
-                    className="whitespace-nowrap"
-                    style={{
-                      color: textColor,
-                      fontSize: `${fontSize}px`,
-                      paddingLeft: paddingX,
-                      paddingRight: paddingX,
-                      transform: `translateX(${offset % wrapAt}px)`,
-                      display: "inline-block",
-                    }}
-                  >
-                    {banner.text}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{banner.text}
-                  </div>
-                ) : (
-                  <div
-                    className="text-center"
-                    style={{ color: textColor, fontSize: `${fontSize}px`, paddingLeft: paddingX, paddingRight: paddingX }}
-                  >
-                    {banner.text}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Controls Overlay */}
+          {/* Controls Overlay — z-[10]; brand overlays below use z-[15] to appear above */}
           <div
-            className={`absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-transparent to-transparent transition-opacity duration-300 ${showControls || !playing ? "opacity-100" : "opacity-0"}`}
+            className={`absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-transparent to-transparent transition-opacity duration-300 z-[10] ${showControls || !playing ? "opacity-100" : "opacity-0"}`}
             onClick={e => e.stopPropagation()}
           >
             {/* Seek Bar */}
@@ -1236,6 +1121,164 @@ export default function EmbedPlayerPage() {
               )}
             </div>
           </div>
+
+          {/* ── Brand Overlays (z-[15] — above controls gradient) ── */}
+
+          {/* Full Overlay Image */}
+          {playerSettings.overlayEnabled && playerSettings.overlayUrl && (() => {
+            const mode = playerSettings.overlayMode ?? "full";
+            const styleMap: Record<string, React.CSSProperties> = {
+              full:   { inset: 0 },
+              top:    { top: 0, left: 0, right: 0, height: "30%" },
+              bottom: { bottom: 0, left: 0, right: 0, height: "30%" },
+              left:   { top: 0, bottom: 0, left: 0, width: "30%" },
+              right:  { top: 0, bottom: 0, right: 0, width: "30%" },
+            };
+            return (
+              <div
+                className="absolute pointer-events-none z-[15]"
+                style={{ ...styleMap[mode] ?? styleMap.full, opacity: playerSettings.overlayOpacity ?? 0.6 }}
+                data-testid="overlay-player-overlay"
+              >
+                <img src={playerSettings.overlayUrl} alt="" className="w-full h-full object-cover" />
+              </div>
+            );
+          })()}
+
+          {/* Logo */}
+          {playerSettings.logoEnabled && playerSettings.logoUrl && (() => {
+            const pos: Record<string, React.CSSProperties> = {
+              "top-left":     { top: 12, left: 12 },
+              "top-right":    { top: 12, right: 12 },
+              "bottom-left":  { bottom: 52, left: 12 },
+              "bottom-right": { bottom: 52, right: 12 },
+            };
+            const sizePercent = playerSettings.logoSizePercent ?? 12;
+            return (
+              <div
+                className="absolute pointer-events-none z-[15]"
+                style={{ ...pos[playerSettings.logoPlacement ?? "top-right"] ?? pos["top-right"], opacity: playerSettings.logoOpacity ?? 0.9, width: `${sizePercent}%` }}
+                data-testid="overlay-player-logo"
+              >
+                <img src={playerSettings.logoUrl} alt="" className="w-full h-auto object-contain" />
+              </div>
+            );
+          })()}
+
+          {/* QR Code */}
+          {playerSettings.qrEnabled && playerSettings.qrDataUrl && (() => {
+            const pos: Record<string, React.CSSProperties> = {
+              "top-left":     { top: 12, left: 12 },
+              "top-right":    { top: 12, right: 12 },
+              "bottom-left":  { bottom: 52, left: 12 },
+              "bottom-right": { bottom: 52, right: 12 },
+            };
+            const sizePercent = playerSettings.qrSizePercent ?? 14;
+            return (
+              <div
+                className="absolute pointer-events-none rounded-lg overflow-hidden z-[15]"
+                style={{
+                  ...pos[playerSettings.qrPlacement ?? "bottom-right"] ?? pos["bottom-right"],
+                  opacity: playerSettings.qrOpacity ?? 1,
+                  width: `${sizePercent}%`,
+                  backgroundColor: playerSettings.qrBgEnabled ? `rgba(0,0,0,${playerSettings.qrBgOpacity ?? 0.5})` : "transparent",
+                  padding: playerSettings.qrBgEnabled ? "6px" : 0,
+                }}
+                data-testid="overlay-player-qr"
+              >
+                <img src={playerSettings.qrDataUrl} alt={playerSettings.qrTitle ?? "QR Code"} className="w-full h-auto block" />
+                {playerSettings.qrTitle && (
+                  <p className="text-white text-center text-[10px] mt-0.5 leading-tight truncate">
+                    {playerSettings.qrTitle}
+                  </p>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Display Name & Headline Text Overlays */}
+          {playerSettings.showDisplayNames && playerSettings.displayNameText && (
+            <div
+              className="absolute bottom-14 left-3 pointer-events-none z-[15] max-w-[60%]"
+              data-testid="overlay-display-name"
+            >
+              <span
+                className="text-white text-sm font-semibold px-2 py-0.5 rounded"
+                style={{
+                  backgroundColor: "rgba(0,0,0,0.55)",
+                  fontFamily: playerSettings.fontFamily ?? "inherit",
+                  color: playerSettings.brandColor ?? "#ffffff",
+                  textShadow: "0 1px 3px rgba(0,0,0,0.8)",
+                }}
+              >
+                {playerSettings.displayNameText}
+              </span>
+            </div>
+          )}
+          {playerSettings.showHeadlines && playerSettings.headlineText && (
+            <div
+              className="absolute top-0 left-0 right-0 pointer-events-none z-[15] flex items-center justify-center px-3 py-1.5"
+              style={{ backgroundColor: `${playerSettings.brandColor ?? "#0b3a66"}cc` }}
+              data-testid="overlay-headline"
+            >
+              <span
+                className="text-white text-xs font-medium truncate"
+                style={{ fontFamily: playerSettings.fontFamily ?? "inherit" }}
+              >
+                {playerSettings.headlineText}
+              </span>
+            </div>
+          )}
+
+          {/* Banners & Tickers */}
+          {playerBanners.map(banner => {
+            const isTicker = banner.type === "ticker";
+            const isTop = banner.position === "top";
+            const posStyle: React.CSSProperties = isTop
+              ? { top: 0, left: 0, right: 0 }
+              : { bottom: 40, left: 0, right: 0 };
+            const bgColor = banner.backgroundColor ?? "#0b3a66";
+            const textColor = banner.textColor ?? "#ffffff";
+            const fontSize = banner.fontSize ?? 18;
+            const opacity = banner.opacity ?? 1;
+            const paddingY = banner.paddingY ?? 8;
+            const paddingX = banner.paddingX ?? 14;
+            const offset = bannerTickerOffsets[banner.id] ?? 0;
+            const textLen = banner.text.length;
+            const wrapAt = textLen * (fontSize * 0.65) + 400;
+            return (
+              <div
+                key={banner.id}
+                className="absolute overflow-hidden pointer-events-none z-[15]"
+                style={{ ...posStyle, backgroundColor: bgColor, opacity, paddingTop: paddingY, paddingBottom: paddingY }}
+                data-testid={`overlay-banner-${banner.id}`}
+              >
+                {isTicker ? (
+                  <div
+                    className="whitespace-nowrap"
+                    style={{
+                      color: textColor,
+                      fontSize: `${fontSize}px`,
+                      paddingLeft: paddingX,
+                      paddingRight: paddingX,
+                      transform: `translateX(${offset % wrapAt}px)`,
+                      display: "inline-block",
+                    }}
+                  >
+                    {banner.text}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{banner.text}
+                  </div>
+                ) : (
+                  <div
+                    className="text-center"
+                    style={{ color: textColor, fontSize: `${fontSize}px`, paddingLeft: paddingX, paddingRight: paddingX }}
+                  >
+                    {banner.text}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
         </div>
     </div>
   );

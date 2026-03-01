@@ -1,0 +1,167 @@
+ROLE
+You are Replit AI acting as a senior full-stack engineer. Fix the following 4 issues in my existing Video CMS (React + Node/Express). Do NOT change existing feature meanings. Implement the fixes end-to-end (frontend + backend where needed). Provide the exact files/blocks changed.
+
+========================================================
+ISSUE 1 — Live Preview should follow scrolling (sticky preview)
+========================================================
+PROBLEM:
+When I scroll down the Player Settings panel, the Live Preview goes out of view. I want the preview to remain visible so I can instantly see changes.
+
+REQUIREMENT:
+- On desktop: make the Live Preview card “sticky” at the top while scrolling the settings column.
+- The settings panel should scroll independently, preview should remain pinned.
+- On small screens: preview should be on top normally (no sticky).
+
+IMPLEMENTATION:
+Frontend (Player settings page):
+- Wrap layout into 2 columns:
+  - LEFT: Live Preview card container with CSS `position: sticky; top: 16px;`
+  - RIGHT: Settings panel container with its own scroll or normal scroll.
+- Make sure the sticky container has a fixed height boundary (parent must not have overflow hidden).
+- Keep Refresh button near preview header.
+
+ACCEPTANCE:
+Scroll down through settings → preview stays visible.
+
+========================================================
+ISSUE 2 — “Display Name” and “Headline” text inputs are missing
+========================================================
+PROBLEM:
+You added toggles “Show Display Names” and “Show Headlines”, but there is no place to write the actual text.
+
+REQUIREMENT:
+Add inputs:
+- Display Name Text (string)
+- Headline Text (string)
+These must be saved in player/style settings and shown as overlay in the preview/player when toggles are ON.
+
+DATA MODEL:
+Add fields in player/style settings:
+- displayNameText (string, default "")
+- headlineText (string, default "")
+
+FRONTEND:
+In Style section:
+- If “Show Display Names” is ON → show text input “Display Name text”
+- If “Show Headlines” is ON → show text input “Headline text”
+- Add “Save Style Settings” should save these values too.
+
+PLAYER RENDER:
+- Display name overlay: bottom-left (or per your theme), using selected font, brand colors.
+- Headline overlay: bottom bar or top bar (consistent with theme).
+
+VALIDATION:
+- Limit length (e.g., 60 chars display name, 120 chars headline).
+- Prevent empty string if toggle ON (warn but allow save).
+
+========================================================
+ISSUE 3 — Logo saves but does not show after saving
+========================================================
+PROBLEM:
+Logo upload/settings are saved, but after clicking save, logo is not visible in preview/player.
+
+LIKELY CAUSES (fix all):
+A) `logoEnabled` is false after save even if asset exists
+B) Preview component is not using the saved settings state
+C) Preview is using stale cached settings (not re-fetching / not re-rendering)
+D) Asset URL not resolved correctly (signed URL / public url mismatch)
+E) The overlay layer is behind the video or is hidden by z-index
+
+REQUIREMENT:
+- After Save, the Live Preview MUST show the logo immediately (or after refresh if that is the rule, but in your UI you already say “Preview reflects saved settings. Click Refresh after saving changes.” → so ensure Refresh actually fetches latest settings and updates preview.)
+- Also: if logoAssetId exists and user clicks “Enable Logo”, saving must persist `logoEnabled=true`.
+
+BACKEND:
+- Ensure PATCH /player-settings correctly updates:
+  - logoEnabled
+  - logoAssetId
+  - logoPlacement, size, opacity
+- Ensure GET /player-settings returns resolved `logoUrl` usable by browser.
+  - If using signed URLs, return a fresh signed URL each time.
+  - If public, return public URL.
+- Ensure CORS allows image display.
+
+FRONTEND:
+- Ensure Save triggers PATCH then either:
+  1) re-fetch settings automatically and update preview state, OR
+  2) enable “Refresh” button to re-fetch and re-render (but must work).
+- Ensure Preview/Player component uses `settings.logoEnabled && settings.logoUrl` to render logo.
+- Fix z-index:
+  - video layer z-index: 1
+  - overlay layers z-index: 10+
+- Ensure absolute position is inside a `position: relative` container.
+
+ACCEPTANCE:
+Upload logo → enable logo → save → refresh preview → logo appears in correct placement with opacity.
+
+========================================================
+ISSUE 4 — “Too suspicious activity” is triggering for normal users + preview
+========================================================
+PROBLEM:
+Preview is getting “Video playback denied due to suspicious activity… Too many requests… Retry”
+And normal users also get blocked for ~1 minute even though they are not scraping.
+This is coming from the security feature:
+“Blocks bulk-download patterns (parallel segment scraping, key spamming). Turn off if it blocks normal users.”
+But we need it ON without false positives, and preview should NEVER be blocked.
+
+ROOT CAUSE (very likely):
+- Your detection logic counts normal HLS behavior (player fetching playlist + segments + key) as “too many requests”
+- It might also treat retries/quality switches as parallel scraping
+- The preview component may refresh too often (auto refresh polling, multiple players mounted) causing request bursts
+- Keys endpoint is counted too aggressively
+- Rate limits are global (shared across users) rather than per user/IP/session/video
+
+REQUIREMENTS (implement all):
+A) Preview bypass:
+- For admin preview (inside dashboard), mark requests with a header:
+  `X-Player-Preview: 1`
+  or use server-side knowledge that this is admin.
+- Backend must bypass suspicious-block rules when `X-Player-Preview: 1` AND user is authenticated admin.
+This prevents preview from being blocked.
+
+B) Fix false positives for real users:
+- Apply detection per (ip + videoId + sessionId) instead of global.
+- Ignore normal HLS pattern:
+  - Allow sequential segment fetches.
+  - Allow 1–2 parallel segment requests (players often prefetch).
+- Do not count playlist refreshes too harshly (m3u8 can be polled).
+- Key endpoint should allow reasonable retries; key spamming threshold must be higher.
+
+C) Smarter thresholds:
+Implement a sliding window with separate buckets:
+- playlistRequests: allow e.g. 30/min
+- segmentRequests: allow e.g. 240/min (4/sec average) per user+video
+- keyRequests: allow e.g. 20/min (keys sometimes re-requested)
+Block only if:
+- segment parallelism > N (e.g. >6 concurrent) OR
+- segmentRequests > huge threshold (e.g. >600/min) OR
+- keyRequests > threshold AND segmentRequests are also high (strong signal)
+Add a “cooldown” shorter (e.g. 10–20 sec) for mild limits; keep 60 sec only for extreme.
+
+D) Do not punish normal rebuffering / seeking:
+- Seeking causes burst of segment requests—whitelist short bursts:
+  allow a burst buffer: +50 segments within 10 seconds, once every 60 seconds.
+
+E) Add logs + admin visibility:
+- Log why blocked: which bucket exceeded, counts, ip, videoId
+- In admin preview, if something is blocked, show message “Security blocked: reason…” but it should not happen after bypass.
+
+ACCEPTANCE:
+- Admin preview never shows suspicious error.
+- Normal user watching normally does NOT get blocked.
+- Only real scraping (many parallel segments / key spam) gets blocked.
+
+========================================================
+DELIVERABLES
+========================================================
+1) Implement fixes now.
+2) Provide:
+- list of files changed
+- code snippets for key changes (sticky preview CSS, new inputs, settings API, suspicious detection logic)
+3) Quick test checklist results:
+- sticky preview works
+- display name/headline editable and displayed
+- logo shows after save/refresh
+- suspicious blocking fixed for preview and normal users
+
+DO NOT ask me questions. Make reasonable defaults and implement.

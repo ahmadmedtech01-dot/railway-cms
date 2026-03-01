@@ -16,16 +16,16 @@ export const SESSION_ROTATION_MS = 3 * 60 * 1000;
 
 const ABUSE_THRESHOLDS = {
   // Only used when suspiciousDetectionEnabled=true
-  concurrentSegments: 3,           // max parallel segment downloads at any instant
-  segmentsPerSec: 15,              // segment requests/sec that triggers rate spike signal
-  segmentRateSpikeWindowMs: 3000,  // must sustain above segmentsPerSec for this long
-  playlistPerSec: 1,               // playlist fetches/sec that triggers scraper signal
-  playlistSpikeWindowMs: 5000,     // must sustain above playlistPerSec for this long
-  keyHitsPerMin: 3,                // extra key requests per minute (keyIssued flag is primary check)
-  keyHitsTotal: 20,
-  scoreToRevoke: 15,
-  windowSize: 6,
-  outOfWindowPenalty: 3,
+  concurrentSegments: 6,           // max parallel segment downloads (quality switches prefetch)
+  segmentsPerSec: 30,              // segment requests/sec that triggers rate spike signal
+  segmentRateSpikeWindowMs: 5000,  // must sustain above segmentsPerSec for this long
+  playlistPerSec: 2,               // playlist fetches/sec that triggers scraper signal
+  playlistSpikeWindowMs: 8000,     // must sustain above playlistPerSec for this long
+  keyHitsPerMin: 20,               // key requests per minute (re-fetched on quality switch/seek)
+  keyHitsTotal: 60,                // total key requests per session
+  scoreToRevoke: 20,               // score needed to revoke session
+  windowSize: 10,                  // segment window size
+  outOfWindowPenalty: 2,           // penalty for out-of-window requests
 };
 
 const TOKEN_TTL = {
@@ -383,11 +383,13 @@ export function trackKeyHit(sid: string, ip?: string): { abused: boolean; reason
 
   const s = sessions.get(sid)!;
 
-  // Key-hit abuse is always checked (it's an AES security signal, not just rate limiting)
   const now = Date.now();
   s.keyHitLog = s.keyHitLog.filter(t => t > now - 60000);
   s.keyHitLog.push(now);
   s.keyIssuedCount += 1;
+
+  // Skip rate-based key checks when suspicious detection is disabled (e.g. admin preview)
+  if (!s.suspiciousDetectionEnabled) return { abused: false };
 
   if (s.keyHitLog.length > ABUSE_THRESHOLDS.keyHitsPerMin) {
     const reason: AbuseReason = {

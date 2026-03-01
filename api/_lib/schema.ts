@@ -85,6 +85,8 @@ export const videoPlayerSettings = pgTable("video_player_settings", {
   theme: text("theme").notNull().default("classic"),
   showDisplayNames: boolean("show_display_names").notNull().default(true),
   showHeadlines: boolean("show_headlines").notNull().default(true),
+  displayNameText: text("display_name_text").notNull().default(""),
+  headlineText: text("headline_text").notNull().default(""),
   fontFamily: text("font_family").notNull().default("system"),
 });
 
