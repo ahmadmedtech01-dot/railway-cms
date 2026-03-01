@@ -103,10 +103,12 @@ export default function EmbedPlayerPage() {
   const [watermarkSettings, setWatermarkSettings] = useState<WatermarkSettings>({});
   const [videoId, setVideoId] = useState("");
   const [effectiveSecurity, setEffectiveSecurity] = useState<Record<string, any>>({ blockDevTools: true });
+  const [isAdminPreview, setIsAdminPreview] = useState(false);
 
   // Violation counter — loaded from localStorage so it persists across refreshes
+  // Disabled entirely for admin preview so the overlay never appears in the admin panel
   const { reportViolation, isBlocked, remainingMs, toast: violationToast } =
-    useSecurityViolations(videoId, effectiveSecurity);
+    useSecurityViolations(videoId, effectiveSecurity, { disabled: isAdminPreview });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [tickerOffset, setTickerOffset] = useState(0);
   const [playbackDenied, setPlaybackDenied] = useState(false);
@@ -205,6 +207,7 @@ export default function EmbedPlayerPage() {
         const data = await manifestRes.json();
         const resolvedVideoId = data.videoId || "";
         setVideoId(resolvedVideoId);
+        if (data.adminPreview === true) setIsAdminPreview(true);
 
         // Fetch video settings and effective security in parallel
         await Promise.allSettled([

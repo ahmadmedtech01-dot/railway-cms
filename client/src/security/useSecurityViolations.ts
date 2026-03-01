@@ -59,7 +59,9 @@ function writeState(videoId: string, s: ViolationState) {
 export function useSecurityViolations(
   videoId: string,
   settings: Record<string, any>,
+  options?: { disabled?: boolean },
 ) {
+  const disabled = options?.disabled ?? false;
   const limit: number = Math.max(1, settings.violationLimit ?? 3);
 
   // Use a ref as authoritative source to avoid stale closures
@@ -106,6 +108,7 @@ export function useSecurityViolations(
   }, []);
 
   const reportViolation = useCallback((eventType: ViolationType) => {
+    if (disabled) return;
     const now = Date.now();
     const current = stateRef.current;
 
@@ -135,18 +138,18 @@ export function useSecurityViolations(
       isBlock: willBlock,
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId, limit, showToast]);
+  }, [disabled, videoId, limit, showToast]);
 
-  const isBlocked = state.blockedUntil > Date.now();
-  const remainingMs = Math.max(0, state.blockedUntil - Date.now());
+  const isBlocked = !disabled && state.blockedUntil > Date.now();
+  const remainingMs = disabled ? 0 : Math.max(0, state.blockedUntil - Date.now());
 
   return {
     reportViolation,
     isBlocked,
     remainingMs,
-    count: state.count,
+    count: disabled ? 0 : state.count,
     limit,
-    toast,
+    toast: disabled ? null : toast,
     clearToast: () => setToast(null),
   };
 }

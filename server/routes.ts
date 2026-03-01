@@ -1310,7 +1310,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sid = createSession(video.publicId, hlsPrefix, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
-        return res.json({ manifestUrl, sourceType: "b2_proxy", sessionId: sid, videoId: video.id });
+        return res.json({ manifestUrl, sourceType: "b2_proxy", sessionId: sid, videoId: video.id, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       const client = await getS3Client();
@@ -1320,7 +1320,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
-        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid });
+        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       // Local HLS fallback

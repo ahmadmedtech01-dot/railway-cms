@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   LayoutDashboard, Library, Upload, Shield, Code2, Settings,
-  ScrollText, LogOut, Video, ChevronRight, Zap,
+  ScrollText, LogOut, ChevronRight, ChevronLeft, Zap,
 } from "lucide-react";
 import { useAuth, useLogout } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -26,21 +26,31 @@ export function AppSidebar() {
   const [location] = useLocation();
   const { user } = useAuth();
   const logout = useLogout();
-  const { open } = useSidebar();
+  const { open, toggleSidebar } = useSidebar();
 
   return (
     <Sidebar>
       <SidebarHeader className="border-b border-sidebar-border px-4 py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary">
             <Zap className="h-5 w-5 text-primary-foreground" />
           </div>
           {open && (
-            <div>
+            <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-sidebar-foreground leading-tight">Secure Video</p>
               <p className="text-xs text-muted-foreground">CMS Admin</p>
             </div>
           )}
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={toggleSidebar}
+            data-testid="button-sidebar-collapse"
+            title={open ? "Collapse sidebar" : "Expand sidebar"}
+            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-sidebar-foreground"
+          >
+            {open ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          </Button>
         </div>
       </SidebarHeader>
 
