@@ -136,6 +136,7 @@ export default function EmbedPlayerPage() {
   const devToolsOpenRef = useRef(false);
   const streamSidRef = useRef("");
   const denialSignalRef = useRef("");
+  const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
 
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
     urlToken ? "loading" : "waiting"
@@ -180,11 +181,12 @@ export default function EmbedPlayerPage() {
   const [playerBanners, setPlayerBanners] = useState<PlayerBanner[]>([]);
   const [bannerTickerOffsets, setBannerTickerOffsets] = useState<Record<string | number, number>>({});
 
-  // Keep ref in sync so DevTools detector can read current signal without stale closure
+  // Keep refs in sync so closures inside HLS error handlers always read latest values
   useEffect(() => { denialSignalRef.current = denialSignal; }, [denialSignal]);
+  useEffect(() => { effectiveSecurityRef.current = effectiveSecurity; }, [effectiveSecurity]);
 
   const triggerDenial = (signal: string) => {
-    if (effectiveSecurity?.suspiciousDetectionEnabled === false && signal !== "devtools") return;
+    if (effectiveSecurityRef.current?.suspiciousDetectionEnabled === false && signal !== "devtools") return;
     denialSignalRef.current = signal;
     setDenialSignal(signal);
     setPlaybackDenied(true);

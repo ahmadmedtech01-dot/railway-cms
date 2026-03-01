@@ -1788,7 +1788,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const segDh = computeDeviceHash(segUa);
 
     if (!verifySignedPath(sid, segSubPath, parseInt(exp, 10), st, session.deviceHash ? segDh : undefined, 3)) {
-      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid or expired segment token", signal: "rate_limit" });
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid or expired segment token", signal: "token_expired" });
     }
 
     if (!validateUserAgent(sid, segUa)) {
