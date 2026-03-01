@@ -1,0 +1,136 @@
+ROLE
+You are Replit AI (senior frontend engineer). Implement the following player-overlay behavior changes in my existing React video player + Player Settings. Do NOT break existing playback, security, AES, or current settings. Implement cleanly with minimal code changes.
+
+CONTEXT (from screenshots)
+- There is a “media panel layer” (the player control overlay: play/pause, seek, volume, speed, quality, fullscreen, etc.).
+- I also have a bottom ticker/banner overlay and displayName/headline overlays.
+
+========================================================
+TASK 1 — Auto-hide the player control overlay after 5 seconds
+========================================================
+CURRENT PROBLEM
+Player controls remain visible and cover the video. I want the controls to auto-hide after 5 seconds, and show again only when the mouse moves over the player area.
+
+REQUIREMENTS
+A) Desktop behavior:
+- When the video is playing:
+  - If mouse is inactive for 5 seconds → hide the controls overlay (opacity 0 + pointer-events none).
+  - If the user moves mouse inside the player container → show controls overlay immediately (opacity 1).
+- When paused:
+  - Controls should remain visible (do not auto-hide).
+- On mobile/touch:
+  - A single tap toggles controls on/off (standard behavior).
+
+B) Implementation details:
+- Add a state: `controlsVisible`
+- Add an inactivity timer (5s) that starts/reset on:
+  - mousemove
+  - pointermove
+  - keydown (space/arrow)
+- Clear timer on unmount.
+- Hide by CSS class: `opacity: 0; transition; pointer-events: none;`
+- Show by CSS class: `opacity: 1; pointer-events: auto;`
+
+C) Ensure controls do not affect layout; they must be absolute overlay.
+
+ACCEPTANCE
+- Play video → controls visible → after 5 seconds no mouse movement → controls disappear.
+- Move mouse → controls appear again.
+- Pause video → controls stay visible.
+
+========================================================
+TASK 2 — Ticker positioning relative to controls overlay
+========================================================
+CURRENT PROBLEM
+Ticker overlaps awkwardly with the controls overlay. I want:
+- When controls are visible, ticker should move ABOVE the controls layer.
+- When controls are hidden, ticker should sit at the bottom edge of the video.
+
+REQUIREMENTS
+- The ticker is a fixed overlay bar at the bottom (position absolute).
+- Add a dynamic bottom offset:
+  - if controlsVisible = true → tickerBottomOffset = CONTROL_BAR_HEIGHT
+  - else → tickerBottomOffset = 0
+
+IMPLEMENTATION
+- Measure or define a constant:
+  `const CONTROL_BAR_HEIGHT = 64` (adjust to match your actual control overlay height)
+- Render ticker with style:
+  `style={{ bottom: controlsVisible ? CONTROL_BAR_HEIGHT : 0 }}`
+- Keep a smooth transition:
+  `transition: bottom 200ms ease`
+
+ACCEPTANCE
+- Controls appear → ticker slides upward above controls.
+- Controls hide → ticker returns to bottom.
+
+========================================================
+TASK 3 — Display Name + Headline positioning and background behavior
+========================================================
+CURRENT REQUIREMENT
+Display name and headline must show at the bottom, with options:
+- Bottom-left OR bottom-right
+Also background should be ONLY behind the text area (not full width bar).
+
+REQUIREMENTS
+A) Add settings:
+- displayNameEnabled (already exists as toggle)
+- displayNameText (already exists)
+- displayNamePosition: "bottom-left" | "bottom-right"  (new)
+- displayNameBgEnabled: boolean (new, default true)
+- displayNameBgColor: string hex/rgba (new, default "#000000")
+- displayNameBgOpacity: number 0–1 (new, default 0.35)
+- displayNameTextColor: string (new, default "#ffffff")
+- displayNameFontSize: number (new, default 18)
+
+Headline:
+- headlineEnabled (toggle)
+- headlineText
+- headlinePosition: "bottom-left" | "bottom-right" (new)
+- headlineBgEnabled boolean (default true)
+- headlineBgColor default "#000000"
+- headlineBgOpacity default 0.35
+- headlineTextColor default "#ffffff"
+- headlineFontSize default 18
+
+B) UI changes (Player Settings → Style section):
+- Add a dropdown/radio for displayNamePosition (bottom-left/bottom-right)
+- Add a dropdown/radio for headlinePosition (bottom-left/bottom-right)
+- Add background toggle + opacity slider + color picker for each
+- Add font size and text color optional controls (keep simple)
+
+C) Player rendering:
+- Render displayName and headline as small “pill” or “box” overlays:
+  - `display: inline-block`
+  - `padding: 8px 12px`
+  - `border-radius: 8px`
+  - background uses bgColor + bgOpacity
+  - do NOT stretch full width
+- Positioning:
+  - bottom-left: `left: 16px; bottom: baseOffset`
+  - bottom-right: `right: 16px; bottom: baseOffset`
+- Stacking with ticker:
+  - Place displayName/headline ABOVE ticker (so they don’t overlap ticker)
+  - baseOffset = (tickerEnabled ? tickerHeight + 12 : 12)
+  - and if controlsVisible also adjust by CONTROL_BAR_HEIGHT similarly.
+
+D) Prevent overlap between displayName & headline:
+- If both enabled:
+  - displayName sits above headline (or vice versa) with gap 8px.
+
+ACCEPTANCE
+- User can choose bottom-left or bottom-right for each.
+- Background only behind the text box.
+- No overlap with ticker or controls (they shift up when controls appear).
+
+========================================================
+DELIVERABLES
+========================================================
+1) Implement in code (frontend + settings model + API if needed).
+2) Provide the exact files changed and the code blocks.
+3) Confirm with a quick manual test:
+   - controls hide after 5s and show on mouse move
+   - ticker moves above controls when controls visible
+   - displayName/headline boxes appear bottom left/right with background only behind text and do not overlap ticker/controls
+
+DO NOT ask me for more info. Use reasonable defaults and implement now.

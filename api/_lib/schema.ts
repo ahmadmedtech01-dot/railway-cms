@@ -87,6 +87,18 @@ export const videoPlayerSettings = pgTable("video_player_settings", {
   showHeadlines: boolean("show_headlines").notNull().default(true),
   displayNameText: text("display_name_text").notNull().default(""),
   headlineText: text("headline_text").notNull().default(""),
+  displayNamePosition: text("display_name_position").notNull().default("bottom-left"),
+  displayNameBgEnabled: boolean("display_name_bg_enabled").notNull().default(true),
+  displayNameBgColor: text("display_name_bg_color").notNull().default("#000000"),
+  displayNameBgOpacity: real("display_name_bg_opacity").notNull().default(0.35),
+  displayNameTextColor: text("display_name_text_color").notNull().default("#ffffff"),
+  displayNameFontSize: integer("display_name_font_size").notNull().default(18),
+  headlinePosition: text("headline_position").notNull().default("bottom-left"),
+  headlineBgEnabled: boolean("headline_bg_enabled").notNull().default(true),
+  headlineBgColor: text("headline_bg_color").notNull().default("#000000"),
+  headlineBgOpacity: real("headline_bg_opacity").notNull().default(0.35),
+  headlineTextColor: text("headline_text_color").notNull().default("#ffffff"),
+  headlineFontSize: integer("headline_font_size").notNull().default(18),
   fontFamily: text("font_family").notNull().default("system"),
 });
 

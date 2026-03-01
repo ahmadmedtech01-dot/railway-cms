@@ -51,8 +51,20 @@ interface PlayerSettings {
   qrBgOpacity?: number;
   showDisplayNames?: boolean;
   displayNameText?: string;
+  displayNamePosition?: string;
+  displayNameBgEnabled?: boolean;
+  displayNameBgColor?: string;
+  displayNameBgOpacity?: number;
+  displayNameTextColor?: string;
+  displayNameFontSize?: number;
   showHeadlines?: boolean;
   headlineText?: string;
+  headlinePosition?: string;
+  headlineBgEnabled?: boolean;
+  headlineBgColor?: string;
+  headlineBgOpacity?: number;
+  headlineTextColor?: string;
+  headlineFontSize?: number;
   fontFamily?: string;
   brandColor?: string;
 }
@@ -643,11 +655,11 @@ export default function EmbedPlayerPage() {
     };
   }, [playing]);
 
-  // Controls auto-hide
+  // Controls auto-hide — 5s inactivity timer
   const showControlsTemporarily = useCallback(() => {
     setShowControls(true);
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-    controlsTimerRef.current = setTimeout(() => setShowControls(false), 3000);
+    controlsTimerRef.current = setTimeout(() => setShowControls(false), 5000);
   }, []);
 
   const togglePlay = () => {
@@ -852,6 +864,16 @@ export default function EmbedPlayerPage() {
 
   const ws = watermarkSettings;
   const tickerText = resolveWatermarkText(ws.tickerText || "", videoId, sessionCode);
+
+  // Layout constants for overlay stacking
+  const CONTROL_BAR_H = 60;  // height of the bottom controls bar
+  const TICKER_H = 32;        // approximate height of a ticker bar
+  const controlsActive = showControls || !playing;
+  const wmTickerActive = !!(ws.tickerEnabled && ws.tickerText);
+  const bannerTickerActive = playerBanners.some(b => b.type === "ticker" && b.enabled && b.position === "bottom");
+  const anyTickerAtBottom = wmTickerActive || bannerTickerActive;
+  // Bottom offset for displayName/headline pills — above controls and ticker
+  const pillBaseBottom = (controlsActive ? CONTROL_BAR_H : 0) + (anyTickerAtBottom ? TICKER_H + 4 : 0) + 8;
   const popText = resolveWatermarkText(ws.popText || "{DOMAIN}", videoId, sessionCode);
 
   return (
@@ -968,8 +990,12 @@ export default function EmbedPlayerPage() {
           {/* Ticker */}
           {ws.tickerEnabled && ws.tickerText && (
             <div
-              className="absolute bottom-12 left-0 right-0 overflow-hidden pointer-events-none"
-              style={{ opacity: ws.tickerOpacity ?? 0.7 }}
+              className="absolute left-0 right-0 overflow-hidden pointer-events-none"
+              style={{
+                bottom: controlsActive ? CONTROL_BAR_H : 0,
+                transition: "bottom 200ms ease",
+                opacity: ws.tickerOpacity ?? 0.7,
+              }}
             >
               <div
                 className="whitespace-nowrap font-medium py-0.5 px-2"
@@ -1014,9 +1040,9 @@ export default function EmbedPlayerPage() {
             </div>
           )}
 
-          {/* Controls Overlay — z-[10]; brand overlays below use z-[15] to appear above */}
+          {/* Controls Overlay — z-[10]; brand overlays use z-[15] to appear above */}
           <div
-            className={`absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-transparent to-transparent transition-opacity duration-300 z-[10] ${showControls || !playing ? "opacity-100" : "opacity-0"}`}
+            className={`absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-transparent to-transparent transition-opacity duration-300 z-[10] ${showControls || !playing ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
             onClick={e => e.stopPropagation()}
           >
             {/* Seek Bar */}
@@ -1196,47 +1222,94 @@ export default function EmbedPlayerPage() {
             );
           })()}
 
-          {/* Display Name & Headline Text Overlays */}
-          {playerSettings.showDisplayNames && playerSettings.displayNameText && (
-            <div
-              className="absolute bottom-14 left-3 pointer-events-none z-[15] max-w-[60%]"
-              data-testid="overlay-display-name"
-            >
-              <span
-                className="text-white text-sm font-semibold px-2 py-0.5 rounded"
-                style={{
-                  backgroundColor: "rgba(0,0,0,0.55)",
-                  fontFamily: playerSettings.fontFamily ?? "inherit",
-                  color: playerSettings.brandColor ?? "#ffffff",
-                  textShadow: "0 1px 3px rgba(0,0,0,0.8)",
-                }}
-              >
-                {playerSettings.displayNameText}
-              </span>
-            </div>
-          )}
-          {playerSettings.showHeadlines && playerSettings.headlineText && (
-            <div
-              className="absolute top-0 left-0 right-0 pointer-events-none z-[15] flex items-center justify-center px-3 py-1.5"
-              style={{ backgroundColor: `${playerSettings.brandColor ?? "#0b3a66"}cc` }}
-              data-testid="overlay-headline"
-            >
-              <span
-                className="text-white text-xs font-medium truncate"
-                style={{ fontFamily: playerSettings.fontFamily ?? "inherit" }}
-              >
-                {playerSettings.headlineText}
-              </span>
-            </div>
-          )}
+          {/* Display Name & Headline Text Overlays — pill style, stacks above ticker + controls */}
+          {(() => {
+            const dnEnabled = playerSettings.showDisplayNames && playerSettings.displayNameText;
+            const hlEnabled = playerSettings.showHeadlines && playerSettings.headlineText;
+            const dnPos = playerSettings.displayNamePosition ?? "bottom-left";
+            const hlPos = playerSettings.headlinePosition ?? "bottom-left";
+            const dnFontSize = playerSettings.displayNameFontSize ?? 18;
+            const hlFontSize = playerSettings.headlineFontSize ?? 18;
+            // If both on same side, stack them: headline at base, displayName above it
+            const sameSide = dnPos === hlPos;
+            const hlBottom = pillBaseBottom;
+            const dnBottom = hlBottom + (hlEnabled && sameSide ? hlFontSize + 24 : 0);
+            const makePillStyle = (
+              bgEnabled: boolean | undefined,
+              bgColor: string | undefined,
+              bgOpacity: number | undefined,
+              textColor: string | undefined,
+              fontSize: number,
+              bottom: number,
+              pos: string,
+            ): React.CSSProperties => ({
+              position: "absolute",
+              bottom,
+              ...(pos === "bottom-left" ? { left: 16 } : { right: 16 }),
+              display: "inline-block",
+              padding: "6px 12px",
+              borderRadius: 8,
+              backgroundColor: bgEnabled !== false
+                ? `rgba(${parseInt((bgColor ?? "#000000").slice(1,3),16)},${parseInt((bgColor ?? "#000000").slice(3,5),16)},${parseInt((bgColor ?? "#000000").slice(5,7),16)},${bgOpacity ?? 0.35})`
+                : "transparent",
+              color: textColor ?? "#ffffff",
+              fontSize,
+              fontFamily: playerSettings.fontFamily ?? "inherit",
+              maxWidth: "55%",
+              whiteSpace: "nowrap" as const,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              transition: "bottom 200ms ease",
+              zIndex: 15,
+            });
+            return (
+              <>
+                {hlEnabled && (
+                  <div
+                    className="pointer-events-none"
+                    style={makePillStyle(
+                      playerSettings.headlineBgEnabled,
+                      playerSettings.headlineBgColor,
+                      playerSettings.headlineBgOpacity,
+                      playerSettings.headlineTextColor,
+                      hlFontSize,
+                      hlBottom,
+                      hlPos,
+                    )}
+                    data-testid="overlay-headline"
+                  >
+                    {playerSettings.headlineText}
+                  </div>
+                )}
+                {dnEnabled && (
+                  <div
+                    className="pointer-events-none"
+                    style={makePillStyle(
+                      playerSettings.displayNameBgEnabled,
+                      playerSettings.displayNameBgColor,
+                      playerSettings.displayNameBgOpacity,
+                      playerSettings.displayNameTextColor,
+                      dnFontSize,
+                      dnBottom,
+                      dnPos,
+                    )}
+                    data-testid="overlay-display-name"
+                  >
+                    {playerSettings.displayNameText}
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           {/* Banners & Tickers */}
           {playerBanners.map(banner => {
             const isTicker = banner.type === "ticker";
             const isTop = banner.position === "top";
+            const bannerBottom = isTicker && !isTop ? (controlsActive ? CONTROL_BAR_H : 0) : 0;
             const posStyle: React.CSSProperties = isTop
               ? { top: 0, left: 0, right: 0 }
-              : { bottom: 40, left: 0, right: 0 };
+              : { bottom: bannerBottom, left: 0, right: 0, transition: "bottom 200ms ease" };
             const bgColor = banner.backgroundColor ?? "#0b3a66";
             const textColor = banner.textColor ?? "#ffffff";
             const fontSize = banner.fontSize ?? 18;

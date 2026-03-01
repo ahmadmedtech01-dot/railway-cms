@@ -1325,36 +1325,126 @@ iframe.addEventListener('load', () => {
                         </SelectContent>
                       </Select>
                     </div>
-                    <SettingRow label="Show Display Names" description="Display user names in overlays">
+                    <SettingRow label="Show Display Name" description="Show a name label over the video">
                       <Switch checked={!!localBrandPs.showDisplayNames} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, showDisplayNames: val }))} data-testid="switch-show-display-names" />
                     </SettingRow>
                     {localBrandPs.showDisplayNames && (
-                      <div className="space-y-1">
-                        <Label className="text-xs">Display Name Text</Label>
-                        <Input
-                          value={localBrandPs.displayNameText ?? ""}
-                          placeholder="e.g. John Smith"
-                          maxLength={60}
-                          onChange={e => setLocalBrandPs(p => ({ ...p, displayNameText: e.target.value }))}
-                          data-testid="input-display-name-text"
-                        />
-                        <p className="text-xs text-muted-foreground">{(localBrandPs.displayNameText ?? "").length}/60 chars</p>
+                      <div className="space-y-3 pl-1 border-l-2 border-muted ml-1">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Display Name Text</Label>
+                          <Input value={localBrandPs.displayNameText ?? ""} placeholder="e.g. John Smith" maxLength={60}
+                            onChange={e => setLocalBrandPs(p => ({ ...p, displayNameText: e.target.value }))} data-testid="input-display-name-text" />
+                          <p className="text-xs text-muted-foreground">{(localBrandPs.displayNameText ?? "").length}/60</p>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Position</Label>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {["bottom-left","bottom-right"].map(pos => (
+                              <button key={pos} onClick={() => setLocalBrandPs(p => ({ ...p, displayNamePosition: pos }))}
+                                className={`py-1 rounded border text-xs transition-colors ${(localBrandPs.displayNamePosition ?? "bottom-left") === pos ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-muted/50"}`}
+                              >{pos === "bottom-left" ? "↙ Bottom Left" : "↘ Bottom Right"}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Font Size: {localBrandPs.displayNameFontSize ?? 18}px</Label>
+                          <Slider value={[localBrandPs.displayNameFontSize ?? 18]} min={10} max={36} step={1}
+                            onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, displayNameFontSize: v }))} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Text Color</Label>
+                          <div className="flex items-center gap-2">
+                            <input type="color" value={localBrandPs.displayNameTextColor ?? "#ffffff"}
+                              onChange={e => setLocalBrandPs(p => ({ ...p, displayNameTextColor: e.target.value }))}
+                              className="h-8 w-8 rounded border cursor-pointer" />
+                            <Input value={localBrandPs.displayNameTextColor ?? "#ffffff"} className="font-mono text-xs"
+                              onChange={e => setLocalBrandPs(p => ({ ...p, displayNameTextColor: e.target.value }))} />
+                          </div>
+                        </div>
+                        <SettingRow label="Background" description="Show background behind text">
+                          <Switch checked={localBrandPs.displayNameBgEnabled !== false}
+                            onCheckedChange={val => setLocalBrandPs(p => ({ ...p, displayNameBgEnabled: val }))} />
+                        </SettingRow>
+                        {localBrandPs.displayNameBgEnabled !== false && (
+                          <div className="space-y-2">
+                            <div className="space-y-1">
+                              <Label className="text-xs">Background Color</Label>
+                              <div className="flex items-center gap-2">
+                                <input type="color" value={localBrandPs.displayNameBgColor ?? "#000000"}
+                                  onChange={e => setLocalBrandPs(p => ({ ...p, displayNameBgColor: e.target.value }))}
+                                  className="h-8 w-8 rounded border cursor-pointer" />
+                                <Input value={localBrandPs.displayNameBgColor ?? "#000000"} className="font-mono text-xs"
+                                  onChange={e => setLocalBrandPs(p => ({ ...p, displayNameBgColor: e.target.value }))} />
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Background Opacity: {Math.round((localBrandPs.displayNameBgOpacity ?? 0.35) * 100)}%</Label>
+                              <Slider value={[Math.round((localBrandPs.displayNameBgOpacity ?? 0.35) * 100)]} min={0} max={100} step={5}
+                                onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, displayNameBgOpacity: v / 100 }))} />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
-                    <SettingRow label="Show Headlines" description="Display headline text in overlays">
+                    <SettingRow label="Show Headline" description="Show a headline label over the video">
                       <Switch checked={!!localBrandPs.showHeadlines} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, showHeadlines: val }))} data-testid="switch-show-headlines" />
                     </SettingRow>
                     {localBrandPs.showHeadlines && (
-                      <div className="space-y-1">
-                        <Label className="text-xs">Headline Text</Label>
-                        <Input
-                          value={localBrandPs.headlineText ?? ""}
-                          placeholder="e.g. Session 3: Advanced Topics"
-                          maxLength={120}
-                          onChange={e => setLocalBrandPs(p => ({ ...p, headlineText: e.target.value }))}
-                          data-testid="input-headline-text"
-                        />
-                        <p className="text-xs text-muted-foreground">{(localBrandPs.headlineText ?? "").length}/120 chars</p>
+                      <div className="space-y-3 pl-1 border-l-2 border-muted ml-1">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Headline Text</Label>
+                          <Input value={localBrandPs.headlineText ?? ""} placeholder="e.g. Session 3: Advanced Topics" maxLength={120}
+                            onChange={e => setLocalBrandPs(p => ({ ...p, headlineText: e.target.value }))} data-testid="input-headline-text" />
+                          <p className="text-xs text-muted-foreground">{(localBrandPs.headlineText ?? "").length}/120</p>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Position</Label>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {["bottom-left","bottom-right"].map(pos => (
+                              <button key={pos} onClick={() => setLocalBrandPs(p => ({ ...p, headlinePosition: pos }))}
+                                className={`py-1 rounded border text-xs transition-colors ${(localBrandPs.headlinePosition ?? "bottom-left") === pos ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-muted/50"}`}
+                              >{pos === "bottom-left" ? "↙ Bottom Left" : "↘ Bottom Right"}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Font Size: {localBrandPs.headlineFontSize ?? 18}px</Label>
+                          <Slider value={[localBrandPs.headlineFontSize ?? 18]} min={10} max={36} step={1}
+                            onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, headlineFontSize: v }))} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Text Color</Label>
+                          <div className="flex items-center gap-2">
+                            <input type="color" value={localBrandPs.headlineTextColor ?? "#ffffff"}
+                              onChange={e => setLocalBrandPs(p => ({ ...p, headlineTextColor: e.target.value }))}
+                              className="h-8 w-8 rounded border cursor-pointer" />
+                            <Input value={localBrandPs.headlineTextColor ?? "#ffffff"} className="font-mono text-xs"
+                              onChange={e => setLocalBrandPs(p => ({ ...p, headlineTextColor: e.target.value }))} />
+                          </div>
+                        </div>
+                        <SettingRow label="Background" description="Show background behind text">
+                          <Switch checked={localBrandPs.headlineBgEnabled !== false}
+                            onCheckedChange={val => setLocalBrandPs(p => ({ ...p, headlineBgEnabled: val }))} />
+                        </SettingRow>
+                        {localBrandPs.headlineBgEnabled !== false && (
+                          <div className="space-y-2">
+                            <div className="space-y-1">
+                              <Label className="text-xs">Background Color</Label>
+                              <div className="flex items-center gap-2">
+                                <input type="color" value={localBrandPs.headlineBgColor ?? "#000000"}
+                                  onChange={e => setLocalBrandPs(p => ({ ...p, headlineBgColor: e.target.value }))}
+                                  className="h-8 w-8 rounded border cursor-pointer" />
+                                <Input value={localBrandPs.headlineBgColor ?? "#000000"} className="font-mono text-xs"
+                                  onChange={e => setLocalBrandPs(p => ({ ...p, headlineBgColor: e.target.value }))} />
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs">Background Opacity: {Math.round((localBrandPs.headlineBgOpacity ?? 0.35) * 100)}%</Label>
+                              <Slider value={[Math.round((localBrandPs.headlineBgOpacity ?? 0.35) * 100)]} min={0} max={100} step={5}
+                                onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, headlineBgOpacity: v / 100 }))} />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     <Button size="sm" className="w-full" onClick={() => updateBrandSettings.mutate(localBrandPs)} disabled={updateBrandSettings.isPending}>
