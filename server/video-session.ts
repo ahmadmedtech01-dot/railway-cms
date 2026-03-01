@@ -438,16 +438,31 @@ export function checkAndIssueKey(sid: string): { allowed: boolean; alreadyIssued
   return { allowed: true, alreadyIssued: false };
 }
 
+let _gatewayWarned = false;
+export function getHlsGatewayBase(): string {
+  const gw = (process.env.HLS_GATEWAY_BASE || "").trim().replace(/\/+$/, "");
+  if (gw) return gw;
+  if (process.env.NODE_ENV === "production" && !_gatewayWarned) {
+    _gatewayWarned = true;
+    console.warn("[hls] WARNING: HLS_GATEWAY_BASE not set in production — HLS URLs will use Railway origin instead of Cloudflare Worker gateway");
+  }
+  return "";
+}
+
 export function buildSignedProxyUrl(baseUrl: string, sid: string, resourcePath: string, ttlSeconds: number, deviceHash?: string): string {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const st = signPath(sid, resourcePath, exp, deviceHash);
-  const sep = baseUrl.includes("?") ? "&" : "?";
-  return `${baseUrl}${sep}sid=${encodeURIComponent(sid)}&st=${encodeURIComponent(st)}&exp=${exp}`;
+  const gateway = getHlsGatewayBase();
+  const fullUrl = `${gateway}${baseUrl}`;
+  const sep = fullUrl.includes("?") ? "&" : "?";
+  return `${fullUrl}${sep}sid=${encodeURIComponent(sid)}&st=${encodeURIComponent(st)}&exp=${exp}`;
 }
 
 export function buildStableKeyUrl(baseUrl: string, sid: string, session: VideoSession): string {
-  const sep = baseUrl.includes("?") ? "&" : "?";
-  return `${baseUrl}${sep}sid=${encodeURIComponent(sid)}&st=${encodeURIComponent(session.keySig)}&exp=${session.keyExp}`;
+  const gateway = getHlsGatewayBase();
+  const fullUrl = `${gateway}${baseUrl}`;
+  const sep = fullUrl.includes("?") ? "&" : "?";
+  return `${fullUrl}${sep}sid=${encodeURIComponent(sid)}&st=${encodeURIComponent(session.keySig)}&exp=${session.keyExp}`;
 }
 
 export function updateProgress(sid: string, segmentIndex: number): boolean {

@@ -1,0 +1,45 @@
+TASK: Switch all HLS playback URLs to use my Cloudflare Worker gateway domain (video.syanmedtech.com) while keeping SIGNING_SECRET-based security intact.
+
+Context:
+- Backend is deployed on Railway.
+- Storage is Backblaze B2 (HLS folders: /hls/.../index.m3u8 + seg_*.ts).
+- Cloudflare Worker is already deployed and routed on: https://video.syanmedtech.com/*
+- Worker validates HLS requests using query params: sid, st, exp (HMAC SHA256 with SIGNING_SECRET) and device binding.
+- SIGNING_SECRET is already fixed and required (no fallback).
+
+PROBLEM:
+- App still generates HLS URLs pointing to Railway domain or directly to B2.
+- So Cloudflare Worker gateway is not being used for actual playback.
+
+GOAL:
+- Force ALL HLS requests (index.m3u8, segments, key, etc.) to go through:
+  https://video.syanmedtech.com/...
+
+REQUIREMENTS:
+1) Add new env var:
+   HLS_GATEWAY_BASE = "https://video.syanmedtech.com"
+   (Fallback ONLY for local dev: if missing, use "http://localhost:8080" OR current server origin, but NEVER in production.)
+2) Wherever the backend generates HLS URLs (playlist URLs, segment URLs, key URLs, manifest URLs), replace base with HLS_GATEWAY_BASE.
+   Example output must be:
+   https://video.syanmedtech.com/hls/<publicId>/<path>?sid=...&st=...&exp=...
+3) Do NOT change signing algorithm, payload format, or query param names unless necessary.
+4) Make sure embed/player uses the gateway HLS URLs (not Railway, not B2).
+5) Keep iframe/embed security as-is (postMessage token flow stays same).
+6) Ensure CORS headers remain correct so video plays in browser.
+7) Update any config/constants in one place (central function), not scattered.
+8) Add a small debug log (no secrets) when generating HLS URL:
+   console.log("[hls] using gateway:", process.env.HLS_GATEWAY_BASE);
+
+DELIVERABLES:
+A) Tell me exactly which files you changed and what was changed.
+B) Tell me exactly what to add in Railway Variables:
+   - HLS_GATEWAY_BASE
+   - SIGNING_SECRET (already exists)
+C) After code changes, confirm the expected playback network requests will start with:
+   https://video.syanmedtech.com/hls/...
+
+IMPORTANT:
+- Do not directly expose B2 URLs to client.
+- Do not break playback.
+- Do not remove security checks.
+- Keep everything copy-paste ready and commit changes.

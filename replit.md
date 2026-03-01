@@ -158,6 +158,7 @@ Signing secret: `SIGNING_SECRET` env var (REQUIRED in production). No fallbacks 
 - `SESSION_SECRET` — Session encryption secret
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD` — Seeded admin credentials
 - `SIGNING_SECRET` — HMAC signing secret for HLS tokens + embed JWTs (REQUIRED in production, no fallback)
+- `HLS_GATEWAY_BASE` — Cloudflare Worker gateway domain for HLS playback (e.g. `https://video.syanmedtech.com`). All HLS/segment/key URLs are prefixed with this. Omit in dev for relative paths.
 - `VIMEO_ACCESS_TOKEN` — Vimeo Personal Access Token (or set via System Settings)
 - `B2_KEY_ID` — Backblaze B2 Application Key ID (required for B2 uploads)
 - `B2_APPLICATION_KEY` — Backblaze B2 Application Key secret (required for B2 uploads)
@@ -214,6 +215,7 @@ The app is Vercel-compatible via:
 | `ADMIN_EMAIL` | Admin login email |
 | `ADMIN_PASSWORD` | Admin login password |
 | `SIGNING_SECRET` | HMAC signing secret (REQUIRED — generate via admin endpoint) |
+| `HLS_GATEWAY_BASE` | `https://video.syanmedtech.com` |
 | `B2_KEY_ID` | Backblaze B2 Key ID |
 | `B2_APPLICATION_KEY` | Backblaze B2 Application Key |
 | `B2_S3_ENDPOINT` | e.g. `https://s3.ca-east-006.backblazeb2.com` |

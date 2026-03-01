@@ -262,6 +262,7 @@ async function seedDefaultSettings() {
   httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, async () => {
     log(`serving on port ${port}`);
     console.log("[security] SIGNING_SECRET loaded:", !!process.env.SIGNING_SECRET);
+    console.log("[hls] using gateway:", process.env.HLS_GATEWAY_BASE || "(none — relative URLs)");
     await seedAdmin();
     await seedDefaultSettings();
     recoverProcessingVideos();

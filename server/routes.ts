@@ -2631,7 +2631,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const proxyPath = `/hls/${video.publicId}/master.m3u8`;
       const manifestUrl = buildSignedProxyUrl(proxyPath, testSid, "/master.m3u8", 30, "masktest");
       const containsB2 = /backblazeb2\.com|s3\.amazonaws\.com|s3\..*\.backblaze/.test(manifestUrl);
-      const containsProxy = manifestUrl.startsWith("/hls/");
+      const containsProxy = manifestUrl.includes("/hls/");
       revokeSession(testSid);
       if (containsB2) {
         results["masking_check"] = { status: "FAIL", detail: `Manifest URL exposes raw storage: ${manifestUrl}` };
