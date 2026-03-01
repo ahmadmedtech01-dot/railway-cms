@@ -62,7 +62,7 @@ export function useSecurityViolations(
   options?: { disabled?: boolean },
 ) {
   const disabled = options?.disabled ?? false;
-  const limit: number = Math.max(1, settings.violationLimit ?? 3);
+  const limit: number = Math.max(1, settings?.violationLimit ?? 20);
 
   // Use a ref as authoritative source to avoid stale closures
   const stateRef = useRef<ViolationState>(readState(videoId));

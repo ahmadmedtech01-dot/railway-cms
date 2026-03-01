@@ -309,6 +309,11 @@ export function trackPlaylistFetch(sid: string, ip?: string): { abused: boolean;
   if (!s.suspiciousDetectionEnabled) return { abused: false };
 
   const now = Date.now();
+
+  // Grace window: skip playlist rate-counting for the first 10 seconds after
+  // session creation so that normal reloads don't trigger abuse detection.
+  if (now - s.createdAt < 10_000) return { abused: false };
+
   // Keep playlist fetches in a 5-second window
   s.playlistFetchLog = s.playlistFetchLog.filter(t => t > now - 5000);
   s.playlistFetchLog.push(now);
@@ -540,7 +545,7 @@ export function getSessionAbuseSummary(sid: string) {
     revokeReason: s.revokeReason,
     abuseScore: s.abuseScore,
     breachCount: s.breachEvents,
-    violationLimit: VIOLATION_LIMIT,
+    violationLimit: s.violationLimit,
     blockedUntil: s.blockedUntil,
     concurrentSegments: s.concurrentSegments,
     recentRequests: s.requestLog.length,

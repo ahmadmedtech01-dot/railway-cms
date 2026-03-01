@@ -1673,7 +1673,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       if (isMaster) {
         const fetchRes = await fetch(originUrl);
-        if (!fetchRes.ok) return res.status(404).json({ message: "Playlist not found" });
+        if (!fetchRes.ok) {
+          const bodySnippet = await fetchRes.text().catch(() => "").then(t => t.slice(0, 200));
+          log(`HLS_ORIGIN_404: publicId=${publicId} fileKey=${fileKey} provider=${storageProvider} bucket=${storageConfig?.bucket ?? "?"} status=${fetchRes.status} body=${bodySnippet}`);
+          return res.status(404).json({ code: "ORIGIN_PLAYLIST_NOT_FOUND", message: "Playlist not found in storage", publicId });
+        }
         const playlistText = await fetchRes.text();
 
         const rewritten = playlistText.split("\n").map(line => {
@@ -2355,8 +2359,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.put("/api/settings", requireAuth, async (req, res) => {
     try {
       const updates = req.body as Record<string, string>;
-      await storage.setSettings(updates);
-      await storage.createAuditLog({ action: "settings_updated", meta: { keys: Object.keys(updates) }, ip: req.ip });
+      // Strip masked/bullet values so they never overwrite real secrets in the DB
+      const isMasked = (v: string) => typeof v === "string" && /^[•\*]+$/.test(v.trim());
+      const safeUpdates = Object.fromEntries(
+        Object.entries(updates).filter(([, v]) => !isMasked(v))
+      );
+      if (Object.keys(safeUpdates).length > 0) {
+        await storage.setSettings(safeUpdates);
+      }
+      await storage.createAuditLog({ action: "settings_updated", meta: { keys: Object.keys(safeUpdates) }, ip: req.ip });
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });

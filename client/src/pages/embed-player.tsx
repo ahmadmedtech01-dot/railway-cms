@@ -339,10 +339,10 @@ export default function EmbedPlayerPage() {
                 if (r.ok) {
                   const secData = await r.json();
                   setEffectiveSecurity(secData);
-                  setSecurityReady(true);
                 }
-              })
-            : Promise.resolve(),
+                setSecurityReady(true);
+              }).catch(() => { setSecurityReady(true); })
+            : Promise.resolve().then(() => { setSecurityReady(true); }),
         ]);
 
         // Start session ping
@@ -421,6 +421,17 @@ export default function EmbedPlayerPage() {
                   }).catch(() => triggerDenial(signal));
                 } else {
                   triggerDenial(signal);
+                }
+              } else if (code === 404) {
+                // 404 means origin storage file not found — not a security issue
+                let parsedCode = "";
+                try { parsedCode = JSON.parse(responseText)?.code ?? ""; } catch {}
+                if (parsedCode === "ORIGIN_PLAYLIST_NOT_FOUND") {
+                  setStatus("error");
+                  setErrorMsg("Stream source not found. Video processing may be incomplete or the storage path is missing.");
+                } else {
+                  setStatus("error");
+                  setErrorMsg("Stream error");
                 }
               } else {
                 setStatus("error");

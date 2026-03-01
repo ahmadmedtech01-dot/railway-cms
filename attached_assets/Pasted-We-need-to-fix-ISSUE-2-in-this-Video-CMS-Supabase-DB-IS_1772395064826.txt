@@ -1,0 +1,148 @@
+We need to fix ISSUE #2 in this Video CMS (Supabase DB):
+
+ISSUE #2 SUMMARY:
+1) Video plays fine initially, but after 2–3 reloads it starts showing "Playback Error / Stream error".
+2) Even though Violation Limit is set to 20 in UI, the player shows "Security breach 1/3" (wrong limit + wrong counting).
+
+We must fix BOTH causes properly: server 404/401 playlist failures + client using wrong default violation limit before settings load.
+
+------------------------------------------------------------
+PART A — FIX "Security breach 1/3" WHEN LIMIT IS 20
+------------------------------------------------------------
+
+ROOT CAUSE:
+Client starts security detection BEFORE effective security settings are fetched, so it uses defaults (limit=3) and logs breaches early (devtools open etc). Also server may still be using a hardcoded default limit in some breach endpoint.
+
+REQUIREMENTS:
+- Client MUST NOT run any security violation counting until effective security settings are loaded.
+- Violation limit shown in overlay MUST always match effectiveSecurity.violationLimit (or global setting if global applies).
+- If devtools is open during initial load, it must NOT count until securityReady=true.
+- On each breach overlay, show "X / <effectiveLimit>" (e.g., 1/20 not 1/3).
+
+CLIENT CHANGES:
+File: client/src/pages/embed-player.tsx
+
+1) Add a flag:
+   const [securityReady, setSecurityReady] = useState(false);
+
+2) In the effective security fetch (GET /api/security/effective/:videoId):
+   - Always setSecurityReady(true) when fetch completes (success or fail).
+   - If fetch fails, setEffectiveSecurity(null) but still setSecurityReady(true).
+
+3) Ensure useSecurityViolations() is disabled until ready:
+   Change:
+     useSecurityViolations(videoId, effectiveSecurity, { disabled: isAdminPreview });
+   To:
+     useSecurityViolations(videoId, effectiveSecurity, { disabled: isAdminPreview || !securityReady });
+
+4) Ensure the overlay uses effectiveSecurity.violationLimit:
+   If there is any local default "3", remove it from UI display.
+   Use:
+     const limit = effectiveSecurity?.violationLimit ?? 20;   // use 20 as safer fallback, not 3
+
+Also ensure the "devtools opened" breach uses that limit.
+
+SERVER CHANGES (if needed):
+- Ensure getBreachInfo() returns violationLimit from session (not hardcoded).
+- Ensure createSession() receives violationLimit and stores it in session (already being done in issue #1 fix).
+
+------------------------------------------------------------
+PART B — FIX PLAYBACK ERROR AFTER 2–3 RELOADS (HLS FAILS)
+------------------------------------------------------------
+
+OBSERVED:
+Network shows master.m3u8 request returning 404 (Not Found) sometimes, causing stream error.
+This means origin fetch for playlist is failing or the playlist URL/key being built is inconsistent.
+
+REQUIREMENTS:
+- Playback must be stable across repeated reloads.
+- master.m3u8 (and variants) must NEVER randomly become 404 if the video exists.
+- If a session is rotated or revoked, the client should automatically refresh the session and retry manifest once (graceful recovery).
+
+LIKELY ROOT CAUSES TO FIX:
+1) Wrong/unstable HLS prefix / fileKey calculation in server/routes.ts for origin playlist.
+2) Storage connection config not loaded reliably (Supabase) or masked-secret overwrite bug corrupting B2 keys.
+3) Session rotation / token TTL too short causing playlist fetch to fail during reload.
+4) Strict anti-abuse logic revokes too aggressively on reload bursts (already reduced by issue #1, but still need reload-safe rules).
+
+SERVER IMPLEMENTATION TASKS:
+
+File: server/routes.ts (HLS proxy endpoints)
+
+1) Add detailed debug logs when origin playlist fetch fails:
+   When fetchRes.ok is false, log:
+   - publicId
+   - isMaster / requested path
+   - computed fileKey
+   - storage provider + bucket name (not secrets)
+   - fetchRes.status
+   - first 200 chars of response text (if safe)
+
+Return JSON with code so client can react:
+   { message: "Playlist not found", code: "ORIGIN_PLAYLIST_NOT_FOUND", publicId }
+
+2) Confirm fileKey logic is correct and consistent:
+   Ensure master.m3u8 always maps to:
+     `${video.hlsPrefix}/master.m3u8`
+   and variants/segments map to:
+     `${video.hlsPrefix}/${restOfPath}`
+   Avoid double "hls/" or missing "/" issues.
+   Add a helper normalizeJoin(prefix, path) that guarantees single slashes.
+
+3) Make playlist access tolerant to reload:
+   - Do NOT revoke session just because multiple manifest requests happen quickly.
+   - For manifests, allow a higher burst or ignore rate counting for the first 10 seconds after session creation.
+   Add:
+     s.createdAt and if (Date.now() - s.createdAt < 10_000) skip manifest abuse counting.
+
+4) Improve session rotation behavior:
+   If session rotates every 3 minutes, ensure old session remains valid for at least 20–30 seconds grace period so reload doesn't hit "revoked" mid-flight.
+   Implement:
+     s.graceUntil timestamp; accept signed paths from previous session for N seconds.
+
+CLIENT IMPLEMENTATION TASKS (GRACEFUL RECOVERY):
+
+File: client/src/pages/embed-player.tsx (or HLS init code)
+
+1) When manifest fetch results in 401/403 OR server returns code:
+   - "SESSION_REVOKED"
+   - "BLOCKED"
+   - "ORIGIN_PLAYLIST_NOT_FOUND" (temporary)
+   then:
+   - auto-retry once by refreshing session (re-call whatever init endpoint creates session / token)
+   - then reload the player source
+   - if still fails, show error overlay.
+
+2) Ensure the "Playback denied due to suspicious activity" overlay is not used for 404 Not Found.
+   For 404 playlist missing, show:
+     "Stream source not found. Video processing incomplete or storage path missing."
+
+DATABASE / SUPABASE SAFETY CHECK:
+Also ensure settings secrets are not being overwritten with bullets.
+If masked secret overwrite exists, it can break B2 access and cause random 404.
+Confirm PUT /api/settings ignores masked values like "•••••" and does not store them.
+
+------------------------------------------------------------
+TEST PLAN (MUST DO)
+------------------------------------------------------------
+
+1) Set Violation Limit = 20, Devtools block ON.
+2) Reload embed page 10 times with devtools open.
+   EXPECT: breach shows 1/20 (not 1/3) AND only after securityReady true.
+3) Turn suspicious detection OFF.
+   EXPECT: no suspicious overlay ever.
+4) Repeated reload stability test:
+   - Play video, reload 10 times, scrub timeline.
+   EXPECT: master.m3u8 never returns 404 randomly.
+5) If a 404 occurs, logs must clearly show computed fileKey and why.
+
+------------------------------------------------------------
+DELIVERABLE
+------------------------------------------------------------
+Implement the above fixes with minimal changes, no UI redesign.
+Commit changes across:
+- server/routes.ts
+- server/video-session.ts (if any remaining hardcoded limit/grace additions)
+- client/src/pages/embed-player.tsx
+
+Do not break existing admin preview bypass behavior.
