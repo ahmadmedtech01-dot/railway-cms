@@ -22,7 +22,7 @@ A full-stack secure video content management system for a single admin user.
 - **Upload Wizard**: File upload to S3 + HLS transcoding, OR URL import (YouTube/Vimeo/Drive/OneDrive/S3/Direct)
 - **Video Detail** (tabbed):
   - Overview: metadata editing
-  - Player: controls configuration (speed, quality, fullscreen, skip, brightness, resume, autoplay)
+  - Player: full StreamYard-style accordion panel with live iframe preview on left; sections: Player Controls, Logo, Overlay, QR Code, Video Clips (intro/outro), Banners & Tickers, Style (brand color, theme, font)
   - Watermark: logo, scrolling ticker, pop-up watermark with variable templates
   - Security: token required, signed URLs, domain whitelist, referrer checks, concurrent limits
   - Embed & Share: iframe code, masked share link, token management

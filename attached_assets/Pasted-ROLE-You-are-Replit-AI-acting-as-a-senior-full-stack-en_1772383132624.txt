@@ -1,0 +1,313 @@
+ROLE
+You are Replit AI acting as a senior full-stack engineer + UI/UX designer. You must IMPLEMENT (code changes) in my existing Video CMS project (React client + Node/Express server). No fake placeholders—make it work end-to-end.
+
+GOAL
+1) Improve the Player Settings UX/UI to match the reference screenshots (StreamYard-like).
+2) Add new “Brand/Player” features exactly like screenshots:
+   - Logo (upload + placement + size + opacity)
+   - Overlay image (upload + opacity + placement)
+   - QR Code (title + URL → QR overlay + placement + size + opacity)
+   - Video Clips (Intro/Outro upload) + Loop toggle + playback sequence intro→main→outro
+   - Ticker/Banners list with hide/on/off and styling
+   - Style (brand color, theme presets, font, show display names/headlines toggles)
+3) Fix the duplicate Live Preview: currently it shows in 2 places. Keep ONLY ONE large preview like other brands.
+4) Use Backblaze B2 (S3-compatible) bucket for ALL uploaded assets (logo/overlay/intro/outro) using the existing storage-connection system in the app (B2/S3). Do NOT store binaries locally.
+
+STRICT CONSTRAINTS
+- Do NOT remove or change meaning of any existing Player Controls options/toggles.
+- You MAY reorganize layout, group options better, and improve visuals.
+- This is NOT a new admin panel—changes must be inside existing Player tab/page.
+- Don’t break existing video playback / token auth / AES pipelines.
+- Prefer minimal dependencies; if needed, use lightweight libraries only.
+
+REFERENCE UX (FROM SCREENSHOTS)
+- One large Live Preview with Refresh button.
+- Right-side settings panel with sections: Logo, Overlay, QR code, Video clips, Style, plus existing controls.
+- Section titles have small “?” tooltip help and recommended sizes / limits.
+- Logo/Overlay show thumbnails, “+” add button, placement icons.
+- QR code section: card preview + title + link fields + “Create” button.
+- Video clips: Intro/Outro upload slots, Loop checkbox.
+- Style: Presets, Brand color hex, Theme buttons (Bubble/Classic/Minimal/Block), toggles, Font dropdown.
+- Ticker/Banners list: multiple text items with “Hide/Off/On” states.
+
+========================================
+PART A — DATA MODEL (DB)
+========================================
+1) Create (or extend) a Player Settings storage in DB.
+Prefer a dedicated table:
+  video_player_settings
+with a 1:1 relation to videos (video_id unique).
+
+Fields (minimum):
+- videoId (PK or unique FK)
+
+Existing player controls fields remain as-is (don’t break them).
+
+NEW FIELDS:
+Logo:
+- logoEnabled boolean default false
+- logoAssetId string nullable
+- logoPlacement enum: "top-left"|"top-right"|"bottom-left"|"bottom-right" default "top-right"
+- logoSizePercent integer default 12   (min 3 max 30)
+- logoOpacity float default 0.9        (0.1–1.0)
+
+Overlay:
+- overlayEnabled boolean default false
+- overlayAssetId string nullable
+- overlayOpacity float default 0.6     (0–1)
+- overlayMode enum: "full"|"top"|"bottom"|"left"|"right" default "full"
+
+QR Code:
+- qrEnabled boolean default false
+- qrTitle string nullable
+- qrUrl string nullable
+- qrPlacement enum corners default "top-left"
+- qrSizePercent integer default 14     (min 5 max 35)
+- qrOpacity float default 1.0
+- qrBgEnabled boolean default true
+- qrBgOpacity float default 0.5
+
+Video Clips:
+- introAssetId string nullable
+- outroAssetId string nullable
+- loopEnabled boolean default false
+- loopMode enum: "main-only"|"all" default "main-only"
+
+Ticker/Banners:
+Create a separate table:
+  video_banners
+Fields:
+- id (pk)
+- videoId (fk)
+- text string not null
+- enabled boolean default true
+- type enum: "ticker"|"banner" default "ticker"
+- position enum: "bottom"|"top" default "bottom"
+- speed integer default 18 (for ticker; px/sec or seconds per loop)
+- backgroundColor string default "#0b3a66"
+- textColor string default "#ffffff"
+- fontSize integer default 18
+- opacity float default 1.0
+- paddingY integer default 10
+- paddingX integer default 16
+- createdAt, updatedAt
+- sortOrder integer default 0
+
+Style:
+- brandColor string default "#ffc42c"
+- theme enum: "bubble"|"classic"|"minimal"|"block" default "classic"
+- showDisplayNames boolean default true
+- showHeadlines boolean default true
+- fontFamily string default "system"
+
+2) Asset table (if exists, reuse it; if not, create it)
+assets:
+- id pk
+- kind enum: "image"|"video"
+- mimeType
+- sizeBytes
+- storageProvider ("b2"|"s3")
+- bucket
+- key
+- publicUrl (if you use)
+- createdAt
+
+IMPORTANT:
+- Use your existing storage connection system, and store storage key/bucket/provider.
+
+========================================
+PART B — BACKEND APIs (Node/Express)
+========================================
+Implement API endpoints. Keep consistent with existing auth patterns.
+
+1) GET settings
+GET /api/videos/:id/player-settings
+Returns:
+- playerSettings object (including logo/overlay/qr/clips/style + existing controls)
+- banners array (sorted)
+- resolved asset URLs (logoUrl, overlayUrl, introUrl, outroUrl) if possible
+
+2) PATCH settings (atomic updates)
+PATCH /api/videos/:id/player-settings
+Body can include any subset of:
+- logoEnabled, logoPlacement, logoSizePercent, logoOpacity, logoAssetId
+- overlayEnabled, overlayOpacity, overlayMode, overlayAssetId
+- qrEnabled, qrTitle, qrUrl, qrPlacement, qrSizePercent, qrOpacity, qrBgEnabled, qrBgOpacity
+- introAssetId, outroAssetId, loopEnabled, loopMode
+- brandColor, theme, showDisplayNames, showHeadlines, fontFamily
+Validate all inputs.
+
+3) Upload endpoints (MUST upload to Backblaze B2 / S3 bucket)
+Use existing storage service and connections.
+
+Logo upload:
+POST /api/videos/:id/player-assets/logo
+FormData: file
+- Validate: image/png, image/webp, image/jpeg, max 20MB
+- Upload to bucket path: assets/videos/:id/logo/<timestamp>_<filename>
+- Create asset record
+- Update playerSettings.logoAssetId and logoEnabled=true
+Return: assetId + url
+
+Overlay upload:
+POST /api/videos/:id/player-assets/overlay
+- Validate: image/*, max 20MB
+- Recommended 1280x720, but don’t hard fail; warn if not.
+- Upload to: assets/videos/:id/overlay/...
+- Update overlayAssetId and overlayEnabled=true
+
+Intro upload:
+POST /api/videos/:id/player-assets/intro
+- Validate: video/mp4, max 200MB
+- Upload: assets/videos/:id/intro/...
+- Optional: check duration <= 10 minutes using ffprobe if you already have it (otherwise skip duration check but keep max size)
+- Update introAssetId
+
+Outro upload:
+POST /api/videos/:id/player-assets/outro
+- same as intro
+
+4) Banner CRUD
+GET /api/videos/:id/banners
+POST /api/videos/:id/banners
+PATCH /api/videos/:id/banners/:bannerId
+DELETE /api/videos/:id/banners/:bannerId
+Also endpoint to reorder:
+POST /api/videos/:id/banners/reorder  { orderedIds: string[] }
+
+5) Security
+- Ensure only authorized admin can update these settings (same auth you use for video edits).
+- Use existing token/session.
+
+========================================
+PART C — FRONTEND UX/UI (React)
+========================================
+1) Fix duplicate live preview
+Find Player Settings page/component and ensure there is ONLY ONE Live Preview rendered.
+Remove the smaller duplicate panel and keep a single large preview.
+
+2) New page layout (match screenshots)
+Desktop layout:
+- Left: Large Live Preview card (16:9) with player.
+- Right: Settings panel with accordion sections.
+
+Header (sticky):
+- video title + status chips
+- buttons: Save, Refresh Preview, Open Player
+- show “Unsaved changes” badge
+
+3) Settings Panel sections (accordion)
+A) Player Controls (existing toggles) — keep all existing options unchanged.
+B) Logo
+   - Upload button (+)
+   - Thumbnail preview
+   - Placement selector (4 corner icons)
+   - Size slider (3–30%)
+   - Opacity slider (0.1–1.0)
+   - Enable toggle
+   - Help tooltip: recommended size 200x200, transparent PNG
+C) Overlay
+   - Upload button (+)
+   - Thumbnail preview
+   - Mode selector (full/top/bottom/left/right)
+   - Opacity slider
+   - Enable toggle
+   - Help tooltip: recommended 1280x720, transparent PNG
+D) QR Code
+   - Enable toggle
+   - Card preview like screenshot
+   - Inputs: Title, URL
+   - “Create” button validates URL (http/https)
+   - Placement selector + size slider + opacity slider
+   - (Generate QR client-side using a small lib, e.g. qrcode)
+E) Video clips
+   - Intro upload slot
+   - Outro upload slot
+   - Loop toggle
+   - Loop mode dropdown (main-only/all)
+   - Display clip metadata (file name, size)
+F) Ticker / Banners
+   - List of banners with drag handle (optional) or up/down
+   - Each item shows text preview and a toggle like Hide/Off/On
+   - “Add Banner” button opens editor
+   - Editor fields:
+     - type ticker/banner
+     - text
+     - position top/bottom
+     - speed (ticker)
+     - background color + text color
+     - font size + opacity + padding
+G) Style
+   - Presets row (3–4 cards)
+   - Brand color hex input
+   - Theme buttons: Bubble/Classic/Minimal/Block
+   - Toggles: show display names, show headlines
+   - Font dropdown
+
+4) Live preview behavior
+- Preview reflects SAVED settings (like screenshot).
+- When user edits but not saved, preview may show a subtle “Not saved” message and keep current preview.
+- On Save: PATCH settings + show toast.
+- Refresh: re-fetch settings + re-render player.
+
+========================================
+PART D — PLAYER RENDERING (Overlay Engine)
+========================================
+Update the Player component (used in preview and in actual player page) to render overlays.
+
+Rendering order (top to bottom):
+1) Video element
+2) Overlay image (if enabled)
+3) Ticker/Banner bar (if any enabled)
+4) QR code (if enabled)
+5) Logo (if enabled)
+
+Implementation notes:
+- Use absolute positioned layers inside a relative container.
+- pointer-events: none for overlays (except if you add clickable QR later; for now just display).
+- Respect opacity, size, placement.
+
+Ticker animation:
+- Use CSS keyframes marquee for ticker type.
+- For banner type: static bar.
+
+Intro/Outro playback state machine:
+- If intro exists: play intro first, then switch source to main video.
+- On main end: if outro exists play outro.
+- Loop:
+  - main-only: loop main segment
+  - all: loop entire sequence (intro→main→outro)
+Implement cleanly with a simple state enum: "intro"|"main"|"outro".
+
+========================================
+PART E — BACKBLAZE B2 / S3 STORAGE
+========================================
+- Use existing B2/S3 connection configuration.
+- For uploads:
+  - use pre-signed or server upload depending on existing code
+  - store key/bucket/provider in assets table
+  - return a URL that the app can render (public or signed)
+- Ensure all “Logo/Overlay/Clips” upload actions use bucket (NOT local disk).
+- If your system uses signed URLs, add an endpoint to fetch signed URL for assets.
+
+========================================
+PART F — FINAL DELIVERABLES (MANDATORY)
+========================================
+1) Provide list of files changed.
+2) Provide DB migration code.
+3) Provide code for:
+   - settings routes
+   - upload routes
+   - banner CRUD routes
+4) Provide updated React Player Settings page code (layout + accordion).
+5) Provide updated Player overlay rendering code.
+6) Provide a quick manual QA checklist and confirm it works:
+   - Only ONE large preview
+   - Logo upload + placement/opacity/size works
+   - Overlay upload + opacity works
+   - QR create shows in preview
+   - Intro/outro sequence works
+   - Ticker banners list works + show/hide
+   - Style brand color/theme/font applied to overlays UI
+
+NOW START IMPLEMENTING. DO NOT ASK ME QUESTIONS. MAKE REASONABLE DEFAULTS.

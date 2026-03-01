@@ -60,6 +60,51 @@ export const videoPlayerSettings = pgTable("video_player_settings", {
   autoplayAllowed: boolean("autoplay_allowed").notNull().default(false),
   startTime: integer("start_time").notNull().default(0),
   endTime: integer("end_time"),
+  logoEnabled: boolean("logo_enabled").notNull().default(false),
+  logoAssetId: uuid("logo_asset_id"),
+  logoPlacement: text("logo_placement").notNull().default("top-right"),
+  logoSizePercent: integer("logo_size_percent").notNull().default(12),
+  logoOpacity: real("logo_opacity").notNull().default(0.9),
+  overlayEnabled: boolean("overlay_enabled").notNull().default(false),
+  overlayAssetId: uuid("overlay_asset_id"),
+  overlayOpacity: real("overlay_opacity").notNull().default(0.6),
+  overlayMode: text("overlay_mode").notNull().default("full"),
+  qrEnabled: boolean("qr_enabled").notNull().default(false),
+  qrTitle: text("qr_title"),
+  qrUrl: text("qr_url"),
+  qrPlacement: text("qr_placement").notNull().default("top-left"),
+  qrSizePercent: integer("qr_size_percent").notNull().default(14),
+  qrOpacity: real("qr_opacity").notNull().default(1.0),
+  qrBgEnabled: boolean("qr_bg_enabled").notNull().default(true),
+  qrBgOpacity: real("qr_bg_opacity").notNull().default(0.5),
+  introAssetId: uuid("intro_asset_id"),
+  outroAssetId: uuid("outro_asset_id"),
+  loopEnabled: boolean("loop_enabled").notNull().default(false),
+  loopMode: text("loop_mode").notNull().default("main-only"),
+  brandColor: text("brand_color").notNull().default("#ffc42c"),
+  theme: text("theme").notNull().default("classic"),
+  showDisplayNames: boolean("show_display_names").notNull().default(true),
+  showHeadlines: boolean("show_headlines").notNull().default(true),
+  fontFamily: text("font_family").notNull().default("system"),
+});
+
+export const videoBanners = pgTable("video_banners", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  videoId: uuid("video_id").notNull().references(() => videos.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  type: text("type").notNull().default("ticker"),
+  position: text("position").notNull().default("bottom"),
+  speed: integer("speed").notNull().default(18),
+  backgroundColor: text("background_color").notNull().default("#0b3a66"),
+  textColor: text("text_color").notNull().default("#ffffff"),
+  fontSize: integer("font_size").notNull().default(18),
+  opacity: real("opacity").notNull().default(1.0),
+  paddingY: integer("padding_y").notNull().default(10),
+  paddingX: integer("padding_x").notNull().default(16),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const videoWatermarkSettings = pgTable("video_watermark_settings", {
@@ -201,6 +246,7 @@ export type InsertUser = { email: string; passwordHash: string };
 export type AdminUser = typeof adminUsers.$inferSelect;
 export type Video = typeof videos.$inferSelect;
 export type VideoPlayerSettings = typeof videoPlayerSettings.$inferSelect;
+export type VideoBanner = typeof videoBanners.$inferSelect;
 export type VideoWatermarkSettings = typeof videoWatermarkSettings.$inferSelect;
 export type VideoSecuritySettings = typeof videoSecuritySettings.$inferSelect;
 export type EmbedToken = typeof embedTokens.$inferSelect;

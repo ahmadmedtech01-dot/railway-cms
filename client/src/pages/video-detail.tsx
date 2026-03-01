@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "wouter";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -15,16 +15,20 @@ import { Slider } from "@/components/ui/slider";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   ArrowLeft, Eye, EyeOff, ExternalLink, Copy, CheckCircle, RefreshCw,
   Key, Shield, Droplets, Settings2, BarChart3, ScrollText, Code2,
   Plus, Trash2, AlertCircle, Video, Clock, Lock,
   Play, SkipBack, SkipForward, Volume2, Maximize, Sun, Gauge, Layers,
-  RotateCcw, Zap,
+  RotateCcw, Zap, Upload, QrCode, Image, Film, Palette, AlignLeft,
+  ChevronDown, HelpCircle, X, GripVertical, ToggleLeft,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
-import type { EmbedToken } from "@shared/schema";
+import type { EmbedToken, VideoBanner } from "@shared/schema";
 import { SecuritySettingsForm, defaultClientSecuritySettings, type ClientSecuritySettings } from "@/components/security-settings-form";
+import QRCode from "qrcode";
 
 function CopyButton({ text, label }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -240,6 +244,23 @@ export default function VideoDetailPage() {
   const [previewToken, setPreviewToken] = useState("");
   const [previewKey, setPreviewKey] = useState(0);
 
+  // Brand / Player settings (extended player settings)
+  const [localBrandPs, setLocalBrandPs] = useState<Record<string, any>>({});
+  const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [banners, setBanners] = useState<VideoBanner[]>([]);
+  const [bannerDialogOpen, setBannerDialogOpen] = useState(false);
+  const [editingBanner, setEditingBanner] = useState<Partial<VideoBanner> | null>(null);
+  const [assetUploading, setAssetUploading] = useState<Record<string, boolean>>({});
+  const [assetPreviews, setAssetPreviews] = useState<Record<string, string>>({});
+
+  const { data: bannersData, refetch: refetchBanners } = useQuery<VideoBanner[]>({
+    queryKey: ["/api/videos", id, "banners"],
+    queryFn: () => fetch(`/api/videos/${id}/banners`, { credentials: "include" }).then(r => r.json()),
+    enabled: !!id,
+  });
+
+  useEffect(() => { if (bannersData) setBanners(bannersData); }, [bannersData]);
+
   const { data: videoData, isLoading } = useQuery({
     queryKey: ["/api/videos", id],
     queryFn: () => fetch(`/api/videos/${id}`).then(r => r.json()),
@@ -276,6 +297,58 @@ export default function VideoDetailPage() {
     mutationFn: (data: any) => apiRequest("PUT", `/api/videos/${id}/player-settings`, data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/videos", id] }); toast({ title: "Player settings saved" }); refreshPreview(); },
   });
+
+  const updateBrandSettings = useMutation({
+    mutationFn: (data: any) => apiRequest("PATCH", `/api/videos/${id}/player-settings`, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/videos", id] }); toast({ title: "Brand settings saved" }); refreshPreview(); },
+    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+  });
+
+  const createBannerMut = useMutation({
+    mutationFn: (data: Partial<VideoBanner>) => apiRequest("POST", `/api/videos/${id}/banners`, data),
+    onSuccess: () => { refetchBanners(); setBannerDialogOpen(false); setEditingBanner(null); toast({ title: "Banner added" }); },
+    onError: () => toast({ title: "Failed to add banner", variant: "destructive" }),
+  });
+
+  const updateBannerMut = useMutation({
+    mutationFn: ({ bannerId, data }: { bannerId: string; data: Partial<VideoBanner> }) =>
+      apiRequest("PATCH", `/api/videos/${id}/banners/${bannerId}`, data),
+    onSuccess: () => { refetchBanners(); setBannerDialogOpen(false); setEditingBanner(null); toast({ title: "Banner updated" }); },
+    onError: () => toast({ title: "Failed to update banner", variant: "destructive" }),
+  });
+
+  const deleteBannerMut = useMutation({
+    mutationFn: (bannerId: string) => apiRequest("DELETE", `/api/videos/${id}/banners/${bannerId}`),
+    onSuccess: () => { refetchBanners(); toast({ title: "Banner deleted" }); },
+  });
+
+  const toggleBannerMut = useMutation({
+    mutationFn: ({ bannerId, enabled }: { bannerId: string; enabled: boolean }) =>
+      apiRequest("PATCH", `/api/videos/${id}/banners/${bannerId}`, { enabled }),
+    onSuccess: () => refetchBanners(),
+  });
+
+  const uploadPlayerAsset = async (assetType: string, file: File): Promise<{ assetId: string; previewUrl: string } | null> => {
+    setAssetUploading(p => ({ ...p, [assetType]: true }));
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const resp = await fetch(`/api/videos/${id}/player-assets/${assetType}`, {
+        method: "POST", body: fd, credentials: "include",
+      });
+      if (!resp.ok) throw new Error((await resp.json()).message || "Upload failed");
+      const data = await resp.json();
+      setAssetPreviews(p => ({ ...p, [assetType]: data.previewUrl }));
+      qc.invalidateQueries({ queryKey: ["/api/videos", id] });
+      toast({ title: `${assetType.charAt(0).toUpperCase() + assetType.slice(1)} uploaded` });
+      return data;
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+      return null;
+    } finally {
+      setAssetUploading(p => ({ ...p, [assetType]: false }));
+    }
+  };
 
   const updateWatermark = useMutation({
     mutationFn: (data: any) => apiRequest("PUT", `/api/videos/${id}/watermark-settings`, data),
@@ -391,10 +464,40 @@ export default function VideoDetailPage() {
 
   // Must be before early returns — hooks cannot be called conditionally
   useEffect(() => {
-    if (videoData?.playerSettings) setLocalPs(videoData.playerSettings);
+    if (videoData?.playerSettings) {
+      setLocalPs(videoData.playerSettings);
+      setLocalBrandPs(videoData.playerSettings);
+    }
     if (videoData?.watermarkSettings) setLocalWs(videoData.watermarkSettings);
     if (videoData?.securitySettings) setLocalSs(videoData.securitySettings);
   }, [videoData?.playerSettings, videoData?.watermarkSettings, videoData?.securitySettings]);
+
+  // Generate QR preview whenever qrUrl changes
+  useEffect(() => {
+    const url = localBrandPs.qrUrl;
+    if (url && /^https?:\/\//.test(url)) {
+      QRCode.toDataURL(url, { margin: 1, width: 128 }).then(setQrDataUrl).catch(() => setQrDataUrl(""));
+    } else {
+      setQrDataUrl("");
+    }
+  }, [localBrandPs.qrUrl]);
+
+  // Load asset preview URLs from saved settings
+  useEffect(() => {
+    const ps = videoData?.playerSettings;
+    if (!ps) return;
+    const assetTypes: [string, string | null | undefined][] = [
+      ["logo", ps.logoAssetId],
+      ["overlay", ps.overlayAssetId],
+      ["intro", ps.introAssetId],
+      ["outro", ps.outroAssetId],
+    ];
+    for (const [type, assetId] of assetTypes) {
+      if (assetId && !assetPreviews[type]) {
+        setAssetPreviews(p => ({ ...p, [type]: `/api/assets/${assetId}/view` }));
+      }
+    }
+  }, [videoData?.playerSettings]);
 
   useEffect(() => {
     if (!id) return;
@@ -498,9 +601,8 @@ iframe.addEventListener('load', () => {
         </div>
       </div>
 
-      <div className="flex gap-6 items-start">
-        {/* Left: tabs */}
-        <div className="flex-1 min-w-0">
+      <div>
+        <div>
       <Tabs defaultValue="overview">
         <TabsList className="flex-wrap h-auto gap-1">
           <TabsTrigger value="overview" data-testid="tab-overview"><Video className="h-3.5 w-3.5 mr-1" />Overview</TabsTrigger>
@@ -789,59 +891,559 @@ iframe.addEventListener('load', () => {
 
         {/* Player Settings */}
         <TabsContent value="player" className="mt-4">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-5 items-start">
-            {/* Settings panel */}
-            <Card className="border border-card-border">
-              <CardHeader>
-                <CardTitle className="text-base">Player Controls</CardTitle>
-                <CardDescription>Configure what the viewer can interact with</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {[
-                  { key: "allowSpeed", label: "Speed Control", desc: "Allow playback speed adjustment (0.5x–3x)" },
-                  { key: "allowQuality", label: "Quality Selection", desc: "Allow viewer to switch between quality levels" },
-                  { key: "allowFullscreen", label: "Fullscreen", desc: "Allow fullscreen mode" },
-                  { key: "allowSkip", label: "Seek / Skip", desc: "Allow seeking and ±10s skip buttons" },
-                  { key: "allowBrightness", label: "Brightness Control", desc: "Allow brightness adjustment via CSS filter" },
-                  { key: "resumeEnabled", label: "Resume Playback", desc: "Resume from last watched position" },
-                  { key: "autoplayAllowed", label: "Autoplay", desc: "Attempt autoplay on embed load (muted)" },
-                ].map(s => (
-                  <SettingRow key={s.key} label={s.label} description={s.desc}>
-                    <Switch
-                      checked={!!localPs[s.key as keyof PlayerSettings]}
-                      onCheckedChange={val => setLocalPs(prev => ({ ...prev, [s.key]: val }))}
-                      data-testid={`switch-${s.key}`}
-                    />
-                  </SettingRow>
-                ))}
-                <div className="mt-4 grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label>Start Time (seconds)</Label>
-                    <Input
-                      type="number" min={0} defaultValue={ps.startTime || 0}
-                      onChange={e => setLocalPs(prev => ({ ...prev, startTime: parseInt(e.target.value) || 0 }))}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>End Time (seconds, 0 = full)</Label>
-                    <Input
-                      type="number" min={0} defaultValue={ps.endTime || 0}
-                      onChange={e => setLocalPs(prev => ({ ...prev, endTime: parseInt(e.target.value) || 0 }))}
-                    />
-                  </div>
-                </div>
-                <SaveBar
-                  dirty={JSON.stringify(localPs) !== JSON.stringify(ps)}
-                  onSave={() => updatePlayer.mutate(localPs)}
-                  isPending={updatePlayer.isPending}
-                />
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-5 items-start">
 
-            {/* Live preview panel */}
-            <PlayerPreview ps={localPs} />
+            {/* LEFT: Live Preview */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-foreground">Live Preview</span>
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1" onClick={refreshPreview} data-testid="button-refresh-preview">
+                  <RefreshCw className="h-3 w-3" />Refresh
+                </Button>
+              </div>
+              {derivedStatus === "needs_hls" ? (
+                <Card className="border border-orange-500/30 bg-orange-500/5">
+                  <CardContent className="pt-5 pb-4">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-orange-600 dark:text-orange-400 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-orange-700 dark:text-orange-400">HLS not available</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">Build HLS from source to enable preview.</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="border border-card-border overflow-hidden bg-black">
+                  <div className="relative" style={{ paddingBottom: "56.25%" }}>
+                    {previewToken ? (
+                      <iframe
+                        key={previewKey}
+                        src={`/embed/${video.publicId}?token=${previewToken}`}
+                        className="absolute inset-0 w-full h-full border-0"
+                        allow="autoplay; fullscreen"
+                        title="Video Preview"
+                        data-testid="player-preview"
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                        <div className="h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              )}
+              <p className="text-xs text-muted-foreground text-center">Preview reflects saved settings. Click Refresh after saving changes.</p>
+
+              {/* Active overlays summary */}
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {localBrandPs.logoEnabled && <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20"><Image className="h-2.5 w-2.5 mr-1" />Logo</Badge>}
+                {localBrandPs.overlayEnabled && <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20"><Layers className="h-2.5 w-2.5 mr-1" />Overlay</Badge>}
+                {localBrandPs.qrEnabled && <Badge variant="outline" className="text-xs bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20"><QrCode className="h-2.5 w-2.5 mr-1" />QR Code</Badge>}
+                {localBrandPs.introAssetId && <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"><Film className="h-2.5 w-2.5 mr-1" />Intro</Badge>}
+                {localBrandPs.outroAssetId && <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"><Film className="h-2.5 w-2.5 mr-1" />Outro</Badge>}
+                {banners.filter(b => b.enabled).length > 0 && <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border-cyan-500/20"><AlignLeft className="h-2.5 w-2.5 mr-1" />{banners.filter(b => b.enabled).length} Banner{banners.filter(b => b.enabled).length > 1 ? "s" : ""}</Badge>}
+              </div>
+            </div>
+
+            {/* RIGHT: Settings Accordion Panel */}
+            <div className="space-y-1">
+              <TooltipProvider>
+              <Accordion type="multiple" defaultValue={["controls"]} className="space-y-1">
+
+                {/* Player Controls */}
+                <AccordionItem value="controls" className="border border-card-border rounded-lg px-4">
+                  <AccordionTrigger className="text-sm font-medium hover:no-underline py-3">
+                    <div className="flex items-center gap-2"><Settings2 className="h-4 w-4 text-muted-foreground" />Player Controls</div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-4">
+                    {[
+                      { key: "allowSpeed", label: "Speed Control", desc: "Allow playback speed adjustment (0.5x–3x)" },
+                      { key: "allowQuality", label: "Quality Selection", desc: "Allow viewer to switch between quality levels" },
+                      { key: "allowFullscreen", label: "Fullscreen", desc: "Allow fullscreen mode" },
+                      { key: "allowSkip", label: "Seek / Skip", desc: "Allow seeking and ±10s skip buttons" },
+                      { key: "allowBrightness", label: "Brightness Control", desc: "Allow brightness adjustment via CSS filter" },
+                      { key: "resumeEnabled", label: "Resume Playback", desc: "Resume from last watched position" },
+                      { key: "autoplayAllowed", label: "Autoplay", desc: "Attempt autoplay on embed load (muted)" },
+                    ].map(s => (
+                      <SettingRow key={s.key} label={s.label} description={s.desc}>
+                        <Switch
+                          checked={!!localPs[s.key as keyof PlayerSettings]}
+                          onCheckedChange={val => setLocalPs(prev => ({ ...prev, [s.key]: val }))}
+                          data-testid={`switch-${s.key}`}
+                        />
+                      </SettingRow>
+                    ))}
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Start Time (sec)</Label>
+                        <Input type="number" min={0} defaultValue={ps.startTime || 0}
+                          onChange={e => setLocalPs(prev => ({ ...prev, startTime: parseInt(e.target.value) || 0 }))} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">End Time (0 = full)</Label>
+                        <Input type="number" min={0} defaultValue={ps.endTime || 0}
+                          onChange={e => setLocalPs(prev => ({ ...prev, endTime: parseInt(e.target.value) || 0 }))} />
+                      </div>
+                    </div>
+                    <SaveBar
+                      dirty={JSON.stringify(localPs) !== JSON.stringify(ps)}
+                      onSave={() => updatePlayer.mutate(localPs)}
+                      isPending={updatePlayer.isPending}
+                    />
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Logo */}
+                <AccordionItem value="logo" className="border border-card-border rounded-lg px-4">
+                  <AccordionTrigger className="text-sm font-medium hover:no-underline py-3">
+                    <div className="flex items-center gap-2">
+                      <Image className="h-4 w-4 text-muted-foreground" />Logo
+                      <Tooltip><TooltipTrigger asChild><HelpCircle className="h-3 w-3 text-muted-foreground" /></TooltipTrigger><TooltipContent>Recommended: 200×200px, transparent PNG, max 20MB</TooltipContent></Tooltip>
+                      {localBrandPs.logoEnabled && <Badge className="ml-1 text-[10px] h-4 px-1.5 bg-purple-500/20 text-purple-700 dark:text-purple-300 border-0">ON</Badge>}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-4 space-y-3">
+                    <SettingRow label="Enable Logo" description="Show logo overlay on the player">
+                      <Switch checked={!!localBrandPs.logoEnabled} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, logoEnabled: val }))} data-testid="switch-player-logo-enabled" />
+                    </SettingRow>
+                    <div>
+                      <Label className="text-xs mb-2 block">Upload Logo Image</Label>
+                      <div className="flex items-center gap-2">
+                        {assetPreviews.logo && (
+                          <img src={assetPreviews.logo} alt="Logo" className="h-12 w-12 rounded border object-contain bg-muted" />
+                        )}
+                        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-dashed border-border text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors">
+                          {assetUploading.logo ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                          {assetPreviews.logo ? "Replace" : "+ Add Logo"}
+                          <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" disabled={assetUploading.logo}
+                            onChange={async e => { const f = e.target.files?.[0]; if (f) await uploadPlayerAsset("logo", f); }} />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Placement</Label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {["top-left","top-right","bottom-left","bottom-right"].map(pos => (
+                          <button key={pos}
+                            className={`p-2 rounded border text-[10px] transition-colors ${localBrandPs.logoPlacement === pos ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-muted/50"}`}
+                            onClick={() => setLocalBrandPs(p => ({ ...p, logoPlacement: pos }))}
+                          >
+                            {pos.replace("top-","T-").replace("bottom-","B-")}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Size: {localBrandPs.logoSizePercent ?? 12}%</Label>
+                      <Slider value={[localBrandPs.logoSizePercent ?? 12]} min={3} max={30} step={1}
+                        onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, logoSizePercent: v }))} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Opacity: {Math.round((localBrandPs.logoOpacity ?? 0.9) * 100)}%</Label>
+                      <Slider value={[(localBrandPs.logoOpacity ?? 0.9) * 100]} min={10} max={100} step={5}
+                        onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, logoOpacity: v / 100 }))} />
+                    </div>
+                    <Button size="sm" className="w-full" onClick={() => updateBrandSettings.mutate(localBrandPs)} disabled={updateBrandSettings.isPending}>
+                      {updateBrandSettings.isPending ? "Saving…" : "Save Logo Settings"}
+                    </Button>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Overlay */}
+                <AccordionItem value="overlay" className="border border-card-border rounded-lg px-4">
+                  <AccordionTrigger className="text-sm font-medium hover:no-underline py-3">
+                    <div className="flex items-center gap-2">
+                      <Layers className="h-4 w-4 text-muted-foreground" />Overlay
+                      <Tooltip><TooltipTrigger asChild><HelpCircle className="h-3 w-3 text-muted-foreground" /></TooltipTrigger><TooltipContent>Recommended: 1280×720px, transparent PNG, max 20MB</TooltipContent></Tooltip>
+                      {localBrandPs.overlayEnabled && <Badge className="ml-1 text-[10px] h-4 px-1.5 bg-blue-500/20 text-blue-700 dark:text-blue-300 border-0">ON</Badge>}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-4 space-y-3">
+                    <SettingRow label="Enable Overlay" description="Show a full or partial image overlay on the video">
+                      <Switch checked={!!localBrandPs.overlayEnabled} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, overlayEnabled: val }))} data-testid="switch-overlay-enabled" />
+                    </SettingRow>
+                    <div>
+                      <Label className="text-xs mb-2 block">Upload Overlay Image</Label>
+                      <div className="flex items-center gap-2">
+                        {assetPreviews.overlay && (
+                          <img src={assetPreviews.overlay} alt="Overlay" className="h-12 w-20 rounded border object-contain bg-muted" />
+                        )}
+                        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-dashed border-border text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors">
+                          {assetUploading.overlay ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                          {assetPreviews.overlay ? "Replace" : "+ Add Overlay"}
+                          <input type="file" accept="image/*" className="hidden" disabled={assetUploading.overlay}
+                            onChange={async e => { const f = e.target.files?.[0]; if (f) await uploadPlayerAsset("overlay", f); }} />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Mode</Label>
+                      <Select value={localBrandPs.overlayMode ?? "full"} onValueChange={val => setLocalBrandPs(p => ({ ...p, overlayMode: val }))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {["full","top","bottom","left","right"].map(m => (
+                            <SelectItem key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Opacity: {Math.round((localBrandPs.overlayOpacity ?? 0.6) * 100)}%</Label>
+                      <Slider value={[(localBrandPs.overlayOpacity ?? 0.6) * 100]} min={0} max={100} step={5}
+                        onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, overlayOpacity: v / 100 }))} />
+                    </div>
+                    <Button size="sm" className="w-full" onClick={() => updateBrandSettings.mutate(localBrandPs)} disabled={updateBrandSettings.isPending}>
+                      {updateBrandSettings.isPending ? "Saving…" : "Save Overlay Settings"}
+                    </Button>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* QR Code */}
+                <AccordionItem value="qr" className="border border-card-border rounded-lg px-4">
+                  <AccordionTrigger className="text-sm font-medium hover:no-underline py-3">
+                    <div className="flex items-center gap-2">
+                      <QrCode className="h-4 w-4 text-muted-foreground" />QR Code
+                      {localBrandPs.qrEnabled && <Badge className="ml-1 text-[10px] h-4 px-1.5 bg-green-500/20 text-green-700 dark:text-green-300 border-0">ON</Badge>}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-4 space-y-3">
+                    <SettingRow label="Enable QR Code" description="Show a QR code overlay on the player">
+                      <Switch checked={!!localBrandPs.qrEnabled} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, qrEnabled: val }))} data-testid="switch-qr-enabled" />
+                    </SettingRow>
+                    {qrDataUrl && (
+                      <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: localBrandPs.qrBgEnabled ? `rgba(0,0,0,${localBrandPs.qrBgOpacity ?? 0.5})` : "transparent" }}>
+                        <img src={qrDataUrl} alt="QR Preview" className="h-14 w-14 rounded" />
+                        <div>
+                          <p className="text-sm font-medium text-foreground line-clamp-1">{localBrandPs.qrTitle || "Untitled"}</p>
+                          <p className="text-xs text-muted-foreground line-clamp-1">{localBrandPs.qrUrl}</p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Title</Label>
+                      <Input value={localBrandPs.qrTitle ?? ""} placeholder="Scan to visit" onChange={e => setLocalBrandPs(p => ({ ...p, qrTitle: e.target.value }))} data-testid="input-qr-title" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">URL</Label>
+                      <Input value={localBrandPs.qrUrl ?? ""} placeholder="https://website.com" onChange={e => setLocalBrandPs(p => ({ ...p, qrUrl: e.target.value }))} data-testid="input-qr-url" />
+                      {localBrandPs.qrUrl && !/^https?:\/\//.test(localBrandPs.qrUrl) && (
+                        <p className="text-xs text-destructive">URL must start with http:// or https://</p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Placement</Label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {["top-left","top-right","bottom-left","bottom-right"].map(pos => (
+                          <button key={pos}
+                            className={`p-2 rounded border text-[10px] transition-colors ${localBrandPs.qrPlacement === pos ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-muted/50"}`}
+                            onClick={() => setLocalBrandPs(p => ({ ...p, qrPlacement: pos }))}
+                          >
+                            {pos.replace("top-","T-").replace("bottom-","B-")}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Size: {localBrandPs.qrSizePercent ?? 14}%</Label>
+                      <Slider value={[localBrandPs.qrSizePercent ?? 14]} min={5} max={35} step={1}
+                        onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, qrSizePercent: v }))} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Opacity: {Math.round((localBrandPs.qrOpacity ?? 1) * 100)}%</Label>
+                      <Slider value={[(localBrandPs.qrOpacity ?? 1) * 100]} min={20} max={100} step={5}
+                        onValueChange={([v]) => setLocalBrandPs(p => ({ ...p, qrOpacity: v / 100 }))} />
+                    </div>
+                    <SettingRow label="Background Card" description="Show a semi-transparent background behind the QR">
+                      <Switch checked={!!localBrandPs.qrBgEnabled} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, qrBgEnabled: val }))} />
+                    </SettingRow>
+                    <Button size="sm" className="w-full"
+                      onClick={() => { if (localBrandPs.qrUrl && !/^https?:\/\//.test(localBrandPs.qrUrl)) { toast({ title: "Invalid URL", description: "URL must start with http:// or https://", variant: "destructive" }); return; } updateBrandSettings.mutate(localBrandPs); }}
+                      disabled={updateBrandSettings.isPending}>
+                      {updateBrandSettings.isPending ? "Saving…" : "Create / Save QR Code"}
+                    </Button>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Video Clips */}
+                <AccordionItem value="clips" className="border border-card-border rounded-lg px-4">
+                  <AccordionTrigger className="text-sm font-medium hover:no-underline py-3">
+                    <div className="flex items-center gap-2">
+                      <Film className="h-4 w-4 text-muted-foreground" />Video Clips
+                      <Tooltip><TooltipTrigger asChild><HelpCircle className="h-3 w-3 text-muted-foreground" /></TooltipTrigger><TooltipContent>MP4 files only, max 200MB each</TooltipContent></Tooltip>
+                      {(localBrandPs.introAssetId || localBrandPs.outroAssetId) && <Badge className="ml-1 text-[10px] h-4 px-1.5 bg-amber-500/20 text-amber-700 dark:text-amber-300 border-0">SET</Badge>}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-4 space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Intro */}
+                      <div className="space-y-2">
+                        <Label className="text-xs">Intro Video</Label>
+                        <label className={`flex flex-col items-center justify-center gap-1.5 p-4 rounded-lg border-2 border-dashed cursor-pointer transition-colors text-center ${assetPreviews.intro ? "border-amber-500/40 bg-amber-500/5" : "border-border hover:bg-muted/50"}`}>
+                          {assetUploading.intro ? <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" /> : <Film className="h-5 w-5 text-muted-foreground" />}
+                          <span className="text-[10px] text-muted-foreground">{assetPreviews.intro ? "Intro uploaded ✓" : "+ Intro video"}</span>
+                          <input type="file" accept="video/mp4,video/quicktime,video/webm" className="hidden" disabled={assetUploading.intro}
+                            onChange={async e => { const f = e.target.files?.[0]; if (f) { const r = await uploadPlayerAsset("intro", f); if (r) setLocalBrandPs(p => ({ ...p, introAssetId: r.assetId })); } }} />
+                        </label>
+                        {assetPreviews.intro && (
+                          <Button size="sm" variant="ghost" className="w-full h-6 text-xs text-muted-foreground"
+                            onClick={() => { setAssetPreviews(p => ({ ...p, intro: "" })); setLocalBrandPs(p => ({ ...p, introAssetId: undefined })); }}>
+                            <X className="h-3 w-3 mr-1" />Remove
+                          </Button>
+                        )}
+                      </div>
+                      {/* Outro */}
+                      <div className="space-y-2">
+                        <Label className="text-xs">Outro Video</Label>
+                        <label className={`flex flex-col items-center justify-center gap-1.5 p-4 rounded-lg border-2 border-dashed cursor-pointer transition-colors text-center ${assetPreviews.outro ? "border-amber-500/40 bg-amber-500/5" : "border-border hover:bg-muted/50"}`}>
+                          {assetUploading.outro ? <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" /> : <Film className="h-5 w-5 text-muted-foreground" />}
+                          <span className="text-[10px] text-muted-foreground">{assetPreviews.outro ? "Outro uploaded ✓" : "+ Outro video"}</span>
+                          <input type="file" accept="video/mp4,video/quicktime,video/webm" className="hidden" disabled={assetUploading.outro}
+                            onChange={async e => { const f = e.target.files?.[0]; if (f) { const r = await uploadPlayerAsset("outro", f); if (r) setLocalBrandPs(p => ({ ...p, outroAssetId: r.assetId })); } }} />
+                        </label>
+                        {assetPreviews.outro && (
+                          <Button size="sm" variant="ghost" className="w-full h-6 text-xs text-muted-foreground"
+                            onClick={() => { setAssetPreviews(p => ({ ...p, outro: "" })); setLocalBrandPs(p => ({ ...p, outroAssetId: undefined })); }}>
+                            <X className="h-3 w-3 mr-1" />Remove
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <SettingRow label="Loop" description="Loop the video after it ends">
+                      <Switch checked={!!localBrandPs.loopEnabled} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, loopEnabled: val }))} />
+                    </SettingRow>
+                    {localBrandPs.loopEnabled && (
+                      <div className="space-y-1">
+                        <Label className="text-xs">Loop Mode</Label>
+                        <Select value={localBrandPs.loopMode ?? "main-only"} onValueChange={val => setLocalBrandPs(p => ({ ...p, loopMode: val }))}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="main-only">Main video only</SelectItem>
+                            <SelectItem value="all">Full sequence (Intro → Main → Outro)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    <Button size="sm" className="w-full" onClick={() => updateBrandSettings.mutate(localBrandPs)} disabled={updateBrandSettings.isPending}>
+                      {updateBrandSettings.isPending ? "Saving…" : "Save Clip Settings"}
+                    </Button>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Banners */}
+                <AccordionItem value="banners" className="border border-card-border rounded-lg px-4">
+                  <AccordionTrigger className="text-sm font-medium hover:no-underline py-3">
+                    <div className="flex items-center gap-2">
+                      <AlignLeft className="h-4 w-4 text-muted-foreground" />Banners & Tickers
+                      {banners.length > 0 && <Badge className="ml-1 text-[10px] h-4 px-1.5 bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border-0">{banners.length}</Badge>}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-4 space-y-3">
+                    {banners.length === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-4">No banners yet. Add one below.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {banners.map(banner => (
+                          <div key={banner.id} className={`flex items-start gap-2 p-2.5 rounded-lg border transition-colors ${banner.enabled ? "border-card-border bg-card" : "border-border/50 bg-muted/30 opacity-60"}`}>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-foreground truncate">{banner.text}</p>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <Badge variant="outline" className="text-[10px] h-4 px-1">{banner.type}</Badge>
+                                <Badge variant="outline" className="text-[10px] h-4 px-1">{banner.position}</Badge>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button size="sm" variant="ghost" className="h-6 px-1.5 text-xs"
+                                onClick={() => toggleBannerMut.mutate({ bannerId: banner.id, enabled: !banner.enabled })}
+                                data-testid={`button-toggle-banner-${banner.id}`}>
+                                {banner.enabled ? "Hide" : "On"}
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-6 px-1.5 text-xs"
+                                onClick={() => { setEditingBanner({ ...banner }); setBannerDialogOpen(true); }}>
+                                Edit
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-6 px-1.5 text-destructive hover:text-destructive"
+                                onClick={() => deleteBannerMut.mutate(banner.id)}
+                                data-testid={`button-delete-banner-${banner.id}`}>
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <Button size="sm" variant="outline" className="w-full" onClick={() => { setEditingBanner({ type: "ticker", position: "bottom", speed: 18, backgroundColor: "#0b3a66", textColor: "#ffffff", fontSize: 18, opacity: 1, paddingY: 10, paddingX: 16, enabled: true, text: "" }); setBannerDialogOpen(true); }}>
+                      <Plus className="h-3.5 w-3.5 mr-1" />Add Banner
+                    </Button>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Style */}
+                <AccordionItem value="style" className="border border-card-border rounded-lg px-4">
+                  <AccordionTrigger className="text-sm font-medium hover:no-underline py-3">
+                    <div className="flex items-center gap-2">
+                      <Palette className="h-4 w-4 text-muted-foreground" />Style
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pb-4 space-y-4">
+                    <div className="space-y-2">
+                      <Label className="text-xs">Brand Color</Label>
+                      <div className="flex items-center gap-2">
+                        <input type="color" value={localBrandPs.brandColor ?? "#ffc42c"}
+                          onChange={e => setLocalBrandPs(p => ({ ...p, brandColor: e.target.value }))}
+                          className="h-8 w-8 rounded border cursor-pointer" data-testid="input-brand-color" />
+                        <Input value={localBrandPs.brandColor ?? "#ffc42c"}
+                          onChange={e => setLocalBrandPs(p => ({ ...p, brandColor: e.target.value }))}
+                          className="font-mono text-xs" placeholder="#ffc42c" />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs">Theme</Label>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {["bubble","classic","minimal","block"].map(t => (
+                          <button key={t}
+                            className={`py-1.5 rounded-md border text-xs font-medium transition-colors ${localBrandPs.theme === t ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted/50"}`}
+                            onClick={() => setLocalBrandPs(p => ({ ...p, theme: t }))}
+                            data-testid={`button-theme-${t}`}
+                          >
+                            {t.charAt(0).toUpperCase() + t.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Font</Label>
+                      <Select value={localBrandPs.fontFamily ?? "system"} onValueChange={val => setLocalBrandPs(p => ({ ...p, fontFamily: val }))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="system">Use default theme font</SelectItem>
+                          <SelectItem value="Inter">Inter</SelectItem>
+                          <SelectItem value="Roboto">Roboto</SelectItem>
+                          <SelectItem value="Montserrat">Montserrat</SelectItem>
+                          <SelectItem value="Poppins">Poppins</SelectItem>
+                          <SelectItem value="Lato">Lato</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <SettingRow label="Show Display Names" description="Display user names in overlays">
+                      <Switch checked={!!localBrandPs.showDisplayNames} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, showDisplayNames: val }))} data-testid="switch-show-display-names" />
+                    </SettingRow>
+                    <SettingRow label="Show Headlines" description="Display headline text in overlays">
+                      <Switch checked={!!localBrandPs.showHeadlines} onCheckedChange={val => setLocalBrandPs(p => ({ ...p, showHeadlines: val }))} data-testid="switch-show-headlines" />
+                    </SettingRow>
+                    <Button size="sm" className="w-full" onClick={() => updateBrandSettings.mutate(localBrandPs)} disabled={updateBrandSettings.isPending}>
+                      {updateBrandSettings.isPending ? "Saving…" : "Save Style Settings"}
+                    </Button>
+                  </AccordionContent>
+                </AccordionItem>
+
+              </Accordion>
+              </TooltipProvider>
+            </div>
           </div>
         </TabsContent>
+
+        {/* Banner Dialog */}
+        <Dialog open={bannerDialogOpen} onOpenChange={open => { if (!open) { setBannerDialogOpen(false); setEditingBanner(null); } }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader><DialogTitle>{editingBanner?.id ? "Edit Banner" : "Add Banner"}</DialogTitle></DialogHeader>
+            {editingBanner && (
+              <div className="space-y-4 py-2">
+                <div className="space-y-1.5">
+                  <Label>Banner Text</Label>
+                  <Textarea value={editingBanner.text ?? ""} placeholder="Enter banner text..." rows={2}
+                    onChange={e => setEditingBanner(p => ({ ...p!, text: e.target.value }))} data-testid="input-banner-text" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Type</Label>
+                    <Select value={editingBanner.type ?? "ticker"} onValueChange={val => setEditingBanner(p => ({ ...p!, type: val }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ticker">Ticker (scrolling)</SelectItem>
+                        <SelectItem value="banner">Banner (static)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Position</Label>
+                    <Select value={editingBanner.position ?? "bottom"} onValueChange={val => setEditingBanner(p => ({ ...p!, position: val }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="bottom">Bottom</SelectItem>
+                        <SelectItem value="top">Top</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {editingBanner.type === "ticker" && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Speed: {editingBanner.speed ?? 18}px/s</Label>
+                    <Slider value={[editingBanner.speed ?? 18]} min={5} max={60} step={1}
+                      onValueChange={([v]) => setEditingBanner(p => ({ ...p!, speed: v }))} />
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Background</Label>
+                    <div className="flex gap-1.5">
+                      <input type="color" value={editingBanner.backgroundColor ?? "#0b3a66"}
+                        onChange={e => setEditingBanner(p => ({ ...p!, backgroundColor: e.target.value }))}
+                        className="h-9 w-9 rounded border cursor-pointer shrink-0" />
+                      <Input value={editingBanner.backgroundColor ?? "#0b3a66"} className="font-mono text-xs"
+                        onChange={e => setEditingBanner(p => ({ ...p!, backgroundColor: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Text Color</Label>
+                    <div className="flex gap-1.5">
+                      <input type="color" value={editingBanner.textColor ?? "#ffffff"}
+                        onChange={e => setEditingBanner(p => ({ ...p!, textColor: e.target.value }))}
+                        className="h-9 w-9 rounded border cursor-pointer shrink-0" />
+                      <Input value={editingBanner.textColor ?? "#ffffff"} className="font-mono text-xs"
+                        onChange={e => setEditingBanner(p => ({ ...p!, textColor: e.target.value }))} />
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Font Size: {editingBanner.fontSize ?? 18}px</Label>
+                    <Slider value={[editingBanner.fontSize ?? 18]} min={10} max={40} step={1}
+                      onValueChange={([v]) => setEditingBanner(p => ({ ...p!, fontSize: v }))} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Opacity: {Math.round((editingBanner.opacity ?? 1) * 100)}%</Label>
+                    <Slider value={[(editingBanner.opacity ?? 1) * 100]} min={20} max={100} step={5}
+                      onValueChange={([v]) => setEditingBanner(p => ({ ...p!, opacity: v / 100 }))} />
+                  </div>
+                </div>
+                {/* Preview */}
+                <div className="rounded overflow-hidden" style={{ padding: `${editingBanner.paddingY ?? 10}px ${editingBanner.paddingX ?? 16}px`, backgroundColor: editingBanner.backgroundColor ?? "#0b3a66", opacity: editingBanner.opacity ?? 1 }}>
+                  <p style={{ color: editingBanner.textColor ?? "#ffffff", fontSize: `${editingBanner.fontSize ?? 18}px`, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {editingBanner.text || "Banner preview"}
+                  </p>
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setBannerDialogOpen(false); setEditingBanner(null); }}>Cancel</Button>
+              <Button
+                disabled={!editingBanner?.text?.trim() || createBannerMut.isPending || updateBannerMut.isPending}
+                onClick={() => {
+                  if (!editingBanner?.text?.trim()) return;
+                  if (editingBanner.id) {
+                    updateBannerMut.mutate({ bannerId: editingBanner.id, data: editingBanner });
+                  } else {
+                    createBannerMut.mutate({ videoId: id!, ...editingBanner });
+                  }
+                }}
+                data-testid="button-save-banner"
+              >
+                {(createBannerMut.isPending || updateBannerMut.isPending) ? "Saving…" : (editingBanner?.id ? "Update" : "Add")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Watermark Settings */}
         <TabsContent value="watermark" className="mt-4 space-y-4">
@@ -1356,61 +1958,6 @@ iframe.addEventListener('load', () => {
       </Tabs>
         </div>{/* end flex-1 left column */}
 
-        {/* Right: sticky live preview panel */}
-        <div className="w-[360px] flex-shrink-0 hidden lg:block">
-          <div className="sticky top-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-foreground">Live Preview</span>
-              <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1" onClick={refreshPreview} data-testid="button-refresh-preview">
-                <RefreshCw className="h-3 w-3" />Refresh
-              </Button>
-            </div>
-            {derivedStatus === "needs_hls" ? (
-              <Card className="border border-orange-500/30 bg-orange-500/5">
-                <CardContent className="pt-5 pb-4 space-y-3">
-                  <div className="flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 shrink-0 text-orange-600 dark:text-orange-400 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-medium text-orange-700 dark:text-orange-400">HLS not available</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        This video has not been converted to HLS for the custom player yet.
-                      </p>
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    className="w-full"
-                    onClick={() => buildHls.mutate()}
-                    disabled={buildHls.isPending}
-                    data-testid="button-build-hls-preview"
-                  >
-                    <Zap className="h-3.5 w-3.5 mr-1.5" />
-                    {buildHls.isPending ? "Starting…" : "Build HLS from Source"}
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card className="border border-card-border overflow-hidden bg-black">
-                <div className="relative" style={{ paddingBottom: "56.25%" }}>
-                  {previewToken ? (
-                    <iframe
-                      key={previewKey}
-                      src={`/embed/${video.publicId}?token=${previewToken}`}
-                      className="absolute inset-0 w-full h-full border-0"
-                      allow="autoplay; fullscreen"
-                      title="Video Preview"
-                    />
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/80">
-                      <div className="h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                    </div>
-                  )}
-                </div>
-              </Card>
-            )}
-            <p className="text-xs text-muted-foreground text-center">Preview reflects saved settings. Click Refresh after saving changes.</p>
-          </div>
-        </div>
       </div>{/* end flex row */}
     </div>{/* end page container */}
 

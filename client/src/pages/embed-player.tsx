@@ -31,6 +31,39 @@ interface PlayerSettings {
   autoplayAllowed?: boolean;
   startTime?: number;
   endTime?: number;
+  logoEnabled?: boolean;
+  logoUrl?: string;
+  logoPlacement?: string;
+  logoSizePercent?: number;
+  logoOpacity?: number;
+  overlayEnabled?: boolean;
+  overlayUrl?: string;
+  overlayMode?: string;
+  overlayOpacity?: number;
+  qrEnabled?: boolean;
+  qrUrl?: string;
+  qrTitle?: string;
+  qrDataUrl?: string;
+  qrPlacement?: string;
+  qrSizePercent?: number;
+  qrOpacity?: number;
+  qrBgEnabled?: boolean;
+  qrBgOpacity?: number;
+}
+
+interface PlayerBanner {
+  id: string | number;
+  text: string;
+  type: string;
+  position: string;
+  speed?: number;
+  backgroundColor?: string;
+  textColor?: string;
+  fontSize?: number;
+  opacity?: number;
+  paddingY?: number;
+  paddingX?: number;
+  enabled: boolean;
 }
 
 
@@ -122,6 +155,8 @@ export default function EmbedPlayerPage() {
 
   // Session limit state — when userId concurrent limit is reached
   const [sessionLimitInfo, setSessionLimitInfo] = useState<{ activeSessions: any[] } | null>(null);
+  const [playerBanners, setPlayerBanners] = useState<PlayerBanner[]>([]);
+  const [bannerTickerOffsets, setBannerTickerOffsets] = useState<Record<string | number, number>>({});
 
   // Keep ref in sync so DevTools detector can read current signal without stale closure
   useEffect(() => { denialSignalRef.current = denialSignal; }, [denialSignal]);
@@ -256,6 +291,11 @@ export default function EmbedPlayerPage() {
               const s = await r.json();
               setPlayerSettings(s.playerSettings || {});
               setWatermarkSettings(s.watermarkSettings || {});
+              const activeBanners = (s.banners || []).filter((b: PlayerBanner) => b.enabled);
+              setPlayerBanners(activeBanners);
+              const initOffsets: Record<string | number, number> = {};
+              activeBanners.forEach((b: PlayerBanner) => { initOffsets[b.id] = 0; });
+              setBannerTickerOffsets(initOffsets);
             }
           }),
           resolvedVideoId
@@ -536,6 +576,23 @@ export default function EmbedPlayerPage() {
     }, 16);
     return () => clearInterval(interval);
   }, [watermarkSettings.tickerEnabled, watermarkSettings.tickerSpeed]);
+
+  // Banner ticker animation
+  useEffect(() => {
+    const tickerBanners = playerBanners.filter(b => b.type === "ticker" && b.enabled);
+    if (tickerBanners.length === 0) return;
+    const interval = setInterval(() => {
+      setBannerTickerOffsets(prev => {
+        const next = { ...prev };
+        tickerBanners.forEach(b => {
+          const speed = b.speed ?? 18;
+          next[b.id] = (prev[b.id] ?? 0) - (speed / 60);
+        });
+        return next;
+      });
+    }, 16);
+    return () => clearInterval(interval);
+  }, [playerBanners]);
 
   // Pop watermark
   useEffect(() => {
@@ -950,6 +1007,127 @@ export default function EmbedPlayerPage() {
               {popText}
             </div>
           )}
+
+          {/* ── Player Brand: Full Overlay Image ── */}
+          {playerSettings.overlayEnabled && playerSettings.overlayUrl && (() => {
+            const mode = playerSettings.overlayMode ?? "full";
+            const styleMap: Record<string, React.CSSProperties> = {
+              full:   { inset: 0 },
+              top:    { top: 0, left: 0, right: 0, height: "30%" },
+              bottom: { bottom: 0, left: 0, right: 0, height: "30%" },
+              left:   { top: 0, bottom: 0, left: 0, width: "30%" },
+              right:  { top: 0, bottom: 0, right: 0, width: "30%" },
+            };
+            return (
+              <div
+                className="absolute pointer-events-none"
+                style={{ ...styleMap[mode] ?? styleMap.full, opacity: playerSettings.overlayOpacity ?? 0.6 }}
+                data-testid="overlay-player-overlay"
+              >
+                <img src={playerSettings.overlayUrl} alt="" className="w-full h-full object-cover" />
+              </div>
+            );
+          })()}
+
+          {/* ── Player Brand: Logo ── */}
+          {playerSettings.logoEnabled && playerSettings.logoUrl && (() => {
+            const pos: Record<string, React.CSSProperties> = {
+              "top-left":     { top: 12, left: 12 },
+              "top-right":    { top: 12, right: 12 },
+              "bottom-left":  { bottom: 48, left: 12 },
+              "bottom-right": { bottom: 48, right: 12 },
+            };
+            const sizePercent = playerSettings.logoSizePercent ?? 12;
+            return (
+              <div
+                className="absolute pointer-events-none"
+                style={{ ...pos[playerSettings.logoPlacement ?? "top-right"] ?? pos["top-right"], opacity: playerSettings.logoOpacity ?? 0.9, width: `${sizePercent}%` }}
+                data-testid="overlay-player-logo"
+              >
+                <img src={playerSettings.logoUrl} alt="" className="w-full h-auto object-contain" />
+              </div>
+            );
+          })()}
+
+          {/* ── Player Brand: QR Code ── */}
+          {playerSettings.qrEnabled && playerSettings.qrDataUrl && (() => {
+            const pos: Record<string, React.CSSProperties> = {
+              "top-left":     { top: 12, left: 12 },
+              "top-right":    { top: 12, right: 12 },
+              "bottom-left":  { bottom: 48, left: 12 },
+              "bottom-right": { bottom: 48, right: 12 },
+            };
+            const sizePercent = playerSettings.qrSizePercent ?? 14;
+            return (
+              <div
+                className="absolute pointer-events-none rounded-lg overflow-hidden"
+                style={{
+                  ...pos[playerSettings.qrPlacement ?? "bottom-right"] ?? pos["bottom-right"],
+                  opacity: playerSettings.qrOpacity ?? 1,
+                  width: `${sizePercent}%`,
+                  backgroundColor: playerSettings.qrBgEnabled ? `rgba(0,0,0,${playerSettings.qrBgOpacity ?? 0.5})` : "transparent",
+                  padding: playerSettings.qrBgEnabled ? "6px" : 0,
+                }}
+                data-testid="overlay-player-qr"
+              >
+                <img src={playerSettings.qrDataUrl} alt={playerSettings.qrTitle ?? "QR Code"} className="w-full h-auto block" />
+                {playerSettings.qrTitle && (
+                  <p className="text-white text-center text-[10px] mt-0.5 leading-tight truncate">
+                    {playerSettings.qrTitle}
+                  </p>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Player Brand: Banners & Tickers ── */}
+          {playerBanners.map(banner => {
+            const isTicker = banner.type === "ticker";
+            const isTop = banner.position === "top";
+            const posStyle: React.CSSProperties = isTop
+              ? { top: 0, left: 0, right: 0 }
+              : { bottom: 40, left: 0, right: 0 };
+            const bgColor = banner.backgroundColor ?? "#0b3a66";
+            const textColor = banner.textColor ?? "#ffffff";
+            const fontSize = banner.fontSize ?? 18;
+            const opacity = banner.opacity ?? 1;
+            const paddingY = banner.paddingY ?? 8;
+            const paddingX = banner.paddingX ?? 14;
+            const offset = bannerTickerOffsets[banner.id] ?? 0;
+            const textLen = banner.text.length;
+            const wrapAt = textLen * (fontSize * 0.65) + 400;
+            return (
+              <div
+                key={banner.id}
+                className="absolute overflow-hidden pointer-events-none"
+                style={{ ...posStyle, backgroundColor: bgColor, opacity, paddingTop: paddingY, paddingBottom: paddingY }}
+                data-testid={`overlay-banner-${banner.id}`}
+              >
+                {isTicker ? (
+                  <div
+                    className="whitespace-nowrap"
+                    style={{
+                      color: textColor,
+                      fontSize: `${fontSize}px`,
+                      paddingLeft: paddingX,
+                      paddingRight: paddingX,
+                      transform: `translateX(${offset % wrapAt}px)`,
+                      display: "inline-block",
+                    }}
+                  >
+                    {banner.text}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{banner.text}
+                  </div>
+                ) : (
+                  <div
+                    className="text-center"
+                    style={{ color: textColor, fontSize: `${fontSize}px`, paddingLeft: paddingX, paddingRight: paddingX }}
+                  >
+                    {banner.text}
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {/* Controls Overlay */}
           <div

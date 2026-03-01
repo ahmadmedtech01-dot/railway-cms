@@ -14,6 +14,7 @@ import os from "os";
 import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } from "./vimeo";
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile } from "./b2";
+import QRCode from "qrcode";
 import { createSession, rotateSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS } from "./video-session";
 import type { PlaylistCache } from "./video-session";
 
@@ -1077,6 +1078,100 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(s);
   });
 
+  app.patch("/api/videos/:id/player-settings", requireAuth, async (req, res) => {
+    const s = await storage.upsertPlayerSettings(req.params.id, req.body);
+    await storage.createAuditLog({ action: "player_settings_updated", meta: { videoId: req.params.id }, ip: req.ip });
+    res.json(s);
+  });
+
+  // ── Player Asset Uploads (logo / overlay / intro / outro) ─────────────────
+  const playerAssetUpload = multer({
+    dest: uploadDir,
+    limits: { fileSize: 200 * 1024 * 1024 }, // 200MB for video clips
+  });
+
+  app.post("/api/videos/:id/player-assets/:assetType", requireAuth, playerAssetUpload.single("file"), async (req: any, res: any) => {
+    try {
+      const { id, assetType } = req.params;
+      const allowed = ["logo", "overlay", "intro", "outro"];
+      if (!allowed.includes(assetType)) return res.status(400).json({ message: "Invalid asset type" });
+      if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+
+      const isVideo = ["intro", "outro"].includes(assetType);
+      const allowedMime = isVideo
+        ? ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"]
+        : ["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"];
+      if (!allowedMime.includes(req.file.mimetype)) {
+        return res.status(400).json({ message: `Invalid file type. Allowed: ${allowedMime.join(", ")}` });
+      }
+
+      const video = await storage.getVideoById(id);
+      if (!video) return res.status(404).json({ message: "Video not found" });
+
+      const conn = await storage.getActiveStorageConnection();
+      if (!conn) return res.status(400).json({ message: "No active storage connection" });
+      const cfg = conn.config as any;
+
+      const ext = path.extname(req.file.originalname) || (isVideo ? ".mp4" : ".png");
+      const uniqueId = nanoid(12);
+      const bucketKey = `assets/videos/${id}/${assetType}/${uniqueId}${ext}`;
+
+      await b2UploadFile(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
+
+      const asset = await storage.createMediaAsset({
+        type: `player_${assetType}`,
+        bucketKey,
+        originalName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        storageConnectionId: conn.id,
+      });
+
+      try { fs.unlinkSync(req.file.path); } catch {}
+
+      const assetIdField = `${assetType}AssetId` as any;
+      const extraFields: Record<string, any> = { [assetIdField]: asset.id };
+      if (assetType === "logo") extraFields.logoEnabled = true;
+      if (assetType === "overlay") extraFields.overlayEnabled = true;
+      await storage.upsertPlayerSettings(id, extraFields);
+
+      await storage.createAuditLog({ action: `player_${assetType}_uploaded`, meta: { videoId: id, assetId: asset.id }, ip: req.ip });
+
+      res.json({ assetId: asset.id, previewUrl: `/api/assets/${asset.id}/view`, bucketKey });
+    } catch (e: any) {
+      log(`Player asset upload error: ${e.message}`);
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ── Banner CRUD ────────────────────────────────────────────────────────────
+  app.get("/api/videos/:id/banners", requireAuth, async (req, res) => {
+    const banners = await storage.getBannersByVideo(req.params.id);
+    res.json(banners);
+  });
+
+  app.post("/api/videos/:id/banners", requireAuth, async (req, res) => {
+    const banner = await storage.createBanner({ videoId: req.params.id, ...req.body });
+    res.json(banner);
+  });
+
+  app.post("/api/videos/:id/banners/reorder", requireAuth, async (req, res) => {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ message: "orderedIds must be array" });
+    await storage.reorderBanners(req.params.id, orderedIds);
+    res.json({ ok: true });
+  });
+
+  app.patch("/api/videos/:id/banners/:bannerId", requireAuth, async (req, res) => {
+    const banner = await storage.updateBanner(req.params.bannerId, req.body);
+    if (!banner) return res.status(404).json({ message: "Banner not found" });
+    res.json(banner);
+  });
+
+  app.delete("/api/videos/:id/banners/:bannerId", requireAuth, async (req, res) => {
+    await storage.deleteBanner(req.params.bannerId);
+    res.json({ ok: true });
+  });
+
   app.put("/api/videos/:id/watermark-settings", requireAuth, async (req, res) => {
     const s = await storage.upsertWatermarkSettings(req.params.id, req.body);
     await storage.createAuditLog({ action: "watermark_settings_updated", meta: { videoId: req.params.id }, ip: req.ip });
@@ -2024,9 +2119,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/player/:publicId/settings", async (req, res) => {
     const video = await storage.getVideoByPublicId(req.params.publicId);
     if (!video) return res.status(404).json({ message: "Not found" });
-    const playerSettings = await storage.getPlayerSettings(video.id);
-    const watermarkSettings = await storage.getWatermarkSettings(video.id);
-    res.json({ playerSettings, watermarkSettings });
+    const [playerSettingsRaw, watermarkSettings, banners] = await Promise.all([
+      storage.getPlayerSettings(video.id),
+      storage.getWatermarkSettings(video.id),
+      storage.getBannersByVideo(video.id),
+    ]);
+
+    let playerSettings: any = playerSettingsRaw || {};
+
+    // Resolve asset URLs for logo/overlay
+    const [logoAsset, overlayAsset] = await Promise.all([
+      playerSettings.logoAssetId ? storage.getMediaAssetById(playerSettings.logoAssetId).catch(() => null) : Promise.resolve(null),
+      playerSettings.overlayAssetId ? storage.getMediaAssetById(playerSettings.overlayAssetId).catch(() => null) : Promise.resolve(null),
+    ]);
+
+    if (logoAsset) playerSettings = { ...playerSettings, logoUrl: `/api/assets/${logoAsset.id}/view` };
+    if (overlayAsset) playerSettings = { ...playerSettings, overlayUrl: `/api/assets/${overlayAsset.id}/view` };
+
+    // Generate QR data URL if qrEnabled and qrUrl is set
+    if (playerSettings.qrEnabled && playerSettings.qrUrl) {
+      try {
+        const qrDataUrl = await QRCode.toDataURL(playerSettings.qrUrl, { width: 200, margin: 1 });
+        playerSettings = { ...playerSettings, qrDataUrl };
+      } catch {}
+    }
+
+    res.json({ playerSettings, watermarkSettings, banners });
   });
 
   // Playback ping

@@ -1,12 +1,12 @@
 import { db } from "./db";
 import {
   adminUsers, videos, videoPlayerSettings, videoWatermarkSettings,
-  videoSecuritySettings, embedTokens, playbackSessions, auditLogs, systemSettings, storageConnections, mediaAssets,
+  videoSecuritySettings, embedTokens, playbackSessions, auditLogs, systemSettings, storageConnections, mediaAssets, videoBanners,
   type AdminUser, type Video, type VideoPlayerSettings, type VideoWatermarkSettings,
   type VideoSecuritySettings, type EmbedToken, type PlaybackSession, type AuditLog,
-  type SystemSetting, type StorageConnection, type MediaAsset,
+  type SystemSetting, type StorageConnection, type MediaAsset, type VideoBanner,
 } from "@shared/schema";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, sql, asc } from "drizzle-orm";
 
 export const storage = {
   // Admin
@@ -262,5 +262,37 @@ export const storage = {
 
   async getMediaAssets(): Promise<MediaAsset[]> {
     return db.select().from(mediaAssets).orderBy(desc(mediaAssets.createdAt));
+  },
+
+  // Banners
+  async getBannersByVideo(videoId: string): Promise<VideoBanner[]> {
+    return db.select().from(videoBanners)
+      .where(eq(videoBanners.videoId, videoId))
+      .orderBy(asc(videoBanners.sortOrder), asc(videoBanners.createdAt));
+  },
+
+  async createBanner(data: Partial<VideoBanner>): Promise<VideoBanner> {
+    const [b] = await db.insert(videoBanners).values(data as any).returning();
+    return b;
+  },
+
+  async updateBanner(id: string, data: Partial<VideoBanner>): Promise<VideoBanner | undefined> {
+    const [b] = await db.update(videoBanners)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(videoBanners.id, id))
+      .returning();
+    return b;
+  },
+
+  async deleteBanner(id: string): Promise<void> {
+    await db.delete(videoBanners).where(eq(videoBanners.id, id));
+  },
+
+  async reorderBanners(videoId: string, orderedIds: string[]): Promise<void> {
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.update(videoBanners)
+        .set({ sortOrder: i })
+        .where(and(eq(videoBanners.id, orderedIds[i]), eq(videoBanners.videoId, videoId)));
+    }
   },
 };
