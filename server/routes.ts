@@ -2526,6 +2526,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  app.post("/api/security/apply-to-all", requireAuth, async (req, res) => {
+    try {
+      const { settings, useGlobal } = req.body;
+      if (!settings) return res.status(400).json({ message: "settings required" });
+      const allVideos = await storage.getVideos();
+      let count = 0;
+      for (const v of allVideos) {
+        await secRepo.saveVideo(v.id, settings);
+        if (typeof useGlobal === "boolean") {
+          await secRepo.setUseGlobal(v.id, useGlobal);
+        }
+        count++;
+      }
+      res.json({ ok: true, count });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/security/video/:videoId/use-global", requireAuth, async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     const useGlobal = await secRepo.getUseGlobal(req.params.videoId);
