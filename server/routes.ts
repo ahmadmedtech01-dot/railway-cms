@@ -311,6 +311,28 @@ function verifyToken(token: string): any {
   }
 }
 
+function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: string; exp: number; nonce: string } | null {
+  const secret = process.env.LMS_HMAC_SECRET;
+  if (!secret) return null;
+  try {
+    const parts = launchToken.split(".");
+    if (parts.length !== 2) return null;
+    const [payloadB64, sig] = parts;
+    const expectedSig = crypto.createHmac("sha256", secret).update(payloadB64).digest("hex");
+    if (!crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expectedSig, "hex"))) return null;
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+    if (!payload.userId || !payload.publicId || !payload.exp || !payload.nonce) return null;
+    if (Date.now() / 1000 > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function checkEntitlement(_userId: string, _videoId: string): { allowed: boolean; reason?: string } {
+  return { allowed: true };
+}
+
 // ffmpeg HLS processing
 const transcodeProgress = new Map<string, { time: string; speed: string; stage: string }>();
 
@@ -1650,28 +1672,75 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // ── Per-User Token Minting ─────────────────────────────────────────────────
-  // Call this to mint a short-lived embed token bound to a userId (for LMS).
-  // The player calls this when a userId is embedded in the page URL instead of a pre-created token.
-  app.post("/api/player/:publicId/session-token", async (req: any, res: any) => {
+  // ── Secure Token Minting ──────────────────────────────────────────────────
+  // Two paths:
+  //   A) Authenticated same-domain user — userId derived from session, no body needed
+  //   B) LMS launch token — { lmsLaunchToken } in body, HMAC-verified server-side
+  // NEVER trusts userId from the request body or URL.
+  app.post("/api/player/:publicId/mint", async (req: any, res: any) => {
     try {
-      const { userId } = req.body;
-      if (!userId || typeof userId !== "string") return res.status(400).json({ message: "userId required" });
-
       const video = await storage.getVideoByPublicId(req.params.publicId);
-      if (!video || !video.available) return res.status(404).json({ message: "Video not found" });
-      if (video.status !== "ready") return res.status(400).json({ message: "Video not ready" });
+      if (!video || !video.available) {
+        log(`TOKEN_MINT_DENIED: reason=video_not_found publicId=${req.params.publicId}`);
+        return res.status(404).json({ message: "Video not found" });
+      }
+      if (video.status !== "ready") {
+        log(`TOKEN_MINT_DENIED: reason=video_not_ready publicId=${req.params.publicId}`);
+        return res.status(400).json({ message: "Video not ready" });
+      }
+
+      let userId: string | null = null;
+      let identitySource = "";
+
+      // Path A: Authenticated same-domain user (session/cookie)
+      if ((req as any).session?.userId) {
+        userId = (req as any).session.userId;
+        identitySource = "session";
+      }
+
+      // Path B: LMS launch token (HMAC-signed)
+      const { lmsLaunchToken } = req.body || {};
+      if (!userId && lmsLaunchToken) {
+        if (!process.env.LMS_HMAC_SECRET) {
+          log(`TOKEN_MINT_DENIED: reason=lms_hmac_secret_not_configured publicId=${req.params.publicId}`);
+          return res.status(500).json({ message: "LMS integration not configured" });
+        }
+        const launch = verifyLmsLaunchToken(lmsLaunchToken);
+        if (!launch) {
+          log(`TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=${req.params.publicId}`);
+          return res.status(403).json({ code: "INVALID_LAUNCH_TOKEN", message: "Invalid or expired launch token" });
+        }
+        if (launch.publicId !== video.publicId) {
+          log(`TOKEN_MINT_DENIED: reason=launch_token_video_mismatch expected=${video.publicId} got=${launch.publicId}`);
+          return res.status(403).json({ code: "INVALID_LAUNCH_TOKEN", message: "Launch token does not match this video" });
+        }
+        userId = launch.userId;
+        identitySource = "lms_launch";
+      }
+
+      if (!userId) {
+        log(`TOKEN_MINT_DENIED: reason=no_identity publicId=${req.params.publicId}`);
+        return res.status(401).json({ code: "AUTH_REQUIRED", message: "Authentication required. Provide a valid session or LMS launch token." });
+      }
+
+      // Entitlement check
+      const entitlement = checkEntitlement(userId, video.id);
+      if (!entitlement.allowed) {
+        log(`TOKEN_MINT_DENIED: reason=not_entitled userId=${userId} videoId=${video.id} detail=${entitlement.reason}`);
+        return res.status(403).json({ code: "AUTH_NOT_ALLOWED", message: entitlement.reason || "You do not have access to this video" });
+      }
 
       const secSettings = await storage.getSecuritySettings(video.id);
       const ttlMs = (secSettings?.tokenTtl || 3600) * 1000;
       const concurrentLimit = secSettings?.concurrentLimit ?? 1;
 
-      // Check concurrent sessions for this user+video
+      // Concurrent session check: scoped per user PER VIDEO
       const activeTokens = await storage.getActiveUserTokens(video.id, userId);
       if (activeTokens.length >= concurrentLimit) {
+        log(`SESSION_LIMIT_BLOCK: userId=${userId} videoId=${video.id} activeSessions=${activeTokens.length} limit=${concurrentLimit}`);
         return res.status(429).json({
           code: "SESSION_LIMIT",
-          message: `You already have ${activeTokens.length} active session(s). Close other tabs or end those sessions first.`,
+          message: `You already have ${activeTokens.length} active session(s) for this video. Close other tabs or end those sessions first.`,
           activeSessions: activeTokens.map(t => ({ id: t.id, label: t.label, createdAt: t.createdAt, expiresAt: t.expiresAt })),
         });
       }
@@ -1681,22 +1750,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const dbToken = await storage.createEmbedToken({
         videoId: video.id,
         token: tokenValue,
-        label: `auto:${userId}`,
+        label: `auto:${userId}:${identitySource}`,
         allowedDomain: null,
         expiresAt,
         revoked: false,
         userId,
       } as any);
 
-      log(`PER_USER_TOKEN_MINTED: userId=${userId} videoId=${video.id} tokenId=${dbToken.id} expiresAt=${expiresAt.toISOString()}`);
+      log(`TOKEN_MINT_SUCCESS: userId=${userId} videoId=${video.id} sessionId=${dbToken.id} source=${identitySource}`);
       res.json({ token: tokenValue, expiresAt: expiresAt.toISOString(), tokenId: dbToken.id });
     } catch (e: any) {
+      log(`TOKEN_MINT_DENIED: reason=server_error publicId=${req.params.publicId} error=${e.message}`);
       res.status(500).json({ message: e.message });
     }
   });
 
-  // ── Per-User Token Refresh ─────────────────────────────────────────────────
-  // Player calls this when it receives a 401/403 due to token expiry.
+  // ── Token Refresh ─────────────────────────────────────────────────────────
+  // Player calls this when it receives a 401/403 TOKEN_EXPIRED or SIGNED_URL_EXPIRED.
   // Mints a new token for the same user, returns a new manifestUrl.
   app.post("/api/player/:publicId/refresh-token", async (req: any, res: any) => {
     try {
@@ -1704,27 +1774,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!oldTokenValue) return res.status(400).json({ message: "token required" });
 
       const video = await storage.getVideoByPublicId(req.params.publicId);
-      if (!video || !video.available) return res.status(404).json({ message: "Video not found" });
+      if (!video || !video.available) {
+        log(`TOKEN_REFRESH_FAIL: reason=video_not_found publicId=${req.params.publicId}`);
+        return res.status(404).json({ message: "Video not found" });
+      }
 
-      // Find old token — accept both expired and valid (user may just be refreshing proactively)
       const oldDbToken = await storage.getTokenByValue(oldTokenValue);
       let userId: string | null = null;
 
       if (oldDbToken) {
-        if (oldDbToken.revoked) return res.status(401).json({ message: "Token was revoked — cannot refresh" });
+        if (oldDbToken.revoked) {
+          log(`TOKEN_REFRESH_FAIL: reason=token_revoked videoId=${video.id} tokenId=${oldDbToken.id}`);
+          return res.status(401).json({ message: "Token was revoked — cannot refresh" });
+        }
         userId = (oldDbToken as any).userId || null;
       } else {
-        // Try to extract userId from JWT claims
-        try {
-          const decoded = verifyToken(oldTokenValue);
-          if (decoded?.userId) userId = decoded.userId;
-          else return res.status(401).json({ message: "Cannot identify user from token" });
-        } catch {
+        const decoded = verifyToken(oldTokenValue);
+        if (!decoded) {
+          log(`TOKEN_REFRESH_FAIL: reason=invalid_token_signature videoId=${video.id}`);
           return res.status(401).json({ message: "Invalid token" });
         }
+        if (!decoded.userId) {
+          log(`TOKEN_REFRESH_FAIL: reason=no_user_in_token videoId=${video.id}`);
+          return res.status(401).json({ message: "Cannot identify user from token" });
+        }
+        userId = decoded.userId;
       }
 
-      if (!userId) return res.status(401).json({ message: "Token is not a per-user token — cannot refresh automatically" });
+      if (!userId) {
+        log(`TOKEN_REFRESH_FAIL: reason=not_per_user_token videoId=${video.id}`);
+        return res.status(401).json({ message: "Token is not a per-user token — cannot refresh automatically" });
+      }
+
+      // Entitlement re-check on refresh
+      const entitlement = checkEntitlement(userId, video.id);
+      if (!entitlement.allowed) {
+        log(`TOKEN_REFRESH_FAIL: reason=not_entitled userId=${userId} videoId=${video.id}`);
+        return res.status(403).json({ code: "AUTH_NOT_ALLOWED", message: entitlement.reason || "Access revoked" });
+      }
 
       const secSettings = await storage.getSecuritySettings(video.id);
       const ttlMs = (secSettings?.tokenTtl || 3600) * 1000;
@@ -1740,10 +1827,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         userId,
       } as any);
 
-      // Revoke the old token so it can't be reused
       if (oldDbToken) await storage.revokeToken(oldDbToken.id);
 
-      // Build a fresh manifest URL (player must reload hls.js with this)
       const connId = (video as any).storageConnectionId as string | null;
       const conn = connId
         ? await storage.getStorageConnectionById(connId)
@@ -1760,35 +1845,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest, dh);
       }
 
-      log(`TOKEN_REFRESHED: userId=${userId} videoId=${video.id} oldTokenId=${oldDbToken?.id} newTokenId=${newDbToken.id}`);
+      log(`TOKEN_REFRESH_SUCCESS: userId=${userId} videoId=${video.id} oldTokenId=${oldDbToken?.id} newTokenId=${newDbToken.id}`);
       res.json({ token: newTokenValue, expiresAt: expiresAt.toISOString(), manifestUrl });
     } catch (e: any) {
+      log(`TOKEN_REFRESH_FAIL: reason=server_error publicId=${req.params.publicId} error=${e.message}`);
       res.status(500).json({ message: e.message });
     }
   });
 
-  // ── Revoke Other Sessions (for same user) ──────────────────────────────────
+  // ── Revoke Other Sessions (for same user + same video) ──────────────────
   // Player calls this when session-limit reached and user chooses "End other session".
+  // userId is derived from the currentToken — never trusted from the request body.
   app.post("/api/player/:publicId/revoke-other-sessions", async (req: any, res: any) => {
     try {
-      const { userId, currentToken } = req.body;
-      if (!userId || !currentToken) return res.status(400).json({ message: "userId and currentToken required" });
+      const { currentToken } = req.body;
+      if (!currentToken) return res.status(400).json({ message: "currentToken required" });
 
       const video = await storage.getVideoByPublicId(req.params.publicId);
       if (!video) return res.status(404).json({ message: "Video not found" });
 
-      // Verify current token belongs to this user
+      // Derive userId from the token — never trust client-supplied userId
+      // Require a DB-backed token or a signature-verified JWT
       const dbToken = await storage.getTokenByValue(currentToken);
-      if (!dbToken || (dbToken as any).userId !== userId) {
-        return res.status(401).json({ message: "Token does not belong to this user" });
-      }
-      if (dbToken.revoked || (dbToken.expiresAt && new Date(dbToken.expiresAt) < new Date())) {
-        return res.status(401).json({ message: "Token is expired or revoked" });
+      let userId: string | null = null;
+      if (dbToken) {
+        if (dbToken.revoked || (dbToken.expiresAt && new Date(dbToken.expiresAt) < new Date())) {
+          return res.status(401).json({ message: "Token is expired or revoked" });
+        }
+        userId = (dbToken as any).userId || null;
+      } else {
+        const decoded = verifyToken(currentToken);
+        if (!decoded || !decoded.userId) {
+          return res.status(401).json({ message: "Invalid or unverifiable token" });
+        }
+        userId = decoded.userId;
       }
 
+      if (!userId) return res.status(401).json({ message: "Cannot identify user from token" });
+
+      // Revoke other sessions only for this user + this video
       await storage.revokeUserTokensExcept(video.id, userId, currentToken);
-      log(`USER_SESSIONS_REVOKED: userId=${userId} videoId=${video.id} — kept token ${dbToken.id}`);
-      res.json({ ok: true, message: "Other sessions revoked. You can now continue." });
+      log(`USER_SESSIONS_REVOKED: userId=${userId} videoId=${video.id} — kept token ${dbToken?.id || "jwt-only"}`);
+      res.json({ ok: true, message: "Other sessions for this video revoked. You can now continue." });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

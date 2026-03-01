@@ -65,9 +65,8 @@ export default function EmbedPlayerPage() {
   const search = useSearch();
   const urlParams = new URLSearchParams(search);
   const urlToken = urlParams.get("token") || "";
-  const userId = urlParams.get("userId") || "";
+  const lmsLaunchToken = urlParams.get("lmsLaunchToken") || "";
 
-  // activeTokenRef tracks the token currently in use (either from URL or auto-minted for userId)
   const activeTokenRef = useRef(urlToken);
   const token = urlToken;
 
@@ -140,13 +139,17 @@ export default function EmbedPlayerPage() {
   useEffect(() => {
     const init = async () => {
       try {
-        // If userId is provided and no token in URL, auto-mint a per-user token
+        // Secure token minting: if no explicit token, call /mint with session auth or LMS launch token
         let activeToken = token;
-        if (userId && !token) {
-          const mintRes = await fetch(`/api/player/${publicId}/session-token`, {
+        if (!token) {
+          const mintBody: Record<string, string> = {};
+          if (lmsLaunchToken) mintBody.lmsLaunchToken = lmsLaunchToken;
+
+          const mintRes = await fetch(`/api/player/${publicId}/mint`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ userId }),
+            credentials: "include",
+            body: JSON.stringify(mintBody),
           });
           if (mintRes.status === 429) {
             const d = await mintRes.json().catch(() => ({}));
@@ -268,8 +271,9 @@ export default function EmbedPlayerPage() {
                   if (parsed?.code) errorCode = parsed.code;
                 } catch {}
 
-                // If token expired and we have a userId, attempt seamless refresh
-                const canRefresh = userId && activeTokenRef.current && (errorCode === "TOKEN_EXPIRED" || signal === "token_expired" || code === 401);
+                const isExpiry = errorCode === "TOKEN_EXPIRED" || errorCode === "SIGNED_URL_EXPIRED" || signal === "token_expired" || signal === "signed_url_expired";
+                const isBulkBlock = errorCode === "SECURITY_BULK_DOWNLOAD" || signal === "rate_limit" || signal === "key_abuse";
+                const canRefresh = activeTokenRef.current && isExpiry && !isBulkBlock;
                 if (canRefresh) {
                   const savedTime = videoRef.current?.currentTime || 0;
                   fetch(`/api/player/${publicId}/refresh-token`, {
@@ -323,7 +327,7 @@ export default function EmbedPlayerPage() {
       if (popIntervalRef.current) clearInterval(popIntervalRef.current);
       if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
     };
-  }, [publicId, token, retryKey]);
+  }, [publicId, token, lmsLaunchToken, retryKey]);
 
   // Ping interval
   useEffect(() => {
@@ -635,13 +639,13 @@ export default function EmbedPlayerPage() {
 
   if (status === "error" && errorMsg === "SESSION_LIMIT") {
     const endOtherAndContinue = async () => {
-      if (!userId || !activeTokenRef.current) return;
-      const video = await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
+      if (!activeTokenRef.current) return;
+      const resp = await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, currentToken: activeTokenRef.current }),
+        body: JSON.stringify({ currentToken: activeTokenRef.current }),
       });
-      if (video.ok) {
+      if (resp.ok) {
         setSessionLimitInfo(null);
         setErrorMsg("");
         setStatus("loading");
@@ -650,16 +654,21 @@ export default function EmbedPlayerPage() {
     };
 
     const mintAndContinue = async () => {
-      const mintRes = await fetch(`/api/player/${publicId}/session-token`, {
+      const mintBody: Record<string, string> = {};
+      if (lmsLaunchToken) mintBody.lmsLaunchToken = lmsLaunchToken;
+
+      const mintRes = await fetch(`/api/player/${publicId}/mint`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId }),
+        credentials: "include",
+        body: JSON.stringify(mintBody),
       });
       if (mintRes.status === 429) {
         const d = await mintRes.json().catch(() => ({}));
         if (d.code === "SESSION_LIMIT") {
-          activeTokenRef.current = "";
-          await endOtherAndContinue();
+          if (activeTokenRef.current) {
+            await endOtherAndContinue();
+          }
         }
         return;
       }

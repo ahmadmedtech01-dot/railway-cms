@@ -33,9 +33,23 @@ A full-stack secure video content management system for a single admin user.
 - **System Settings**: Storage Connections (B2 + S3), Vimeo integration, AWS/S3 legacy config, global kill switch, signing secret, ffmpeg toggle
 
 ### Public Pages
-- `/embed/:publicId?token=...` — iframe-embeddable HLS player
+- `/embed/:publicId?token=...` — iframe-embeddable HLS player (explicit token)
+- `/embed/:publicId?lmsLaunchToken=...` — LMS embed with HMAC-signed launch token
+- `/embed/:publicId` — same-domain authenticated user (session/cookie mint)
 - `/v/:publicId?token=...` — masked share link page
 - Both support: hls.js playback, watermark overlays, token validation, domain checking
+
+### Per-User Token Minting (Secure LMS Flow)
+- `POST /api/player/:publicId/mint` — Mints per-user embed token via:
+  - **Path A**: Session auth (same-domain logged-in user) — no body needed
+  - **Path B**: `{ lmsLaunchToken }` — HMAC-SHA256 signed launch token from external LMS
+  - Never trusts userId from URL or body. Server derives identity.
+  - Entitlement check before minting (checkEntitlement function, extensible)
+  - Session limit scoped per user PER VIDEO (userId + videoId)
+- `POST /api/player/:publicId/refresh-token` — Refreshes expired token, re-checks entitlement
+- `POST /api/player/:publicId/revoke-other-sessions` — Revokes other sessions for same video, userId derived from token
+- LMS launch token format: `base64url(JSON{userId,publicId,exp,nonce}).hmac_hex`
+- Requires `LMS_HMAC_SECRET` env var for LMS launch token verification
 
 ### Video Security Pipeline (Non-DRM, 3-Layer Protection)
 Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
@@ -134,6 +148,7 @@ Signing secret: auto-derived from `SESSION_SECRET`; override with `SIGNING_SECRE
 - `B2_APPLICATION_KEY` — Backblaze B2 Application Key secret (required for B2 uploads)
 - `B2_S3_ENDPOINT` — B2 S3-compatible endpoint (e.g. `https://s3.ca-east-006.backblazeb2.com`)
 - `B2_BUCKET` — Default B2 bucket name (e.g. `mytestvideo`)
+- `LMS_HMAC_SECRET` — HMAC-SHA256 secret for verifying LMS launch tokens (required for external LMS embed flow)
 - `ALLOWED_ORIGINS` — Comma-separated list of allowed CORS origins for production (e.g. `https://yourdomain.com,https://app.yourdomain.com`)
 
 ## Storage Configuration
