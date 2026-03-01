@@ -432,14 +432,13 @@ export default function VideoDetailPage() {
   const ws = video.watermarkSettings || {};
   const ss = video.securitySettings || {};
   const firstToken = tokens.find(t => !t.revoked);
-  const embedSrc = firstToken
-    ? `${baseUrl}/embed/${video.publicId}?token=${firstToken.token}`
-    : `${baseUrl}/embed/${video.publicId}`;
+  const embedSrc = `${baseUrl}/embed/${video.publicId}`;
   const shareLink = firstToken
     ? `${baseUrl}/v/${video.publicId}?token=${firstToken.token}`
     : `${baseUrl}/v/${video.publicId}`;
 
   const iframeCode = `<iframe
+  id="secure-video-player"
   src="${embedSrc}"
   width="100%"
   height="500"
@@ -448,6 +447,15 @@ export default function VideoDetailPage() {
   sandbox="allow-scripts allow-same-origin allow-presentation"
   frameborder="0">
 </iframe>`;
+
+  const postMessageCode = `// Send this after the iframe loads — replace the token with a signed LMS launch token
+const iframe = document.getElementById('secure-video-player');
+iframe.addEventListener('load', () => {
+  iframe.contentWindow.postMessage(
+    { type: 'LMS_LAUNCH_TOKEN', token: '<YOUR_SIGNED_LMS_LAUNCH_TOKEN>' },
+    '${baseUrl}'
+  );
+});`;
 
   return (
     <>
@@ -1204,11 +1212,10 @@ export default function VideoDetailPage() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-5">
-              {!firstToken && (
-                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-600 dark:text-amber-400">
-                  Create a token above to generate embed codes with authentication.
-                </div>
-              )}
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-sm text-blue-700 dark:text-blue-300">
+                <p className="font-medium mb-1">Secure LMS Embedding</p>
+                <p className="opacity-80 text-xs">This player uses postMessage authorization — the token is never exposed in the URL. Your LMS must send a signed launch token to the iframe after it loads.</p>
+              </div>
 
               <div className="space-y-2">
                 <Label>iFrame Embed Code</Label>
@@ -1216,6 +1223,15 @@ export default function VideoDetailPage() {
                   <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto border border-border whitespace-pre-wrap break-all">{iframeCode}</pre>
                 </div>
                 <CopyButton text={iframeCode} label="Copy iFrame" />
+              </div>
+
+              <div className="space-y-2">
+                <Label>LMS Authorization Snippet (JavaScript)</Label>
+                <div className="relative">
+                  <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto border border-border whitespace-pre-wrap break-all font-mono">{postMessageCode}</pre>
+                </div>
+                <CopyButton text={postMessageCode} label="Copy JS Snippet" />
+                <p className="text-xs text-muted-foreground">Generate a signed LMS launch token on your server using <code className="bg-muted px-1 rounded">LMS_HMAC_SECRET</code> and send it via postMessage.</p>
               </div>
 
               <div className="space-y-2">

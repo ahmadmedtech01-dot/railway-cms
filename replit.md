@@ -33,21 +33,35 @@ A full-stack secure video content management system for a single admin user.
 - **System Settings**: Storage Connections (B2 + S3), Vimeo integration, AWS/S3 legacy config, global kill switch, signing secret, ffmpeg toggle
 
 ### Public Pages
-- `/embed/:publicId?token=...` — iframe-embeddable HLS player (explicit token)
-- `/embed/:publicId?lmsLaunchToken=...` — LMS embed with HMAC-signed launch token
-- `/embed/:publicId` — same-domain authenticated user (session/cookie mint)
+- `/embed/:publicId` — Iframe-only LMS player. Shows "Waiting for LMS authorization..." until a postMessage arrives. Blocked if opened as top-level page.
+- `/embed/:publicId?token=<adminPreviewJWT>` — Admin preview only (adminPreview:true JWT). Skips iframe enforcement.
 - `/v/:publicId?token=...` — masked share link page
-- Both support: hls.js playback, watermark overlays, token validation, domain checking
 
 ### Per-User Token Minting (Secure LMS Flow)
 - `POST /api/player/:publicId/mint` — Mints per-user embed token via:
   - **Path A**: Session auth (same-domain logged-in user) — no body needed
-  - **Path B**: `{ lmsLaunchToken }` — HMAC-SHA256 signed launch token from external LMS
+  - **Path B**: `{ lmsLaunchToken }` — HMAC-SHA256 signed launch token from external LMS (never via URL)
   - Never trusts userId from URL or body. Server derives identity.
   - Entitlement check before minting (checkEntitlement function, extensible)
   - Session limit scoped per user PER VIDEO (userId + videoId)
 - `POST /api/player/:publicId/refresh-token` — Refreshes expired token, re-checks entitlement
 - `POST /api/player/:publicId/revoke-other-sessions` — Revokes other sessions for same video, userId derived from token
+- `GET /api/lms/origins` — Public endpoint: returns allowed LMS origins from ALLOWED_LMS_ORIGINS env var
+
+### Iframe-Only LMS Embedding Security
+The embed player enforces strict iframe-only access:
+1. **Top-level check**: If `window.top === window.self`, show "Access Restricted — This video can only be played inside the LMS."
+2. **postMessage receiver**: Listens for `{ type: "LMS_LAUNCH_TOKEN", token: "<lmsLaunchToken>" }` from allowed origins only
+3. **Origin validation**: Fetches allowed origins from `/api/lms/origins` (from `ALLOWED_LMS_ORIGINS` env var), rejects messages from other origins
+4. **Token never in URL**: LMS launch tokens arrive via postMessage only, never `?lmsLaunchToken=` URL param
+
+### LMS Launch Token Hardened Verification (`verifyLmsLaunchToken`)
+Required payload fields: `userId`, `publicId`, `exp`, `nonce`, `aud`, `origin`
+- `aud` must equal `"video-cms"`
+- `origin` must match one of `ALLOWED_LMS_ORIGINS`
+- `exp` must be in the future AND within 5 minutes (short-lived)
+- `nonce` replay protection: stored for 5 minutes, rejected if reused
+- HMAC-SHA256 signature verified with `LMS_HMAC_SECRET`
 - LMS launch token format: `base64url(JSON{userId,publicId,exp,nonce}).hmac_hex`
 - Requires `LMS_HMAC_SECRET` env var for LMS launch token verification
 

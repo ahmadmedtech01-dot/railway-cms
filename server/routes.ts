@@ -311,18 +311,44 @@ function verifyToken(token: string): any {
   }
 }
 
-function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: string; exp: number; nonce: string } | null {
+function getAllowedLmsOrigins(): string[] {
+  const raw = (process.env.ALLOWED_LMS_ORIGINS || "").trim();
+  if (!raw) return [];
+  return raw.split(",").map(s => s.trim()).filter(Boolean);
+}
+
+// Nonce replay protection — map of nonce → expiry timestamp (ms)
+const lmsNonceCache = new Map<string, number>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [nonce, exp] of lmsNonceCache) {
+    if (exp <= now) lmsNonceCache.delete(nonce);
+  }
+}, 60_000);
+
+function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: string; exp: number; nonce: string; aud: string; origin: string } | null {
   const secret = process.env.LMS_HMAC_SECRET;
   if (!secret) return null;
+  const allowedOrigins = getAllowedLmsOrigins();
+  if (allowedOrigins.length === 0) return null;
   try {
     const parts = launchToken.split(".");
     if (parts.length !== 2) return null;
     const [payloadB64, sig] = parts;
     const expectedSig = crypto.createHmac("sha256", secret).update(payloadB64).digest("hex");
-    if (!crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expectedSig, "hex"))) return null;
+    const sigBuf = Buffer.from(sig, "hex");
+    const expectedBuf = Buffer.from(expectedSig, "hex");
+    if (sigBuf.length !== expectedBuf.length) return null;
+    if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
     const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
-    if (!payload.userId || !payload.publicId || !payload.exp || !payload.nonce) return null;
-    if (Date.now() / 1000 > payload.exp) return null;
+    if (!payload.userId || !payload.publicId || !payload.exp || !payload.nonce || !payload.aud || !payload.origin) return null;
+    if (payload.aud !== "video-cms") return null;
+    if (!allowedOrigins.includes(payload.origin)) return null;
+    const nowSec = Date.now() / 1000;
+    if (nowSec > payload.exp) return null;
+    if (payload.exp - nowSec > 300) return null; // must expire within 5 minutes
+    if (lmsNonceCache.has(payload.nonce)) return null; // nonce already used
+    lmsNonceCache.set(payload.nonce, Date.now() + 5 * 60 * 1000); // mark nonce used for 5 min
     return payload;
   } catch {
     return null;
@@ -2249,6 +2275,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (typeof useGlobal !== "boolean") return res.status(400).json({ message: "useGlobal must be boolean" });
     await secRepo.setUseGlobal(req.params.videoId, useGlobal);
     res.json({ ok: true });
+  });
+
+  // Public endpoint: returns the list of allowed LMS origins so the embed player
+  // can validate postMessage senders before forwarding to /mint
+  app.get("/api/lms/origins", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ origins: getAllowedLmsOrigins() });
   });
 
   app.get("/api/security/effective/:videoId", async (req, res) => {

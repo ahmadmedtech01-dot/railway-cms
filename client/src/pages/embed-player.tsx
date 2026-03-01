@@ -64,11 +64,14 @@ export default function EmbedPlayerPage() {
   const { publicId } = useParams<{ publicId: string }>();
   const search = useSearch();
   const urlParams = new URLSearchParams(search);
+  // Only accept ?token= for admin preview tokens (adminPreview:true JWT).
+  // LMS tokens must arrive via postMessage — never via URL.
   const urlToken = urlParams.get("token") || "";
-  const lmsLaunchToken = urlParams.get("lmsLaunchToken") || "";
 
   const activeTokenRef = useRef(urlToken);
   const token = urlToken;
+  const receivedLmsTokenRef = useRef<string | null>(null);
+  const lmsOriginsRef = useRef<string[]>([]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -83,7 +86,9 @@ export default function EmbedPlayerPage() {
   const streamSidRef = useRef("");
   const denialSignalRef = useRef("");
 
-  const [status, setStatus] = useState<"loading" | "ready" | "error" | "unavailable" | "processing">("loading");
+  const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
+    urlToken ? "loading" : "waiting"
+  );
   const [errorMsg, setErrorMsg] = useState("");
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -137,15 +142,50 @@ export default function EmbedPlayerPage() {
     setRetryKey(k => k + 1);
   };
 
+  // Iframe-only enforcement + postMessage receiver for LMS launch tokens
+  useEffect(() => {
+    if (urlToken) return; // admin preview token in URL — skip iframe enforcement
+
+    // Block if opened as a top-level page (not embedded in an iframe)
+    if (window.top === window.self) {
+      setStatus("blocked");
+      return;
+    }
+
+    // Fetch the list of allowed LMS origins from the server
+    fetch("/api/lms/origins")
+      .then(r => r.json())
+      .then(data => { lmsOriginsRef.current = data.origins || []; })
+      .catch(() => {});
+
+    // Listen for the LMS launch token via postMessage
+    const handler = (event: MessageEvent) => {
+      if (!lmsOriginsRef.current.includes(event.origin)) return;
+      const msg = event.data;
+      if (!msg || msg.type !== "LMS_LAUNCH_TOKEN" || typeof msg.token !== "string") return;
+      receivedLmsTokenRef.current = msg.token;
+      setStatus("loading");
+      setRetryKey(k => k + 1);
+    };
+
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicId, urlToken]);
+
   // Initialize player
   useEffect(() => {
     const init = async () => {
+      // If no URL token and no LMS token received yet, do not proceed
+      if (!urlToken && !receivedLmsTokenRef.current) return;
+
       try {
-        // Secure token minting: if no explicit token, call /mint with session auth or LMS launch token
+        // Secure token minting: if no explicit URL token, mint using the LMS launch token received via postMessage
         let activeToken = token;
         if (!token) {
           const mintBody: Record<string, string> = {};
-          if (lmsLaunchToken) mintBody.lmsLaunchToken = lmsLaunchToken;
+          const lmsToken = receivedLmsTokenRef.current;
+          if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
 
           const mintRes = await fetch(`/api/player/${publicId}/mint`, {
             method: "POST",
@@ -330,7 +370,7 @@ export default function EmbedPlayerPage() {
       if (popIntervalRef.current) clearInterval(popIntervalRef.current);
       if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
     };
-  }, [publicId, token, lmsLaunchToken, retryKey]);
+  }, [publicId, token, retryKey]);
 
   // Ping interval
   useEffect(() => {
@@ -616,6 +656,30 @@ export default function EmbedPlayerPage() {
     setCurrentQuality(index);
   };
 
+  if (status === "waiting") {
+    return (
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        <div className="text-center space-y-3 max-w-xs px-4">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/40 border-t-white mx-auto" />
+          <p className="text-base font-medium">Waiting for LMS authorization...</p>
+          <p className="text-xs opacity-40">This player is waiting for your learning platform to authorize playback.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "blocked") {
+    return (
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        <div className="text-center space-y-3 max-w-xs px-4">
+          <div className="text-4xl select-none">🔒</div>
+          <p className="text-base font-semibold">Access Restricted</p>
+          <p className="text-sm opacity-60">This video can only be played inside the LMS.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (status === "unavailable") {
     return (
       <div className="flex h-screen items-center justify-center bg-black text-white">
@@ -658,7 +722,8 @@ export default function EmbedPlayerPage() {
 
     const mintAndContinue = async () => {
       const mintBody: Record<string, string> = {};
-      if (lmsLaunchToken) mintBody.lmsLaunchToken = lmsLaunchToken;
+      const lmsToken = receivedLmsTokenRef.current;
+      if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
 
       const mintRes = await fetch(`/api/player/${publicId}/mint`, {
         method: "POST",
