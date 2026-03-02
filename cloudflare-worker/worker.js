@@ -32,8 +32,8 @@ export default {
 
     const expNum = parseInt(exp, 10);
     const now = Math.floor(Date.now() / 1000);
-    // Playlists (hls) get a 30s clock-skew window; segments/keys are strict (5s)
-    const expiryTolerance = routeType === "hls" ? 30 : 5;
+    // Playlists (hls) get a 30s clock-skew window; segments/keys get 15s
+    const expiryTolerance = routeType === "hls" ? 30 : 15;
     if (now > expNum + expiryTolerance) {
       return jsonResponse(403, { code: "TOKEN_EXPIRED", message: "Token expired" });
     }

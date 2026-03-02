@@ -34,8 +34,8 @@ const ABUSE_THRESHOLDS = {
 const TOKEN_TTL = {
   manifest: 300,
   playlist: 300,
-  segment: 10,
-  key: 10,
+  segment: 30,
+  key: 30,
 };
 
 export interface AbuseReason {
