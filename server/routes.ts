@@ -1745,11 +1745,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (seg.keyTag && seg.keyTag !== lastKeyEmitted) {
             const proxyBase = `/key/${publicId}`;
             const signed = buildStableKeyUrl(proxyBase, sid, session);
-            let rewritten = seg.keyTag.replace(/URI="([^"]+)"/, () => `URI="${signed}"`);
-            if (session.ephemeralIV) {
-              const ephIvHex = session.ephemeralIV.toString("hex");
-              rewritten = rewritten.replace(/IV=0x[0-9a-fA-F]+/, `IV=0x${ephIvHex}`);
-            }
+            const rewritten = seg.keyTag.replace(/URI="([^"]+)"/, () => `URI="${signed}"`);
             lines.push(rewritten);
             lastKeyEmitted = seg.keyTag;
           }
@@ -1828,55 +1824,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { hlsPrefix, storageProvider, storageConfig } = session;
       const fileKey = hlsPrefix + segSubPath.replace(/^\//, "");
 
-      let originUrl: string;
+      let b2Url: string;
       if (storageProvider === "backblaze_b2") {
-        originUrl = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
+        b2Url = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
       } else {
         const client = await getS3Client();
         const s3cfg = await getS3Config();
         if (!client || !s3cfg.bucket) { releaseSegment(sid); return res.status(500).json({ message: "Storage not configured" }); }
         const cmd = new GetObjectCommand({ Bucket: s3cfg.bucket, Key: fileKey });
-        originUrl = await getSignedUrl(client, cmd, { expiresIn: 20 });
+        b2Url = await getSignedUrl(client, cmd, { expiresIn: 20 });
       }
 
-      const fetchRes = await fetch(originUrl);
-      if (!fetchRes.ok) { releaseSegment(sid); return res.status(404).json({ message: "Segment not found" }); }
-
-      const contentType = segSubPath.endsWith(".m4s") ? "video/iso.segment" : "video/MP2T";
-      res.setHeader("Content-Type", contentType);
-      res.setHeader("Cache-Control", "private, no-store, no-cache, max-age=0");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-
-      const encryptedBuf = Buffer.from(await fetchRes.arrayBuffer());
-
-      const video = await storage.getVideoByPublicId(session.publicId);
-      log(`SEGMENT_REENCRYPT_ATTEMPT: sid=${sid}, seg=${segSubPath}, encKeyPath=${video?.encryptionKeyPath || "null"}, variantCacheSize=${session.variantCache.size}`);
-
-      if (video?.encryptionKeyPath && session.ephemeralKey) {
-        try {
-          const masterKey = await getMasterKey(video.encryptionKeyPath, session);
-          const originalIV = extractIVForSegment(session, segSubPath);
-
-          if (!masterKey) {
-            log(`SEGMENT_REENCRYPTED=false: sid=${sid}, seg=${segSubPath}, reason=masterKeyFetchFailed`);
-          } else if (!originalIV) {
-            log(`SEGMENT_REENCRYPTED=false: sid=${sid}, seg=${segSubPath}, reason=ivNotFound (variantCacheSize=${session.variantCache.size})`);
-          } else {
-            const decrypted = decryptAes128Cbc(encryptedBuf, masterKey, originalIV);
-            const reEncrypted = encryptAes128Cbc(decrypted, session.ephemeralKey, session.ephemeralIV);
-            log(`SEGMENT_REENCRYPTED=true: sid=${sid}, seg=${segSubPath}, masterKeyLen=${masterKey.length}, origIV=${originalIV.toString("hex").slice(0, 8)}…, sessionIV=${session.ephemeralIV.toString("hex").slice(0, 8)}…, bytes=${reEncrypted.length}`);
-            releaseSegment(sid);
-            return res.end(reEncrypted);
-          }
-        } catch (e: any) {
-          log(`SEGMENT_REENCRYPTED=false: sid=${sid}, seg=${segSubPath}, reason=exception: ${e.message}`);
-        }
-      }
-
-      // SECURITY_PLAIN_SEGMENT_BLOCKED: never serve a segment without re-encryption
-      log(`SECURITY_PLAIN_SEGMENT_BLOCKED: sid=${sid}, publicId=${session.publicId}, seg=${segSubPath} — re-encryption not possible, blocking`);
+      log(`SEGMENT_B2_DIRECT: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
       releaseSegment(sid);
-      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Secure playback only. Segment cannot be served without re-encryption." });
+      return res.redirect(302, b2Url);
     } catch (e: any) {
       releaseSegment(sid);
       log(`Segment proxy error for ${req.params.publicId}${req.path}: ${e.message}`);
@@ -2192,12 +2153,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
     }
 
-    const { allowed: keyAllowed, alreadyIssued } = checkAndIssueKey(sid);
-    if (!keyAllowed) {
-      log(`SECURITY_KEY_REPLAY: sid=${sid} — key already issued, rejecting repeated request`);
-      return res.status(403).json({ code: "KEY_ALREADY_ISSUED", message: "Session key already issued. Start a new session.", signal: "key_abuse" });
-    }
-
     const keyIp = (req.headers["x-forwarded-for"] as string || req.ip || "").split(",")[0].trim();
     const { abused: keyAbused, reason: keyReason } = trackKeyHit(sid, keyIp);
     if (keyAbused) {
@@ -2207,11 +2162,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     try {
+      const video = await storage.getVideoByPublicId(req.params.publicId);
+      if (!video?.encryptionKeyPath) {
+        log(`KEY_B2_DIRECT: sid=${sid} — encryptionKeyPath not found for publicId=${req.params.publicId}`);
+        return res.status(404).json({ code: "PLAYBACK_DENIED", message: "Encryption key not found" });
+      }
+      const masterKey = await getMasterKey(video.encryptionKeyPath, session);
+      if (!masterKey) {
+        log(`KEY_B2_DIRECT: sid=${sid} — failed to fetch key from B2, path=${video.encryptionKeyPath}`);
+        return res.status(500).json({ code: "PLAYBACK_DENIED", message: "Key fetch failed" });
+      }
+      log(`KEY_B2_DIRECT: sid=${sid}, publicId=${req.params.publicId}, keyLen=${masterKey.length}`);
       res.setHeader("Content-Type", "application/octet-stream");
-      res.setHeader("Content-Length", 16);
+      res.setHeader("Content-Length", masterKey.length);
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.setHeader("X-Content-Type-Options", "nosniff");
-      return res.send(session.ephemeralKey);
+      return res.send(masterKey);
     } catch (e: any) {
       log(`Key fetch error: ${e.message}`);
       return res.status(500).json({ code: "PLAYBACK_DENIED", message: "Key fetch failed" });

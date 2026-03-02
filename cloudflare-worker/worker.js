@@ -63,20 +63,43 @@ export default {
       const upstreamReq = new Request(upstream, {
         method: request.method,
         headers: request.headers,
+        redirect: "manual",
       });
 
-      const resp = await fetch(upstreamReq);
+      const railwayResp = await fetch(upstreamReq);
 
-      const respHeaders = new Headers(resp.headers);
+      // For segments, Railway returns 302 to a B2 presigned URL.
+      // Follow the redirect ourselves so bytes flow B2 → Worker → Browser
+      // (B2-Cloudflare egress is free via Bandwidth Alliance).
+      if (railwayResp.status === 302 || railwayResp.status === 301) {
+        const location = railwayResp.headers.get("Location");
+        if (!location) {
+          return new Response("Missing redirect location", { status: 502 });
+        }
+        const b2Resp = await fetch(location, { method: "GET" });
+        const respHeaders = new Headers();
+        respHeaders.set("Content-Type", b2Resp.headers.get("Content-Type") || "application/octet-stream");
+        if (b2Resp.headers.get("Content-Length")) {
+          respHeaders.set("Content-Length", b2Resp.headers.get("Content-Length"));
+        }
+        respHeaders.set("Access-Control-Allow-Origin", "*");
+        respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
+        respHeaders.set("Cache-Control", "no-store");
+        console.log(`[gw] ${routeType} ${publicId}${subPath} -> 302 -> B2 ${b2Resp.status}`);
+        return new Response(b2Resp.body, { status: b2Resp.status, headers: respHeaders });
+      }
+
+      const respHeaders = new Headers(railwayResp.headers);
       respHeaders.set("Access-Control-Allow-Origin", "*");
       respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
       respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
       respHeaders.set("Cache-Control", "no-store");
 
-      console.log(`[gw] ${routeType} ${publicId}${subPath} -> ${resp.status}`);
+      console.log(`[gw] ${routeType} ${publicId}${subPath} -> ${railwayResp.status}`);
 
-      return new Response(resp.body, {
-        status: resp.status,
+      return new Response(railwayResp.body, {
+        status: railwayResp.status,
         headers: respHeaders,
       });
     } catch (e) {
