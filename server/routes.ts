@@ -1817,22 +1817,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           }
         }
 
-        const { start, end } = getWindowRange(sid);
         const totalSegs = cached.segments.length;
-        const windowStart = Math.max(0, Math.min(start, totalSegs - 1));
-        const windowEnd = Math.min(end, totalSegs - 1);
-        const isLast = windowEnd >= totalSegs - 1;
         const dh = session.deviceHash;
 
+        // Full VOD playlist — all segments, proper VOD tags so HLS.js knows the
+        // full duration and allows seeking to any position without reloading.
         const lines: string[] = [
           "#EXTM3U",
           "#EXT-X-VERSION:3",
+          "#EXT-X-PLAYLIST-TYPE:VOD",
           `#EXT-X-TARGETDURATION:${cached.targetDuration}`,
-          `#EXT-X-MEDIA-SEQUENCE:${windowStart}`,
+          "#EXT-X-MEDIA-SEQUENCE:0",
         ];
 
         let lastKeyEmitted = "";
-        for (let i = windowStart; i <= windowEnd && i < totalSegs; i++) {
+        for (let i = 0; i < totalSegs; i++) {
           const seg = cached.segments[i];
 
           if (seg.keyTag && seg.keyTag !== lastKeyEmitted) {
@@ -1849,9 +1848,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           lines.push(buildSignedProxyUrl(proxyBase, sid, segSubPath, ttls.segment, dh));
         }
 
-        if (isLast) {
-          lines.push("#EXT-X-ENDLIST");
-        }
+        // VOD always ends with ENDLIST
+        lines.push("#EXT-X-ENDLIST");
 
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");

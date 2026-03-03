@@ -1,0 +1,66 @@
+We have an iframe embed HLS player (secure CMS). Two major bugs:
+
+BUG #1 (duration collapses):
+At first load, the video duration appears correct (full length). After a bit, duration collapses to ~1:50 and the seekbar behaves like a small window. Users can’t jump to the end. I need the player to behave like VOD: full duration shown from the start, seek anywhere immediately, while segments can still be fetched on demand.
+
+BUG #2 (reset / black screen around 10–11 min):
+When reaching ~10–11 minutes, after 2–3 minutes of play, the player suddenly resets currentTime to 0, duration becomes 0 or ~1:50 again, and sometimes screen goes black. Playback may restart from the wrong spot. This must never happen.
+
+CONTEXT:
+- We use HLS (.m3u8) with security endpoints (/hls/:publicId and /seg/:publicId, /key/:publicId) and possibly Cloudflare/worker redirects.
+- We must NOT remove security checks. Only fix playlist/player logic so it behaves like a normal VOD stream.
+- This is NOT live streaming. It is VOD.
+
+ROOT CAUSES TO CHECK (you must verify in code):
+1) Our generated playlist is acting like live: missing or wrong HLS tags (e.g. missing #EXT-X-ENDLIST, wrong #EXT-X-PLAYLIST-TYPE, sliding-window manifest, wrong MEDIA-SEQUENCE resets).
+2) Playlist reload is returning a different/shorter list of segments later (windowed manifest). That makes duration shrink.
+3) HLS is being reinitialized or source reset on events (quality switch, overlay, token refresh) which resets currentTime/duration.
+4) If we use fMP4, missing #EXT-X-MAP or inconsistent discontinuities can force resets.
+5) Segment durations or targetduration may be inconsistent causing MSE errors.
+
+REQUIRED FIXES (do all):
+A) SERVER: Make /hls/:publicId return a true VOD playlist:
+   - Include: #EXTM3U
+   - Include: #EXT-X-VERSION:3 (or appropriate)
+   - Include: #EXT-X-PLAYLIST-TYPE:VOD
+   - Include: #EXT-X-TARGETDURATION:<max segment seconds>
+   - Include: #EXT-X-MEDIA-SEQUENCE:0 (or stable start)
+   - Include ALL segments for the entire video in the playlist (not just last N)
+   - Include: #EXT-X-ENDLIST at end
+   - Ensure segment URIs remain stable and do not change between requests.
+   - Ensure the playlist is deterministic and does not shrink on subsequent requests.
+   - If you currently generate a “sliding window” playlist for security, replace it with full VOD playlist; keep security by using signed segment endpoints (already secured).
+   - Set response headers to avoid caching bugs:
+     Cache-Control: no-store (or a safe policy), and ensure consistent content-type.
+
+B) CLIENT: Prevent HLS/player from reinitializing and resetting time:
+   - Ensure hls.js instance is created once per video load and destroyed only when publicId changes.
+   - Do NOT call videoEl.load() or reassign videoEl.src during normal playback/seek.
+   - On quality switch (if any), keep currentTime and do not detach media unless needed; if you must detach, store time and restore after MANIFEST_PARSED.
+   - Add robust error recovery for hls.js:
+     - On Hls.ErrorTypes.NETWORK_ERROR => hls.startLoad()
+     - On Hls.ErrorTypes.MEDIA_ERROR => hls.recoverMediaError()
+     - Only destroy/recreate as last resort, preserving lastKnownTime and restoring it.
+
+C) UI: Duration must always show full length:
+   - Use videoEl.duration only after loadedmetadata/durationchange.
+   - If duration becomes Infinity/NaN/0 unexpectedly, do NOT overwrite UI with 0.
+   - Keep a “knownDuration” state: once duration becomes a valid number (>0), persist it and use it if later events temporarily report 0/NaN due to manifest reload.
+   - Same for currentTime: keep lastKnownTime to restore after error recovery.
+
+D) DEBUG + VERIFY:
+   - Add temporary logs (remove after) to confirm:
+     - Playlist contains ENDLIST and PLAYLIST-TYPE:VOD
+     - Playlist segment count is constant across reloads
+     - MEDIA-SEQUENCE does not jump unexpectedly
+     - No code path reassigns video src mid-play
+   - Reproduce: start video, wait until it previously shrank to 1:50 => confirm it no longer shrinks.
+   - Seek to near end immediately after load => should play.
+   - Play past 10–11 minutes => no reset, no black screen.
+
+DELIVERABLE:
+- Change the relevant server route that generates the m3u8 playlist (likely /hls/:publicId or playlist rewriting code) and any client embed player code that initializes hls.js.
+- Provide file list + brief summary of changes for bug #1 and bug #2.
+- Keep all security logic (token checks, signed seg/key endpoints) intact.
+
+START by finding the playlist generator and checking if it uses a sliding window / partial segments list, missing ENDLIST, or resets MEDIA-SEQUENCE. Then implement VOD playlist and client stability/error recovery.

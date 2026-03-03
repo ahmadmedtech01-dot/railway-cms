@@ -34,8 +34,11 @@ const ABUSE_THRESHOLDS = {
 const TOKEN_TTL = {
   manifest: 300,
   playlist: 300,
-  segment: 30,
-  key: 30,
+  // VOD: full playlist is served at once with all segment URLs embedded.
+  // Tokens must survive until the next session rotation (every 180s) plus a buffer.
+  // 300s gives rotation_interval (180s) + 120s buffer before next refresh cycle.
+  segment: 300,
+  key: 300,
 };
 
 export interface AbuseReason {
@@ -486,23 +489,10 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
   if (!s) return { allowed: false, reason: { signal: "rate_limit", detail: "Session not found" } };
   if (s.revoked) return { allowed: false, reason: s.revokeReason ?? { signal: "rate_limit", detail: "Session revoked" } };
 
-  if (!s.suspiciousDetectionEnabled) return { allowed: true };
-
-  const { start, end } = getWindowRange(sid);
-
-  if (segIndex >= start && segIndex <= end) {
-    if (segIndex > s.currentSegmentIndex) {
-      s.currentSegmentIndex = segIndex;
-    }
-    return { allowed: true };
+  // VOD: any segment index is valid (user may seek anywhere). Always update position tracker.
+  if (segIndex > s.currentSegmentIndex) {
+    s.currentSegmentIndex = segIndex;
   }
-
-  s.outOfWindowCount += 1;
-  if (s.outOfWindowCount >= 3) {
-    const reason: AbuseReason = { signal: "out_of_window", detail: `Segment ${segIndex} outside window [${start},${end}] (${s.outOfWindowCount} violations) | publicId=${s.publicId}` };
-    return { allowed: !addAbuse(s, ABUSE_THRESHOLDS.outOfWindowPenalty, reason).abused, reason };
-  }
-
   return { allowed: true };
 }
 

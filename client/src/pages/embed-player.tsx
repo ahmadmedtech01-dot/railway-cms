@@ -372,13 +372,18 @@ export default function EmbedPlayerPage() {
           const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false,
-            liveSyncDurationCount: 99,
-            liveMaxLatencyDurationCount: Infinity,
             maxBufferLength: 30,
+            maxMaxBufferLength: 600,
+            // VOD-specific: do not treat this as a live stream
+            backBufferLength: 60,
           });
           hlsRef.current = hls;
           hls.loadSource(manifestUrl);
           hls.attachMedia(video);
+
+          // Track media error recovery attempts to avoid infinite loops
+          let mediaErrorRecoveries = 0;
+
           hls.on(Hls.Events.MANIFEST_PARSED, (_, hlsData) => {
             setQualities(hlsData.levels.map((l, i) => ({ height: l.height, index: i })));
             setStatus("ready");
@@ -389,10 +394,17 @@ export default function EmbedPlayerPage() {
             if (total && isFinite(total) && total > 0) setDuration(prev => prev > 0 ? prev : total);
           });
           hls.on(Hls.Events.ERROR, (_, d) => {
-            if (d.fatal) {
-              const code = (d as any).response?.code;
-              const responseText = (d as any).response?.text || "";
-              if (code === 403 || code === 401) {
+            const code = (d as any).response?.code;
+            const responseText = (d as any).response?.text || "";
+
+            // Non-fatal network errors: try startLoad() to resume stalled downloads
+            if (!d.fatal) {
+              if (d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+              return;
+            }
+
+            // Fatal 403/401 — security denial or token expiry
+            if (code === 403 || code === 401) {
                 hls.stopLoad();
                 videoRef.current?.pause();
                 let signal = "rate_limit";
@@ -431,8 +443,7 @@ export default function EmbedPlayerPage() {
                 } else {
                   triggerDenial(signal);
                 }
-              } else if (code === 404) {
-                // 404 means origin storage file not found — not a security issue
+            } else if (code === 404) {
                 let parsedCode = "";
                 try { parsedCode = JSON.parse(responseText)?.code ?? ""; } catch {}
                 if (parsedCode === "ORIGIN_PLAYLIST_NOT_FOUND") {
@@ -442,10 +453,21 @@ export default function EmbedPlayerPage() {
                   setStatus("error");
                   setErrorMsg("Stream error");
                 }
-              } else {
+            } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                // Fatal network error — try to restart the load
+                hls.startLoad();
+            } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                // Fatal media error — attempt recovery before giving up
+                if (mediaErrorRecoveries < 3) {
+                  mediaErrorRecoveries += 1;
+                  hls.recoverMediaError();
+                } else {
+                  setStatus("error");
+                  setErrorMsg("Stream error");
+                }
+            } else {
                 setStatus("error");
                 setErrorMsg("Stream error");
-              }
             }
           });
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -684,13 +706,17 @@ export default function EmbedPlayerPage() {
     };
     const onDuration = () => {
       const d = video.duration;
+      // Once we have a valid duration, never let it go back to 0/NaN/Infinity.
+      // This prevents the collapse bug during manifest reloads or quality switches.
       if (!isFinite(d) || d <= 0) return;
       setDuration(prev => {
-        // If API already gave us a sensible duration within 5 seconds, keep it stable.
-        // The server auto-corrects the DB on first play, so next load will be correct.
+        // If API already gave us a sensible duration within 5 seconds, keep it stable
+        // (avoids flash when DB is already correct).
         const apiD = apiDurationRef.current;
         if (apiD > 0 && Math.abs(d - apiD) <= 5) return prev > 0 ? prev : d;
-        return d;
+        // HLS wins when meaningfully different (DB was stale) — take the larger value
+        // to avoid shrinkage from partial manifest loads.
+        return Math.max(prev, d);
       });
     };
     const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };
