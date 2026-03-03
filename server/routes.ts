@@ -6,7 +6,7 @@ import fs from "fs";
 import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { storage } from "./storage";
 import { spawn } from "child_process";
@@ -136,6 +136,75 @@ async function uploadHlsDir(localDir: string, prefix: string, activeConn: Awaite
     const key = `${prefix}${relPath}`;
     const contentType = file.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/MP2T";
     await uploadToActiveStorage(file, key, contentType, activeConn);
+  }
+}
+
+async function deleteStoragePrefix(client: S3Client, bucket: string, prefix: string): Promise<number> {
+  let deleted = 0;
+  let continuationToken: string | undefined;
+  do {
+    const listResp = await client.send(new ListObjectsV2Command({
+      Bucket: bucket, Prefix: prefix, MaxKeys: 1000,
+      ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+    }));
+    const keys = (listResp.Contents || []).map(o => ({ Key: o.Key! }));
+    if (keys.length > 0) {
+      await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys } }));
+      deleted += keys.length;
+    }
+    continuationToken = listResp.IsTruncated ? listResp.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return deleted;
+}
+
+async function deleteVideoStorage(v: { id: string; hlsS3Prefix?: string | null; rawS3Key?: string | null; storageConnectionId?: string | null; sourceType?: string | null }): Promise<void> {
+  const hlsPrefix = v.hlsS3Prefix;
+  const connId = v.storageConnectionId;
+
+  // B2 storage
+  const conn = connId ? await storage.getStorageConnectionById(connId) : await storage.getActiveStorageConnection();
+  if (conn?.provider === "backblaze_b2" && hlsPrefix) {
+    try {
+      const cfg = conn.config as any;
+      const b2 = makeB2Client(cfg);
+      const deleted = await deleteStoragePrefix(b2, cfg.bucket, hlsPrefix);
+      log(`[delete] B2: removed ${deleted} files from prefix ${hlsPrefix}`);
+      // Also delete raw video if stored
+      if (v.rawS3Key) {
+        await b2.send(new DeleteObjectCommand({ Bucket: cfg.bucket, Key: v.rawS3Key })).catch(() => {});
+        log(`[delete] B2: removed raw file ${v.rawS3Key}`);
+      }
+    } catch (err: any) {
+      log(`[delete] B2 cleanup error: ${err.message}`);
+    }
+    return;
+  }
+
+  // Legacy S3 storage
+  const s3 = await getS3Client();
+  const s3cfg = await getS3Config();
+  if (s3 && s3cfg.bucket && hlsPrefix) {
+    try {
+      const deleted = await deleteStoragePrefix(s3, s3cfg.bucket, hlsPrefix);
+      log(`[delete] S3: removed ${deleted} files from prefix ${hlsPrefix}`);
+      if (v.rawS3Key) {
+        await s3.send(new DeleteObjectCommand({ Bucket: s3cfg.bucket, Key: v.rawS3Key })).catch(() => {});
+        log(`[delete] S3: removed raw file ${v.rawS3Key}`);
+      }
+    } catch (err: any) {
+      log(`[delete] S3 cleanup error: ${err.message}`);
+    }
+    return;
+  }
+
+  // Local HLS directory
+  if (hlsPrefix && fs.existsSync(hlsPrefix)) {
+    try {
+      fs.rmSync(hlsPrefix, { recursive: true, force: true });
+      log(`[delete] Local: removed directory ${hlsPrefix}`);
+    } catch (err: any) {
+      log(`[delete] Local cleanup error: ${err.message}`);
+    }
   }
 }
 
@@ -880,6 +949,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/videos/:id", requireAuth, async (req, res) => {
     const v = await storage.getVideoById(req.params.id);
     if (!v) return res.status(404).json({ message: "Not found" });
+    // Delete all storage files (B2/S3/local) before removing DB record
+    await deleteVideoStorage(v as any);
     await storage.deleteVideo(req.params.id);
     await storage.createAuditLog({ action: "video_deleted", meta: { videoId: req.params.id, title: v.title }, ip: req.ip });
     res.json({ ok: true });
