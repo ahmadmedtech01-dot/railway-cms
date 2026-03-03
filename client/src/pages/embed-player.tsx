@@ -135,6 +135,7 @@ export default function EmbedPlayerPage() {
   const devToolsCheckRef = useRef<NodeJS.Timeout | null>(null);
   const devToolsOpenRef = useRef(false);
   const streamSidRef = useRef("");
+  const apiDurationRef = useRef(0);
   const denialSignalRef = useRef("");
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
 
@@ -320,7 +321,7 @@ export default function EmbedPlayerPage() {
         const resolvedVideoId = data.videoId || "";
         setVideoId(resolvedVideoId);
         if (data.adminPreview === true) setIsAdminPreview(true);
-        if (data.videoDuration && data.videoDuration > 0) setDuration(data.videoDuration);
+        if (data.videoDuration && data.videoDuration > 0) { apiDurationRef.current = data.videoDuration; setDuration(data.videoDuration); }
 
         // Fetch video settings and effective security in parallel
         await Promise.allSettled([
@@ -330,7 +331,7 @@ export default function EmbedPlayerPage() {
               setPlayerSettings(s.playerSettings || {});
               setWatermarkSettings(s.watermarkSettings || {});
               if (s.thumbnailUrl) setThumbnailUrl(s.thumbnailUrl);
-              if (s.videoDuration && s.videoDuration > 0) setDuration(s.videoDuration);
+              if (s.videoDuration && s.videoDuration > 0) { apiDurationRef.current = s.videoDuration; setDuration(s.videoDuration); }
               const activeBanners = (s.banners || []).filter((b: PlayerBanner) => b.enabled);
               setPlayerBanners(activeBanners);
               const initOffsets: Record<string | number, number> = {};
@@ -682,7 +683,15 @@ export default function EmbedPlayerPage() {
       if (!video.paused) setSecondsWatched(s => s + 0.25);
     };
     const onDuration = () => {
-      if (isFinite(video.duration) && video.duration > 0) setDuration(video.duration);
+      const d = video.duration;
+      if (!isFinite(d) || d <= 0) return;
+      setDuration(prev => {
+        // If API already gave us a sensible duration within 5 seconds, keep it stable.
+        // The server auto-corrects the DB on first play, so next load will be correct.
+        const apiD = apiDurationRef.current;
+        if (apiD > 0 && Math.abs(d - apiD) <= 5) return prev > 0 ? prev : d;
+        return d;
+      });
     };
     const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };
     video.addEventListener("play", onPlay);

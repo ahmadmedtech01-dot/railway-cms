@@ -1799,6 +1799,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           const playlistText = await fetchRes.text();
           cached = parsePlaylist(playlistText);
           session.variantCache.set(cacheKey, cached);
+
+          // Auto-correct stored duration if it differs from actual HLS playlist duration
+          const hlsDuration = cached.segments.reduce((sum, seg) => {
+            const m = seg.extinf.match(/#EXTINF:([\d.]+)/);
+            return sum + (m ? parseFloat(m[1]) : 0);
+          }, 0);
+          if (hlsDuration > 0) {
+            storage.getVideoByPublicId(publicId).then(videoRecord => {
+              if (!videoRecord) return;
+              const storedSec = videoRecord.duration ?? 0;
+              if (Math.abs(storedSec - Math.round(hlsDuration)) > 5) {
+                log(`[hls] Correcting stored duration for ${publicId}: ${storedSec}s → ${Math.round(hlsDuration)}s`);
+                storage.updateVideo(videoRecord.id, { duration: Math.round(hlsDuration) }).catch(() => {});
+              }
+            }).catch(() => {});
+          }
         }
 
         const { start, end } = getWindowRange(sid);
