@@ -291,15 +291,12 @@ export function trackRequest(sid: string, ip?: string): { abused: boolean; reaso
     return { abused: true, reason: { signal: "rate_limit", detail: "Session expired" } };
   }
 
-  // IP binding is always enforced (proxy/session-hijack detection, not rate-limit)
-  if (ip) {
-    if (!s.boundIp) {
-      s.boundIp = ip;
-    } else if (s.boundIp !== ip) {
-      const reason: AbuseReason = { signal: "ip_mismatch", detail: `Session used from multiple IPs (${s.boundIp} → ${ip})` };
-      console.log(`[video-session] SECURITY_BLOCK_REASON: ip_mismatch | sid=${sid} publicId=${s.publicId}`);
-      return addAbuse(s, 8, reason);
-    }
+  // IP tracking (informational only) — not enforced because playlist requests arrive
+  // via the Cloudflare Worker (worker IP) while segments come directly from the browser
+  // (browser IP), causing false ip_mismatch revocations. Session is already authenticated
+  // by SID + HMAC signature + device-hash, so IP binding adds no meaningful security here.
+  if (ip && !s.boundIp) {
+    s.boundIp = ip;
   }
 
   return { abused: false };

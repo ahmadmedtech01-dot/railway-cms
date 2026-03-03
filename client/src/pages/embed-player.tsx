@@ -166,10 +166,12 @@ export default function EmbedPlayerPage() {
   const [securityReady, setSecurityReady] = useState(false);
 
   // Violation counter — loaded from localStorage so it persists across refreshes
-  // Disabled entirely for admin preview and when suspiciousDetectionEnabled is off
+  // Disabled only for admin preview or before security settings are loaded.
+  // suspiciousDetectionEnabled controls server-side rate-limiting, NOT client-side
+  // violation events (DevTools, right-click, focus mode, etc.).
   const { reportViolation, isBlocked, remainingMs, toast: violationToast } =
     useSecurityViolations(videoId, effectiveSecurity, {
-      disabled: isAdminPreview || !securityReady || effectiveSecurity?.suspiciousDetectionEnabled === false,
+      disabled: isAdminPreview || !securityReady,
     });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [tickerOffset, setTickerOffset] = useState(0);
