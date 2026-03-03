@@ -670,15 +670,16 @@ export default function EmbedPlayerPage() {
     return () => { if (popIntervalRef.current) clearInterval(popIntervalRef.current); };
   }, [watermarkSettings.popEnabled, watermarkSettings.popInterval, watermarkSettings.popDuration, watermarkSettings.popMode]);
 
-  // Video event handlers
+  // Video event handlers — depend on status so listeners attach when the video element enters the DOM
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
+    const onEnded = () => setPlaying(false);
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime);
-      if (playing) setSecondsWatched(s => s + 0.25);
+      if (!video.paused) setSecondsWatched(s => s + 0.25);
     };
     const onDuration = () => {
       if (isFinite(video.duration) && video.duration > 0) setDuration(video.duration);
@@ -686,17 +687,19 @@ export default function EmbedPlayerPage() {
     const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
+    video.addEventListener("ended", onEnded);
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("durationchange", onDuration);
     video.addEventListener("volumechange", onVolumeChange);
     return () => {
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
+      video.removeEventListener("ended", onEnded);
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("durationchange", onDuration);
       video.removeEventListener("volumechange", onVolumeChange);
     };
-  }, [playing]);
+  }, [status]);
 
   // Controls auto-hide — 5s inactivity timer
   const showControlsTemporarily = useCallback(() => {
@@ -714,7 +717,13 @@ export default function EmbedPlayerPage() {
       reportViolation("FULLSCREEN_REQUIRED_BREACH" as ViolationType);
       return;
     }
-    if (v.paused) v.play().catch(() => {}); else v.pause();
+    if (v.paused) {
+      v.play().catch(() => {});
+      setPlaying(true);
+    } else {
+      v.pause();
+      setPlaying(false);
+    }
   };
 
   const reportProgressNow = (time: number) => {
@@ -730,15 +739,19 @@ export default function EmbedPlayerPage() {
   const seek = (delta: number) => {
     const v = videoRef.current;
     if (!v || !playerSettings.allowSkip) return;
-    v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + delta));
-    reportProgressNow(v.currentTime);
+    const newTime = Math.max(0, Math.min(isFinite(v.duration) ? v.duration : Infinity, v.currentTime + delta));
+    v.currentTime = newTime;
+    setCurrentTime(newTime);
+    reportProgressNow(newTime);
   };
 
   const handleSeekBar = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = videoRef.current;
     if (!v || !playerSettings.allowSkip) return;
-    v.currentTime = parseFloat(e.target.value);
-    reportProgressNow(v.currentTime);
+    const newTime = parseFloat(e.target.value);
+    v.currentTime = newTime;
+    setCurrentTime(newTime);
+    reportProgressNow(newTime);
   };
 
   const handleVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -747,6 +760,8 @@ export default function EmbedPlayerPage() {
     const vol = parseFloat(e.target.value);
     v.volume = vol;
     v.muted = vol === 0;
+    setVolume(vol);
+    setMuted(vol === 0);
   };
 
   const toggleFullscreen = () => {
@@ -1130,7 +1145,7 @@ export default function EmbedPlayerPage() {
 
               {/* Volume */}
               <div className="flex items-center gap-1">
-                <button onClick={() => { const v = videoRef.current; if (v) v.muted = !v.muted; }} className="text-white p-1">
+                <button onClick={() => { const v = videoRef.current; if (v) { v.muted = !v.muted; setMuted(v.muted); } }} className="text-white p-1">
                   {muted || volume === 0 ? (
                     <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
                   ) : (

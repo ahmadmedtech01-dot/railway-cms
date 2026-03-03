@@ -1,0 +1,89 @@
+You are fixing my CMS EMBED player which plays inside my LMS using an iframe (/embed/:publicId). Playback works but UI controls are broken (icons/progress/seek/volume). Fix ONLY the wiring and synchronization. Do NOT change the UI design.
+
+ISSUES (must all be fixed):
+1) Volume up/down buttons do nothing.
+2) Play/Pause button toggles playback but icon does NOT switch to match current state.
+3) +10 / -10 seek changes playback but progress bar and current time UI do not update.
+4) Clicking the progress bar does NOT seek to that position; it restarts/ignores and stays near start.
+
+CONTEXT:
+- This is an iframe embed player in my LMS.
+- Video may be attached via HLS.js (attachMedia(videoEl)) or direct src.
+- There is security logic and overlays; do NOT break security. Only fix player control logic.
+
+REQUIREMENTS:
+A) Single source of truth = the <video> element.
+   - UI state must always reflect videoEl.paused, videoEl.currentTime, videoEl.duration, videoEl.volume, videoEl.muted.
+B) All control listeners must attach only AFTER:
+   - DOM is mounted AND
+   - videoEl exists AND
+   - HLS has attached media (if used) OR loadedmetadata is available.
+C) Avoid duplicate listeners on re-renders (React): use useEffect cleanup or a “listenersAttached” guard.
+D) Do not reinitialize the player on progress click (no reload/recreate HLS instance).
+
+IMPLEMENTATION DETAILS:
+1) FIX PLAY/PAUSE ICON SYNC:
+   - Do NOT set icon purely on button click.
+   - Add listeners:
+     videoEl.addEventListener('play', updatePlayPauseUI)
+     videoEl.addEventListener('pause', updatePlayPauseUI)
+     videoEl.addEventListener('ended', () => { set icon to Play; })
+   - updatePlayPauseUI reads videoEl.paused and sets the button icon accordingly.
+
+2) FIX VOLUME BUTTONS:
+   - On volUp click: videoEl.muted=false; videoEl.volume = clamp(videoEl.volume + 0.1, 0, 1)
+   - On volDown click: videoEl.muted=false; videoEl.volume = clamp(videoEl.volume - 0.1, 0, 1)
+   - Also listen to 'volumechange' to update any slider/icon display.
+
+3) FIX SEEK +10/-10:
+   - On +10: videoEl.currentTime = clamp(videoEl.currentTime + 10, 0, videoEl.duration||Infinity)
+   - On -10: videoEl.currentTime = clamp(videoEl.currentTime - 10, 0, videoEl.duration||Infinity)
+   - Immediately call updateProgressUI() after setting currentTime (do not wait for timeupdate).
+
+4) FIX PROGRESS BAR CLICK SEEK:
+   - Identify the progress “track” element (div) OR range input.
+   - If DIV track:
+     rect = track.getBoundingClientRect()
+     percent = clamp((event.clientX - rect.left)/rect.width, 0, 1)
+     target = percent * videoEl.duration
+     videoEl.currentTime = target
+     updateProgressUI() immediately
+   - If INPUT range:
+     Ensure max=duration, value=currentTime
+     On change/input: videoEl.currentTime = Number(range.value)
+   - Prevent bubbling and default that might trigger player reset.
+
+5) UI UPDATE FUNCTIONS:
+   Create shared functions:
+   - formatTime(s)
+   - updateProgressUI():
+       progressPercent = (currentTime/duration)*100
+       set progress bar fill width or range value
+       update current time text
+       update duration text (once known)
+   Bind these to:
+     videoEl 'timeupdate'
+     videoEl 'loadedmetadata'
+     videoEl 'durationchange'
+     videoEl 'seeking'/'seeked' (optional)
+
+6) VERIFY EMBED/IFRAME SAFE:
+   - Do not depend on window-level key events unless already required.
+   - Do not use document.querySelector without scoping; prefer refs or component-level selectors.
+   - Ensure event listeners attach in the embed player component (not LMS parent).
+
+DELIVERABLE:
+- Implement fixes in the embed player component files.
+- Report which file(s) changed.
+- For each of 4 issues, state exactly what was wrong and what you changed.
+- Add a quick sanity test steps list:
+   (play/pause updates icon, volume changes, +10/-10 updates progress, click seek works)
+
+START NOW:
+Search the repo for embed player code and controls. Likely paths:
+- client/src/pages/embed*.tsx
+- client/src/components/*Player*.tsx
+- client/src/routes/embed*
+- anything containing /embed/, "progress", "seek", "volume", "playPause"
+
+Fix it and ensure it works in iframe embed mode.
