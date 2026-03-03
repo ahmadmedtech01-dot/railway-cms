@@ -10,6 +10,11 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { storage } from "./storage";
 import { spawn } from "child_process";
+import ffmpegStaticPath from "ffmpeg-static";
+import ffprobeStatic from "ffprobe-static";
+
+const FFMPEG_BIN = process.env.FFMPEG_PATH || ffmpegStaticPath || "ffmpeg";
+const FFPROBE_BIN = process.env.FFPROBE_PATH || ffprobeStatic.path || "ffprobe";
 import os from "os";
 import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } from "./vimeo";
 import crypto from "crypto";
@@ -378,7 +383,7 @@ function getTranscodeProgress(videoId: string): { time: string; speed: string; s
 
 async function ffprobeDuration(inputPath: string): Promise<number> {
   return new Promise((resolve) => {
-    const ff = spawn("ffprobe", [
+    const ff = spawn(FFPROBE_BIN, [
       "-v", "error",
       "-show_entries", "format=duration",
       "-of", "default=noprint_wrappers=1:nokey=1",
@@ -468,11 +473,11 @@ async function runFfmpegHls(
     args.push(path.join(outputDir, "v%v/index.m3u8"));
 
     log(`[ffmpeg] Starting HLS transcode${encryption ? " (AES-128)" : ""} | qualities=${selectedQualities.join(",")} | input=${inputPath}`);
-    log(`[ffmpeg] Command: ffmpeg ${args.join(" ")}`);
+    log(`[ffmpeg] Command: ${FFMPEG_BIN} ${args.join(" ")}`);
 
     if (videoId) transcodeProgress.set(videoId, { time: "00:00:00", speed: "—", stage: "transcoding", percent: 0 });
 
-    const proc = spawn("ffmpeg", args);
+    const proc = spawn(FFMPEG_BIN, args);
     let stdoutBuf = "";
     let stderrBuf = "";
 
