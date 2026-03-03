@@ -190,6 +190,7 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
       encryptionKid: enc.kid,
       encryptionKeyPath: keyBucketPath,
       lastError: null,
+      duration: durationMs > 0 ? Math.round(durationMs / 1000) : null,
     } as any);
     try { fs.rmSync(hlsOutputDir, { recursive: true }); } catch {}
     transcodeProgress.delete(videoId);
@@ -202,13 +203,13 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
   if (client && cfg.bucket) {
     const hlsPrefix = `${cfg.hlsPrefix}${videoId}/`;
     await uploadHlsToS3(hlsOutputDir, hlsPrefix);
-    await storage.updateVideo(videoId, { status: "ready", hlsS3Prefix: hlsPrefix, encryptionKid: enc.kid, lastError: null } as any);
+    await storage.updateVideo(videoId, { status: "ready", hlsS3Prefix: hlsPrefix, encryptionKid: enc.kid, lastError: null, duration: durationMs > 0 ? Math.round(durationMs / 1000) : null } as any);
     try { fs.rmSync(hlsOutputDir, { recursive: true }); } catch {}
   } else {
     const localHlsDir = path.join(uploadDir, "hls", videoId);
     if (fs.existsSync(localHlsDir)) fs.rmSync(localHlsDir, { recursive: true });
     fs.cpSync(hlsOutputDir, localHlsDir, { recursive: true });
-    await storage.updateVideo(videoId, { status: "ready", hlsS3Prefix: localHlsDir, encryptionKid: enc.kid, lastError: null } as any);
+    await storage.updateVideo(videoId, { status: "ready", hlsS3Prefix: localHlsDir, encryptionKid: enc.kid, lastError: null, duration: durationMs > 0 ? Math.round(durationMs / 1000) : null } as any);
     try { fs.rmSync(hlsOutputDir, { recursive: true }); } catch {}
   }
   transcodeProgress.delete(videoId);
@@ -1579,7 +1580,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sid = createSession(video.publicId, hlsPrefix, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
-        return res.json({ manifestUrl, sourceType: "b2_proxy", sessionId: sid, videoId: video.id, ...(isAdminPreview ? { adminPreview: true } : {}) });
+        return res.json({ manifestUrl, sourceType: "b2_proxy", sessionId: sid, videoId: video.id, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       const client = await getS3Client();
@@ -1589,7 +1590,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
-        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, ...(isAdminPreview ? { adminPreview: true } : {}) });
+        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       // Local HLS fallback
@@ -2275,7 +2276,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const thumbnailUrl = video.thumbnailUrl || null;
-    res.json({ playerSettings, watermarkSettings, banners, thumbnailUrl });
+    const videoDuration = video.duration || null;
+    res.json({ playerSettings, watermarkSettings, banners, thumbnailUrl, videoDuration });
   });
 
   // Playback ping

@@ -320,6 +320,7 @@ export default function EmbedPlayerPage() {
         const resolvedVideoId = data.videoId || "";
         setVideoId(resolvedVideoId);
         if (data.adminPreview === true) setIsAdminPreview(true);
+        if (data.videoDuration && data.videoDuration > 0) setDuration(data.videoDuration);
 
         // Fetch video settings and effective security in parallel
         await Promise.allSettled([
@@ -329,6 +330,7 @@ export default function EmbedPlayerPage() {
               setPlayerSettings(s.playerSettings || {});
               setWatermarkSettings(s.watermarkSettings || {});
               if (s.thumbnailUrl) setThumbnailUrl(s.thumbnailUrl);
+              if (s.videoDuration && s.videoDuration > 0) setDuration(s.videoDuration);
               const activeBanners = (s.banners || []).filter((b: PlayerBanner) => b.enabled);
               setPlayerBanners(activeBanners);
               const initOffsets: Record<string | number, number> = {};
@@ -380,6 +382,10 @@ export default function EmbedPlayerPage() {
             setQualities(hlsData.levels.map((l, i) => ({ height: l.height, index: i })));
             setStatus("ready");
             if (playerSettings.autoplayAllowed) video.play().catch(() => {});
+          });
+          hls.on(Hls.Events.LEVEL_LOADED, (_, d) => {
+            const total = d.details?.totalduration;
+            if (total && isFinite(total) && total > 0) setDuration(prev => prev > 0 ? prev : total);
           });
           hls.on(Hls.Events.ERROR, (_, d) => {
             if (d.fatal) {
@@ -674,7 +680,9 @@ export default function EmbedPlayerPage() {
       setCurrentTime(video.currentTime);
       if (playing) setSecondsWatched(s => s + 0.25);
     };
-    const onDuration = () => setDuration(video.duration);
+    const onDuration = () => {
+      if (isFinite(video.duration) && video.duration > 0) setDuration(video.duration);
+    };
     const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
