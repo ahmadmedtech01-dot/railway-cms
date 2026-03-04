@@ -27,7 +27,7 @@ const ABUSE_THRESHOLDS = {
   keyHitsPerMin: 20,               // key requests per minute (re-fetched on quality switch/seek)
   keyHitsTotal: 60,                // total key requests per session
   scoreToRevoke: 20,               // score needed to revoke session
-  windowSize: 10,                  // segment window size
+  windowSize: 20,                  // segment window size (must cover hls.js maxBufferLength=30s ahead)
   outOfWindowPenalty: 2,           // penalty for out-of-window requests
 };
 

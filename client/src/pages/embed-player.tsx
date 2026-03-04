@@ -445,7 +445,7 @@ export default function EmbedPlayerPage() {
             if (code === 403 || code === 401) {
                 hls.stopLoad();
                 videoRef.current?.pause();
-                let signal = "rate_limit";
+                let signal = "";
                 let errorCode = "";
                 try {
                   const parsed = JSON.parse(responseText);
@@ -454,8 +454,43 @@ export default function EmbedPlayerPage() {
                 } catch {}
 
                 const isExpiry = errorCode === "TOKEN_EXPIRED" || errorCode === "SIGNED_URL_EXPIRED" || signal === "token_expired" || signal === "signed_url_expired";
-                const isBulkBlock = errorCode === "SECURITY_BULK_DOWNLOAD" || signal === "rate_limit" || signal === "key_abuse";
-                const canRefresh = activeTokenRef.current && isExpiry && !isBulkBlock;
+                const isTrueAbuse = errorCode === "SECURITY_BULK_DOWNLOAD" || signal === "bulk_download" || signal === "key_abuse";
+                const canRefresh = activeTokenRef.current && isExpiry && !isTrueAbuse;
+
+                const tryRotationRecovery = () => {
+                  const currentSid = streamSidRef.current;
+                  if (!currentSid) { triggerDenial(signal || "rate_limit"); return; }
+                  const savedTime = videoRef.current?.currentTime || 0;
+                  fetch(`/api/player/${publicId}/rotate-session`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ sid: currentSid }),
+                  }).then(async r => {
+                    if (!r.ok) { triggerDenial(signal || "rate_limit"); return; }
+                    const rd = await r.json();
+                    if (rd.manifestUrl && rd.sessionId) {
+                      streamSidRef.current = rd.sessionId;
+                      isRotatingRef.current = true;
+                      hls.startPosition = savedTime;
+                      hls.loadSource(rd.manifestUrl);
+                      hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                        isRotatingRef.current = false;
+                        if (videoRef.current) {
+                          videoRef.current.currentTime = savedTime;
+                          videoRef.current.play().catch(() => {});
+                        }
+                        fetch(`/api/stream/${publicId}/progress`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ sid: rd.sessionId, currentTime: savedTime }),
+                        }).catch(() => {});
+                      });
+                    } else {
+                      triggerDenial(signal || "rate_limit");
+                    }
+                  }).catch(() => triggerDenial(signal || "rate_limit"));
+                };
+
                 if (canRefresh) {
                   const savedTime = videoRef.current?.currentTime || 0;
                   fetch(`/api/player/${publicId}/refresh-token`, {
@@ -463,7 +498,7 @@ export default function EmbedPlayerPage() {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ token: activeTokenRef.current }),
                   }).then(async r => {
-                    if (!r.ok) { triggerDenial(signal); return; }
+                    if (!r.ok) { triggerDenial(signal || "rate_limit"); return; }
                     const rd = await r.json();
                     if (rd.token) activeTokenRef.current = rd.token;
                     if (rd.manifestUrl) {
@@ -477,11 +512,13 @@ export default function EmbedPlayerPage() {
                         }
                       });
                     } else {
-                      triggerDenial(signal);
+                      triggerDenial(signal || "rate_limit");
                     }
-                  }).catch(() => triggerDenial(signal));
+                  }).catch(() => triggerDenial(signal || "rate_limit"));
+                } else if (!isTrueAbuse) {
+                  tryRotationRecovery();
                 } else {
-                  triggerDenial(signal);
+                  triggerDenial(signal || "rate_limit");
                 }
             } else if (code === 404) {
                 let parsedCode = "";
@@ -594,6 +631,11 @@ export default function EmbedPlayerPage() {
               v.currentTime = savedTime;
               if (!wasPaused) v.play().catch(() => {});
             }
+            fetch(`/api/stream/${publicId}/progress`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sid: data.sessionId, currentTime: savedTime }),
+            }).catch(() => {});
           });
         }
       } catch {}
@@ -815,11 +857,17 @@ export default function EmbedPlayerPage() {
                 const hls = hlsRef.current;
                 if (hls) {
                   isRotatingRef.current = true;
+                  hls.startPosition = savedTime;
                   hls.loadSource(data.manifestUrl);
                   hls.once(Hls.Events.MANIFEST_PARSED, () => {
                     isRotatingRef.current = false;
                     v.currentTime = savedTime;
                     v.play().catch(() => {});
+                    fetch(`/api/stream/${publicId}/progress`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ sid: data.sessionId, currentTime: savedTime }),
+                    }).catch(() => {});
                   });
                 } else {
                   v.play().catch(() => {});
