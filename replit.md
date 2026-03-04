@@ -94,7 +94,7 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 - Bulk download detection: >30 segments in 5s → +8 (logged as SECURITY_BULK_DOWNLOAD)
 - Playlist abuse: >30 fetches/min → +3
 - IP mismatch: **DISABLED** — not enforced (playlist requests arrive via Cloudflare Worker with one IP; segments arrive directly from the browser with another IP, causing false revocations). IP is only recorded on first request for logging.
-- Out-of-window: segment request outside [current-1, current+6] → +3 (after 3 violations)
+- Out-of-window: segment request outside [current-1, current+20] → +2 (windowSize=20 covers hls.js 30s buffer)
 - Key abuse: >30 key requests/min → +5
 - Violation limit: configurable per-video via `violationLimit` (default 6), stored in session object
 - On breach: session blocked for 10 minutes, returns 429/403

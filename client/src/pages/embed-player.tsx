@@ -406,8 +406,13 @@ export default function EmbedPlayerPage() {
             lowLatencyMode: false,
             maxBufferLength: 30,
             maxMaxBufferLength: 600,
-            // VOD-specific: do not treat this as a live stream
             backBufferLength: 60,
+            manifestLoadingMaxRetry: 4,
+            manifestLoadingRetryDelay: 1500,
+            levelLoadingMaxRetry: 4,
+            levelLoadingRetryDelay: 1500,
+            fragLoadingMaxRetry: 4,
+            fragLoadingRetryDelay: 1000,
           });
           hlsRef.current = hls;
           hls.loadSource(manifestUrl);
@@ -473,7 +478,14 @@ export default function EmbedPlayerPage() {
                       isRotatingRef.current = true;
                       hls.startPosition = savedTime;
                       hls.loadSource(rd.manifestUrl);
+                      const safetyTimer = setTimeout(() => {
+                        if (isRotatingRef.current) {
+                          isRotatingRef.current = false;
+                          hls.startLoad();
+                        }
+                      }, 15000);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                        clearTimeout(safetyTimer);
                         isRotatingRef.current = false;
                         if (videoRef.current) {
                           videoRef.current.currentTime = savedTime;
@@ -625,7 +637,14 @@ export default function EmbedPlayerPage() {
           isRotatingRef.current = true;
           hls.startPosition = savedTime;
           hls.loadSource(data.manifestUrl);
+          const rotationSafetyTimer = setTimeout(() => {
+            if (isRotatingRef.current) {
+              isRotatingRef.current = false;
+              hls.startLoad();
+            }
+          }, 15000);
           hls.once(Hls.Events.MANIFEST_PARSED, () => {
+            clearTimeout(rotationSafetyTimer);
             isRotatingRef.current = false;
             if (v) {
               v.currentTime = savedTime;
@@ -859,7 +878,14 @@ export default function EmbedPlayerPage() {
                   isRotatingRef.current = true;
                   hls.startPosition = savedTime;
                   hls.loadSource(data.manifestUrl);
+                  const pauseSafetyTimer = setTimeout(() => {
+                    if (isRotatingRef.current) {
+                      isRotatingRef.current = false;
+                      hls.startLoad();
+                    }
+                  }, 15000);
                   hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                    clearTimeout(pauseSafetyTimer);
                     isRotatingRef.current = false;
                     v.currentTime = savedTime;
                     v.play().catch(() => {});
