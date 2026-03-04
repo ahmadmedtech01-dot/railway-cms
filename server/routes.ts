@@ -1529,7 +1529,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const video = await storage.getVideoById(req.params.id);
       if (!video) return res.status(404).json({ message: "Not found" });
-      const token = generateToken({ videoId: video.id, publicId: video.publicId, adminPreview: true }, 600);
+      const token = generateToken({ videoId: video.id, publicId: video.publicId, adminPreview: true }, 86400); // 24 hours
       res.json({ token, publicId: video.publicId });
     } catch (e: any) {
       res.status(500).json({ message: e.message });

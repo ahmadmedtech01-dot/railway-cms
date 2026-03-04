@@ -320,6 +320,12 @@ export default function EmbedPlayerPage() {
           const data = await manifestRes.json().catch(() => ({}));
           if (manifestRes.status === 503) { setStatus("unavailable"); return; }
           if (manifestRes.status === 403) { setStatus("unavailable"); setErrorMsg(data.message || "Access denied"); return; }
+          if (manifestRes.status === 401 && token) {
+            // URL-based admin preview token has expired — give the admin a way to refresh
+            setStatus("error");
+            setErrorMsg("PREVIEW_TOKEN_EXPIRED");
+            return;
+          }
           if (manifestRes.status === 409 && data.code === "HLS_NOT_AVAILABLE") {
             setStatus("error");
             setErrorMsg("HLS not available — this video has not been converted for our custom player yet. An admin needs to build the HLS from the video source.");
@@ -987,6 +993,27 @@ export default function EmbedPlayerPage() {
           <p className="text-xs opacity-40 pt-1">
             Ending other sessions will immediately stop playback on those devices.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error" && errorMsg === "PREVIEW_TOKEN_EXPIRED") {
+    return (
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        <div className="text-center space-y-4 max-w-sm px-6">
+          <div className="text-5xl select-none">🔑</div>
+          <p className="text-lg font-semibold">Preview Link Expired</p>
+          <p className="text-sm opacity-60">
+            This preview link has expired. Go back to the dashboard and open the video again to get a fresh link.
+          </p>
+          <button
+            onClick={() => window.history.back()}
+            className="w-full px-5 py-2.5 rounded-md bg-white text-black text-sm font-semibold hover:bg-white/90 transition-colors"
+            data-testid="button-go-back"
+          >
+            Back to Dashboard
+          </button>
         </div>
       </div>
     );
