@@ -403,11 +403,12 @@ function getAllowedLmsOrigins(): string[] {
 }
 
 // Nonce replay protection — map of nonce → expiry timestamp (ms)
-const lmsNonceCache = new Map<string, number>();
+interface NonceCacheEntry { exp: number; userId: string; publicId: string; origin: string }
+const lmsNonceCache = new Map<string, NonceCacheEntry>();
 setInterval(() => {
   const now = Date.now();
-  for (const [nonce, exp] of lmsNonceCache) {
-    if (exp <= now) lmsNonceCache.delete(nonce);
+  for (const [nonce, entry] of lmsNonceCache) {
+    if (entry.exp <= now) lmsNonceCache.delete(nonce);
   }
 }, 60_000);
 
@@ -431,9 +432,12 @@ function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: 
     if (!allowedOrigins.includes(payload.origin)) return null;
     const nowSec = Date.now() / 1000;
     if (nowSec > payload.exp) return null;
-    if (payload.exp - nowSec > 300) return null; // must expire within 5 minutes
-    if (lmsNonceCache.has(payload.nonce)) return null; // nonce already used
-    lmsNonceCache.set(payload.nonce, Date.now() + 5 * 60 * 1000); // mark nonce used for 5 min
+    if (payload.exp - nowSec > 300) return null;
+    const cached = lmsNonceCache.get(payload.nonce);
+    if (cached) {
+      if (cached.userId !== payload.userId || cached.publicId !== payload.publicId || cached.origin !== payload.origin) return null;
+    }
+    lmsNonceCache.set(payload.nonce, { exp: Date.now() + 5 * 60 * 1000, userId: payload.userId, publicId: payload.publicId, origin: payload.origin });
     return payload;
   } catch {
     return null;
@@ -2054,7 +2058,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ttlMs = (secSettings?.tokenTtl || 3600) * 1000;
       const concurrentLimit = secSettings?.concurrentLimit ?? 1;
 
-      // Concurrent session check: scoped per user PER VIDEO
+      const instanceId = (req.headers["x-client-instance"] as string) || "";
+
+      if (instanceId) {
+        const existingTokens = await storage.getActiveUserTokens(video.id, userId);
+        for (const et of existingTokens) {
+          if (et.label && et.label.includes(`:inst:${instanceId}`)) {
+            await storage.revokeToken(et.id);
+            log(`TOKEN_AUTO_REPLACED: userId=${userId} videoId=${video.id} instanceId=${instanceId} revokedTokenId=${et.id}`);
+          }
+        }
+      }
+
       const activeTokens = await storage.getActiveUserTokens(video.id, userId);
       if (activeTokens.length >= concurrentLimit) {
         log(`SESSION_LIMIT_BLOCK: userId=${userId} videoId=${video.id} activeSessions=${activeTokens.length} limit=${concurrentLimit}`);
@@ -2065,12 +2080,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
+      const tokenLabel = instanceId
+        ? `auto:${userId}:${identitySource}:inst:${instanceId}`
+        : `auto:${userId}:${identitySource}`;
       const expiresAt = new Date(Date.now() + ttlMs);
       const tokenValue = generateToken({ videoId: video.id, publicId: video.publicId, userId }, Math.floor(ttlMs / 1000));
       const dbToken = await storage.createEmbedToken({
         videoId: video.id,
         token: tokenValue,
-        label: `auto:${userId}:${identitySource}`,
+        label: tokenLabel,
         allowedDomain: null,
         expiresAt,
         revoked: false,
@@ -2212,6 +2230,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.revokeUserTokensExcept(video.id, userId, currentToken);
       log(`USER_SESSIONS_REVOKED: userId=${userId} videoId=${video.id} — kept token ${dbToken?.id || "jwt-only"}`);
       res.json({ ok: true, message: "Other sessions for this video revoked. You can now continue." });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/player/:publicId/revoke-sessions-by-launch", async (req: any, res: any) => {
+    try {
+      const { lmsLaunchToken } = req.body || {};
+      if (!lmsLaunchToken) return res.status(400).json({ message: "lmsLaunchToken required" });
+
+      const video = await storage.getVideoByPublicId(req.params.publicId);
+      if (!video) return res.status(404).json({ message: "Video not found" });
+
+      const launch = verifyLmsLaunchToken(lmsLaunchToken);
+      if (!launch) return res.status(403).json({ message: "Invalid or expired launch token" });
+      if (launch.publicId !== video.publicId) return res.status(403).json({ message: "Launch token does not match this video" });
+
+      await storage.revokeAllUserTokens(video.id, launch.userId);
+      log(`USER_SESSIONS_REVOKED_BY_LAUNCH: userId=${launch.userId} videoId=${video.id}`);
+      res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

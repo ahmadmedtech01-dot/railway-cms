@@ -38,52 +38,57 @@ const BLOCK_DURATION_MS = 10 * 60 * 1000;
 const DEBOUNCE_MS = 3_000;
 const EMPTY_STATE: ViolationState = { count: 0, blockedUntil: 0, lastEventAt: 0, lastEventType: "" };
 
-function lsKey(videoId: string) {
+function lsKey(videoId: string, sessionKey?: string) {
+  if (sessionKey) return `sec:violations:${videoId}:${sessionKey}`;
   return `sec:violations:anon:${videoId}`;
 }
 
-function readState(videoId: string): ViolationState {
+function readState(videoId: string, sessionKey?: string): ViolationState {
   if (!videoId) return { ...EMPTY_STATE };
   try {
-    const raw = localStorage.getItem(lsKey(videoId));
+    const raw = localStorage.getItem(lsKey(videoId, sessionKey));
     if (raw) return { ...EMPTY_STATE, ...JSON.parse(raw) };
   } catch {}
   return { ...EMPTY_STATE };
 }
 
-function writeState(videoId: string, s: ViolationState) {
+function writeState(videoId: string, s: ViolationState, sessionKey?: string) {
   if (!videoId) return;
-  try { localStorage.setItem(lsKey(videoId), JSON.stringify(s)); } catch {}
+  try { localStorage.setItem(lsKey(videoId, sessionKey), JSON.stringify(s)); } catch {}
 }
 
 export function useSecurityViolations(
   videoId: string,
   settings: Record<string, any>,
-  options?: { disabled?: boolean },
+  options?: { disabled?: boolean; sessionKey?: string },
 ) {
   const disabled = options?.disabled ?? false;
+  const sessionKey = options?.sessionKey;
   const limit: number = Math.max(1, settings?.violationLimit ?? 20);
 
-  // Use a ref as authoritative source to avoid stale closures
-  const stateRef = useRef<ViolationState>(readState(videoId));
+  const sessionKeyRef = useRef(sessionKey);
+  sessionKeyRef.current = sessionKey;
+  const videoIdRef = useRef(videoId);
+  videoIdRef.current = videoId;
+
+  const stateRef = useRef<ViolationState>(readState(videoId, sessionKey));
   const [state, setStateRaw] = useState<ViolationState>(stateRef.current);
   const lastEventTsRef = useRef<Partial<Record<ViolationType, number>>>({});
   const [toast, setToast] = useState<ViolationToast | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const syncState = (next: ViolationState) => {
+  const syncState = useCallback((next: ViolationState) => {
     stateRef.current = next;
-    writeState(videoId, next);
+    writeState(videoIdRef.current, next, sessionKeyRef.current);
     setStateRaw(next);
-  };
+  }, []);
 
-  // Reload from storage when videoId is resolved (starts as "")
   useEffect(() => {
     if (!videoId) return;
-    const s = readState(videoId);
+    const s = readState(videoId, sessionKey);
     syncState(s);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId]);
+  }, [videoId, sessionKey]);
 
   // Countdown timer — runs always, clears cooldown when time expires
   useEffect(() => {

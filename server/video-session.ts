@@ -14,7 +14,7 @@ function resolveSecret(): string {
 
 const SECRET = resolveSecret();
 
-const SESSION_MAX_AGE_MS = 5 * 60 * 1000;
+const SESSION_MAX_AGE_MS = 20 * 60 * 1000;
 export const SESSION_ROTATION_MS = 3 * 60 * 1000;
 
 const ABUSE_THRESHOLDS = {
@@ -32,13 +32,10 @@ const ABUSE_THRESHOLDS = {
 };
 
 const TOKEN_TTL = {
-  manifest: 300,
-  playlist: 300,
-  // VOD: full playlist is served at once with all segment URLs embedded.
-  // Tokens must survive until the next session rotation (every 180s) plus a buffer.
-  // 300s gives rotation_interval (180s) + 120s buffer before next refresh cycle.
-  segment: 300,
-  key: 300,
+  manifest: 900,
+  playlist: 900,
+  segment: 900,
+  key: 900,
 };
 
 export interface AbuseReason {

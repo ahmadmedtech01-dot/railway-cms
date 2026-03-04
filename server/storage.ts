@@ -150,6 +150,13 @@ export const storage = {
     }
   },
 
+  async revokeAllUserTokens(videoId: string, userId: string): Promise<void> {
+    const tokens = await this.getActiveUserTokens(videoId, userId);
+    for (const t of tokens) {
+      await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
+    }
+  },
+
   // Playback Sessions
   async createSession(data: Partial<PlaybackSession>): Promise<PlaybackSession> {
     const [s] = await db.insert(playbackSessions).values(data as any).returning();

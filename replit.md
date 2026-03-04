@@ -44,8 +44,11 @@ A full-stack secure video content management system for a single admin user.
   - Never trusts userId from URL or body. Server derives identity.
   - Entitlement check before minting (checkEntitlement function, extensible)
   - Session limit scoped per user PER VIDEO (userId + videoId)
+  - Supports `x-client-instance` header: auto-revokes same-instance tokens before concurrent check (prevents refresh from hitting session limit)
+  - Token label includes instance ID when provided: `auto:<userId>:<source>:inst:<instanceId>`
 - `POST /api/player/:publicId/refresh-token` — Refreshes expired token, re-checks entitlement
 - `POST /api/player/:publicId/revoke-other-sessions` — Revokes other sessions for same video, userId derived from token
+- `POST /api/player/:publicId/revoke-sessions-by-launch` — Revokes ALL active sessions for a user+video using LMS launch token (no embed token needed)
 - `GET /api/lms/origins` — Public endpoint: returns allowed LMS origins from ALLOWED_LMS_ORIGINS env var
 
 ### Iframe-Only LMS Embedding Security
@@ -60,7 +63,7 @@ Required payload fields: `userId`, `publicId`, `exp`, `nonce`, `aud`, `origin`
 - `aud` must equal `"video-cms"`
 - `origin` must match one of `ALLOWED_LMS_ORIGINS`
 - `exp` must be in the future AND within 5 minutes (short-lived)
-- `nonce` replay protection: stored for 5 minutes, rejected if reused
+- `nonce` replay protection: stored for 5 minutes with `{userId, publicId, origin}` context; same nonce allowed if same context (resilient to LMS refresh), rejected if different context
 - HMAC-SHA256 signature verified with `LMS_HMAC_SECRET`
 - LMS launch token format: `base64url(JSON{userId,publicId,exp,nonce}).hmac_hex`
 - Requires `LMS_HMAC_SECRET` env var for LMS launch token verification

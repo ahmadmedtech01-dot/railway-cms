@@ -85,6 +85,16 @@ interface PlayerBanner {
 }
 
 
+function getClientInstanceId(): string {
+  const KEY = "vcms:instance";
+  let id = localStorage.getItem(KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}
+
 const POSITION_CLASSES: Record<string, string> = {
   "top-left": "top-3 left-3",
   "top-right": "top-3 right-3",
@@ -165,19 +175,17 @@ export default function EmbedPlayerPage() {
   const [isAdminPreview, setIsAdminPreview] = useState(false);
   const [securityReady, setSecurityReady] = useState(false);
 
-  // Violation counter — loaded from localStorage so it persists across refreshes
-  // Disabled only for admin preview or before security settings are loaded.
-  // suspiciousDetectionEnabled controls server-side rate-limiting, NOT client-side
-  // violation events (DevTools, right-click, focus mode, etc.).
   const { reportViolation, isBlocked, remainingMs, toast: violationToast } =
     useSecurityViolations(videoId, effectiveSecurity, {
       disabled: isAdminPreview || !securityReady,
+      sessionKey: sessionCode || undefined,
     });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [tickerOffset, setTickerOffset] = useState(0);
   const [playbackDenied, setPlaybackDenied] = useState(false);
   const [denialSignal, setDenialSignal] = useState<string>("");
   const [retryKey, setRetryKey] = useState(0);
+  const lastPausedAtRef = useRef<number>(0);
 
   // Session limit state — when userId concurrent limit is reached
   const [sessionLimitInfo, setSessionLimitInfo] = useState<{ activeSessions: any[] } | null>(null);
@@ -262,9 +270,10 @@ export default function EmbedPlayerPage() {
           const lmsToken = receivedLmsTokenRef.current;
           if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
 
+          const instanceId = getClientInstanceId();
           const mintRes = await fetch(`/api/player/${publicId}/mint`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "x-client-instance": instanceId },
             credentials: "include",
             body: JSON.stringify(mintBody),
           });
@@ -699,8 +708,39 @@ export default function EmbedPlayerPage() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
+    const onPlay = async () => {
+      setPlaying(true);
+      const pausedAt = lastPausedAtRef.current;
+      if (pausedAt > 0 && Date.now() - pausedAt > 90_000) {
+        const currentSid = streamSidRef.current;
+        if (currentSid && publicId) {
+          const savedTime = video.currentTime;
+          try {
+            const rotRes = await fetch(`/api/player/${publicId}/rotate-session`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sid: currentSid }),
+            });
+            if (rotRes.ok) {
+              const rotData = await rotRes.json();
+              if (rotData.manifestUrl && rotData.sessionId) {
+                streamSidRef.current = rotData.sessionId;
+                const hls = hlsRef.current;
+                if (hls) {
+                  hls.loadSource(rotData.manifestUrl);
+                  hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                    video.currentTime = savedTime;
+                    video.play().catch(() => {});
+                  });
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+      lastPausedAtRef.current = 0;
+    };
+    const onPause = () => { setPlaying(false); lastPausedAtRef.current = Date.now(); };
     const onEnded = () => setPlaying(false);
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime);
@@ -875,14 +915,31 @@ export default function EmbedPlayerPage() {
   }
 
   if (status === "error" && errorMsg === "SESSION_LIMIT") {
-    const endOtherAndContinue = async () => {
-      if (!activeTokenRef.current) return;
-      const resp = await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
+    const revokeViaLaunchToken = async (): Promise<boolean> => {
+      const lmsToken = receivedLmsTokenRef.current;
+      if (!lmsToken) return false;
+      const resp = await fetch(`/api/player/${publicId}/revoke-sessions-by-launch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentToken: activeTokenRef.current }),
+        body: JSON.stringify({ lmsLaunchToken: lmsToken }),
       });
-      if (resp.ok) {
+      return resp.ok;
+    };
+
+    const endOtherAndContinue = async () => {
+      let revoked = false;
+      if (activeTokenRef.current) {
+        const resp = await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ currentToken: activeTokenRef.current }),
+        });
+        revoked = resp.ok;
+      }
+      if (!revoked) {
+        revoked = await revokeViaLaunchToken();
+      }
+      if (revoked) {
         setSessionLimitInfo(null);
         setErrorMsg("");
         setStatus("loading");
@@ -895,18 +952,17 @@ export default function EmbedPlayerPage() {
       const lmsToken = receivedLmsTokenRef.current;
       if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
 
+      const instanceId = getClientInstanceId();
       const mintRes = await fetch(`/api/player/${publicId}/mint`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-client-instance": instanceId },
         credentials: "include",
         body: JSON.stringify(mintBody),
       });
       if (mintRes.status === 429) {
         const d = await mintRes.json().catch(() => ({}));
         if (d.code === "SESSION_LIMIT") {
-          if (activeTokenRef.current) {
-            await endOtherAndContinue();
-          }
+          await endOtherAndContinue();
         }
         return;
       }
