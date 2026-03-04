@@ -152,6 +152,7 @@ export default function EmbedPlayerPage() {
   const apiDurationRef = useRef(0);
   const denialSignalRef = useRef("");
   const lastPausedAtRef = useRef<number>(-1);
+  const isRotatingRef = useRef(false);
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
 
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
@@ -411,7 +412,8 @@ export default function EmbedPlayerPage() {
           hls.on(Hls.Events.MANIFEST_PARSED, (_, hlsData) => {
             setQualities(hlsData.levels.map((l, i) => ({ height: l.height, index: i })));
             setStatus("ready");
-            if (playerSettings.autoplayAllowed) video.play().catch(() => {});
+            // Suppress autoplay during rotation — the rotation handler restores position and plays
+            if (playerSettings.autoplayAllowed && !isRotatingRef.current) video.play().catch(() => {});
           });
           hls.on(Hls.Events.LEVEL_LOADED, (_, d) => {
             const total = d.details?.totalduration;
@@ -421,11 +423,16 @@ export default function EmbedPlayerPage() {
             const code = (d as any).response?.code;
             const responseText = (d as any).response?.text || "";
 
-            // Non-fatal network errors: try startLoad() to resume stalled downloads
+            // Non-fatal network errors: try startLoad() to resume stalled downloads.
+            // Suppress during rotation — old cancelled requests produce noise here and
+            // calling startLoad() while the new source is loading would cancel it.
             if (!d.fatal) {
-              if (d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+              if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !isRotatingRef.current) hls.startLoad();
               return;
             }
+
+            // Any fatal error resets the rotation guard so recovery can proceed
+            isRotatingRef.current = false;
 
             // Fatal 403/401 — security denial or token expiry
             if (code === 403 || code === 401) {
@@ -453,8 +460,10 @@ export default function EmbedPlayerPage() {
                     const rd = await r.json();
                     if (rd.token) activeTokenRef.current = rd.token;
                     if (rd.manifestUrl) {
+                      isRotatingRef.current = true;
                       hls.loadSource(rd.manifestUrl);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                        isRotatingRef.current = false;
                         if (videoRef.current) {
                           videoRef.current.currentTime = savedTime;
                           videoRef.current.play().catch(() => {});
@@ -569,8 +578,10 @@ export default function EmbedPlayerPage() {
           const v = videoRef.current;
           const savedTime = v ? v.currentTime : 0;
           const wasPaused = v ? v.paused : true;
+          isRotatingRef.current = true;
           hls.loadSource(data.manifestUrl);
           hls.once(Hls.Events.MANIFEST_PARSED, () => {
+            isRotatingRef.current = false;
             if (v) {
               v.currentTime = savedTime;
               if (!wasPaused) v.play().catch(() => {});
@@ -795,8 +806,10 @@ export default function EmbedPlayerPage() {
                 streamSidRef.current = data.sessionId;
                 const hls = hlsRef.current;
                 if (hls) {
+                  isRotatingRef.current = true;
                   hls.loadSource(data.manifestUrl);
                   hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                    isRotatingRef.current = false;
                     v.currentTime = savedTime;
                     v.play().catch(() => {});
                   });
