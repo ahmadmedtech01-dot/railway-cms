@@ -322,9 +322,16 @@ export default function EmbedPlayerPage() {
           if (manifestRes.status === 503) { setStatus("unavailable"); return; }
           if (manifestRes.status === 403) { setStatus("unavailable"); setErrorMsg(data.message || "Access denied"); return; }
           if (manifestRes.status === 401 && token) {
-            // URL-based admin preview token has expired — give the admin a way to refresh
+            let isAdminPreviewToken = false;
+            try {
+              const parts = token.split(".");
+              if (parts.length === 3) {
+                const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+                isAdminPreviewToken = payload?.adminPreview === true;
+              }
+            } catch {}
             setStatus("error");
-            setErrorMsg("PREVIEW_TOKEN_EXPIRED");
+            setErrorMsg(isAdminPreviewToken ? "PREVIEW_TOKEN_EXPIRED" : "SHARE_TOKEN_EXPIRED");
             return;
           }
           if (manifestRes.status === 409 && data.code === "HLS_NOT_AVAILABLE") {
@@ -540,17 +547,17 @@ export default function EmbedPlayerPage() {
     return () => { if (pingIntervalRef.current) clearInterval(pingIntervalRef.current); };
   }, [sessionCode, secondsWatched, publicId]);
 
-  // Progress reporting for sliding window — every 15 seconds
+  // Progress reporting for sliding window — every 10 seconds
   useEffect(() => {
-    const sid = streamSidRef.current;
-    if (!sid || !publicId) return;
+    if (!streamSidRef.current || !publicId) return;
     progressIntervalRef.current = setInterval(() => {
       const v = videoRef.current;
-      if (!v || v.paused) return;
+      const currentSid = streamSidRef.current;
+      if (!v || v.paused || !currentSid) return;
       fetch(`/api/stream/${publicId}/progress`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sid, currentTime: v.currentTime }),
+        body: JSON.stringify({ sid: currentSid, currentTime: v.currentTime }),
       }).catch(() => {});
     }, 10000);
     return () => { if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); };
@@ -579,6 +586,7 @@ export default function EmbedPlayerPage() {
           const savedTime = v ? v.currentTime : 0;
           const wasPaused = v ? v.paused : true;
           isRotatingRef.current = true;
+          hls.startPosition = savedTime;
           hls.loadSource(data.manifestUrl);
           hls.once(Hls.Events.MANIFEST_PARSED, () => {
             isRotatingRef.current = false;
@@ -1005,6 +1013,20 @@ export default function EmbedPlayerPage() {
           </div>
           <p className="text-xs opacity-40 pt-1">
             Ending other sessions will immediately stop playback on those devices.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error" && errorMsg === "SHARE_TOKEN_EXPIRED") {
+    return (
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        <div className="text-center space-y-4 max-w-sm px-6">
+          <div className="text-5xl select-none">🔗</div>
+          <p className="text-lg font-semibold">Access Link Expired</p>
+          <p className="text-sm opacity-60">
+            This share link is no longer valid. Please contact the person who shared this video to get a new link.
           </p>
         </div>
       </div>
