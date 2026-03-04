@@ -141,6 +141,23 @@ export const storage = {
     return all.filter(t => !t.revoked && (!t.expiresAt || t.expiresAt > now));
   },
 
+  async revokeUserTokensByInstId(videoId: string, userId: string, instId: string): Promise<number> {
+    const tokens = await this.getActiveUserTokens(videoId, userId);
+    const toRevoke = tokens.filter(t => (t as any).label?.includes(`:inst:${instId}`));
+    for (const t of toRevoke) {
+      await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
+    }
+    return toRevoke.length;
+  },
+
+  async revokeAllUserTokens(videoId: string, userId: string): Promise<number> {
+    const tokens = await this.getActiveUserTokens(videoId, userId);
+    for (const t of tokens) {
+      await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
+    }
+    return tokens.length;
+  },
+
   async revokeUserTokensExcept(videoId: string, userId: string, exceptTokenValue: string): Promise<void> {
     const tokens = await this.getActiveUserTokens(videoId, userId);
     for (const t of tokens) {

@@ -60,10 +60,17 @@ Required payload fields: `userId`, `publicId`, `exp`, `nonce`, `aud`, `origin`
 - `aud` must equal `"video-cms"`
 - `origin` must match one of `ALLOWED_LMS_ORIGINS`
 - `exp` must be in the future AND within 5 minutes (short-lived)
-- `nonce` replay protection: stored for 5 minutes, rejected if reused
+- Nonce replay check removed — on iframe refresh the LMS reuses the same token. Replay protection is provided by `exp` (5-min short-lived window) + client instance ID scoped auto-revocation in the mint endpoint.
 - HMAC-SHA256 signature verified with `LMS_HMAC_SECRET`
 - LMS launch token format: `base64url(JSON{userId,publicId,exp,nonce}).hmac_hex`
 - Requires `LMS_HMAC_SECRET` env var for LMS launch token verification
+
+### Client Instance ID (LMS Refresh Resilience)
+- `getClientInstanceId()` in embed-player.tsx generates a stable random ID per browser, stored in `localStorage` under key `vcms:client-instance`.
+- Sent as `x-client-instance` header on every `/mint` request.
+- Stored in token label as `auto:userId:source:inst:<id>`.
+- On mint: server auto-revokes all active tokens with the same `inst:` label for that user+video before the concurrent session check. This means iframe refresh silently replaces its own token without triggering SESSION_LIMIT.
+- `POST /api/player/:publicId/revoke-sessions-by-launch`: Revokes ALL active tokens for userId derived from the verified launch token. Used by "End Other Session" button when no prior token exists.
 
 ### Video Security Pipeline (Non-DRM, 3-Layer Protection)
 Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
@@ -79,7 +86,7 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 
 **Layer 3 — Sliding Window Playlist**: Variant playlists return only the next 6 segments (not the entire video). The playlist is served as a live-like HLS stream (no `#EXT-X-ENDLIST` until the final window). hls.js reloads it periodically and only sees segments in the current window. Progress tracked via `POST /api/stream/:publicId/progress` (every 10s) and via segment access (auto-advances window when segments are fetched).
 
-**Session Binding**: Each session stores: sessionId, userAgent hash, deviceHash, boundIp, createdAt, expiresAt (10 min max). All /hls, /seg, /key requests validate token + session validity + UA match + device hash.
+**Session Binding**: Each session stores: sessionId, userAgent hash, deviceHash, boundIp, createdAt, expiresAt (20 min max). All /hls, /seg, /key requests validate token + session validity + UA match + device hash. TOKEN_TTL is 900s (15 min) for all resource types (manifest, playlist, segment, key).
 
 **Abuse Detection** (server/video-session.ts): Controlled by `suspiciousDetectionEnabled` (per-video or global). When OFF, all abuse scoring, segment window enforcement, session revocation, and denial overlays are completely bypassed. When ON:
 - Rate limit: >10 requests/second (burst 15) → +3/+5 score

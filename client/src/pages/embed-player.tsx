@@ -111,6 +111,20 @@ function formatTime(s: number): string {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
+function getClientInstanceId(): string {
+  const KEY = "vcms:client-instance";
+  try {
+    let id = localStorage.getItem(KEY);
+    if (!id) {
+      id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return "fallback";
+  }
+}
+
 export default function EmbedPlayerPage() {
   const { publicId } = useParams<{ publicId: string }>();
   const search = useSearch();
@@ -137,6 +151,7 @@ export default function EmbedPlayerPage() {
   const streamSidRef = useRef("");
   const apiDurationRef = useRef(0);
   const denialSignalRef = useRef("");
+  const lastPausedAtRef = useRef<number>(-1);
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
 
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
@@ -172,6 +187,7 @@ export default function EmbedPlayerPage() {
   const { reportViolation, isBlocked, remainingMs, toast: violationToast } =
     useSecurityViolations(videoId, effectiveSecurity, {
       disabled: isAdminPreview || !securityReady,
+      sessionKey: sessionCode || undefined,
     });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [tickerOffset, setTickerOffset] = useState(0);
@@ -264,7 +280,7 @@ export default function EmbedPlayerPage() {
 
           const mintRes = await fetch(`/api/player/${publicId}/mint`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "x-client-instance": getClientInstanceId() },
             credentials: "include",
             body: JSON.stringify(mintBody),
           });
@@ -699,9 +715,9 @@ export default function EmbedPlayerPage() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
-    const onEnded = () => setPlaying(false);
+    const onPlay = () => { setPlaying(true); lastPausedAtRef.current = -1; };
+    const onPause = () => { setPlaying(false); lastPausedAtRef.current = Date.now(); };
+    const onEnded = () => { setPlaying(false); lastPausedAtRef.current = -1; };
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime);
       if (!video.paused) setSecondsWatched(s => s + 0.25);
@@ -755,6 +771,44 @@ export default function EmbedPlayerPage() {
       return;
     }
     if (v.paused) {
+      // If paused for more than 90 seconds, proactively rotate the HLS session
+      // to get fresh signed URLs before resuming — prevents black-screen on long pauses.
+      const pausedMs = lastPausedAtRef.current > 0 ? Date.now() - lastPausedAtRef.current : 0;
+      if (pausedMs > 90_000) {
+        const currentSid = streamSidRef.current;
+        if (currentSid && publicId) {
+          const savedTime = v.currentTime;
+          fetch(`/api/player/${publicId}/rotate-session`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sid: currentSid }),
+          })
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+              if (data?.manifestUrl && data?.sessionId) {
+                streamSidRef.current = data.sessionId;
+                const hls = hlsRef.current;
+                if (hls) {
+                  hls.loadSource(data.manifestUrl);
+                  hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                    v.currentTime = savedTime;
+                    v.play().catch(() => {});
+                  });
+                } else {
+                  v.play().catch(() => {});
+                }
+              } else {
+                v.play().catch(() => {});
+              }
+              lastPausedAtRef.current = -1;
+            })
+            .catch(() => {
+              v.play().catch(() => {});
+              lastPausedAtRef.current = -1;
+            });
+          return;
+        }
+      }
       v.play().catch(() => {});
       setPlaying(true);
     } else {
@@ -875,41 +929,34 @@ export default function EmbedPlayerPage() {
   }
 
   if (status === "error" && errorMsg === "SESSION_LIMIT") {
-    const endOtherAndContinue = async () => {
-      if (!activeTokenRef.current) return;
-      const resp = await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentToken: activeTokenRef.current }),
-      });
-      if (resp.ok) {
-        setSessionLimitInfo(null);
-        setErrorMsg("");
-        setStatus("loading");
-        setRetryKey(k => k + 1);
-      }
-    };
-
     const mintAndContinue = async () => {
-      const mintBody: Record<string, string> = {};
       const lmsToken = receivedLmsTokenRef.current;
+      const mintBody: Record<string, string> = {};
       if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
+
+      // Proactively revoke competing sessions before re-minting.
+      // Use revoke-other-sessions if we have our own token, otherwise
+      // use revoke-sessions-by-launch (LMS context with no prior token).
+      if (activeTokenRef.current) {
+        await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ currentToken: activeTokenRef.current }),
+        }).catch(() => {});
+      } else if (lmsToken) {
+        await fetch(`/api/player/${publicId}/revoke-sessions-by-launch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lmsLaunchToken: lmsToken }),
+        }).catch(() => {});
+      }
 
       const mintRes = await fetch(`/api/player/${publicId}/mint`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-client-instance": getClientInstanceId() },
         credentials: "include",
         body: JSON.stringify(mintBody),
       });
-      if (mintRes.status === 429) {
-        const d = await mintRes.json().catch(() => ({}));
-        if (d.code === "SESSION_LIMIT") {
-          if (activeTokenRef.current) {
-            await endOtherAndContinue();
-          }
-        }
-        return;
-      }
       if (mintRes.ok) {
         const d = await mintRes.json();
         activeTokenRef.current = d.token;

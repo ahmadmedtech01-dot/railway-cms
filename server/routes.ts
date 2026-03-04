@@ -432,8 +432,9 @@ function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: 
     const nowSec = Date.now() / 1000;
     if (nowSec > payload.exp) return null;
     if (payload.exp - nowSec > 300) return null; // must expire within 5 minutes
-    if (lmsNonceCache.has(payload.nonce)) return null; // nonce already used
-    lmsNonceCache.set(payload.nonce, Date.now() + 5 * 60 * 1000); // mark nonce used for 5 min
+    // Nonce check intentionally removed: on LMS iframe refresh the same launch token
+    // is reused. Replay protection is provided by exp (short-lived) + x-client-instance
+    // scoped session auto-revocation in the mint endpoint.
     return payload;
   } catch {
     return null;
@@ -2054,6 +2055,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ttlMs = (secSettings?.tokenTtl || 3600) * 1000;
       const concurrentLimit = secSettings?.concurrentLimit ?? 1;
 
+      // Client instance ID — stable per browser/tab, sent via x-client-instance header.
+      // Allows refresh to silently replace its own token instead of triggering session limit.
+      const clientInstanceId = (req.headers["x-client-instance"] as string || "").slice(0, 64).trim() || null;
+
+      // Auto-revoke any existing active tokens from the same client instance (refresh case).
+      // This prevents a page refresh from counting as a new concurrent session.
+      if (clientInstanceId) {
+        const revoked = await storage.revokeUserTokensByInstId(video.id, userId, clientInstanceId);
+        if (revoked > 0) {
+          log(`INST_REFRESH_REVOKE: userId=${userId} videoId=${video.id} instId=${clientInstanceId} revokedCount=${revoked}`);
+        }
+      }
+
       // Concurrent session check: scoped per user PER VIDEO
       const activeTokens = await storage.getActiveUserTokens(video.id, userId);
       if (activeTokens.length >= concurrentLimit) {
@@ -2067,10 +2081,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const expiresAt = new Date(Date.now() + ttlMs);
       const tokenValue = generateToken({ videoId: video.id, publicId: video.publicId, userId }, Math.floor(ttlMs / 1000));
+      const tokenLabel = clientInstanceId
+        ? `auto:${userId}:${identitySource}:inst:${clientInstanceId}`
+        : `auto:${userId}:${identitySource}`;
       const dbToken = await storage.createEmbedToken({
         videoId: video.id,
         token: tokenValue,
-        label: `auto:${userId}:${identitySource}`,
+        label: tokenLabel,
         allowedDomain: null,
         expiresAt,
         revoked: false,
@@ -2216,6 +2233,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(500).json({ message: e.message });
     }
   });
+
+  // ── Revoke All Sessions by LMS Launch Token ──────────────────────────────
+  // Used when the "End Other Session & Continue Here" button fires from a pure-LMS
+  // context where the player has no existing token to identify itself.
+  // userId is derived from the verified launch token — never trusted from the body.
+  app.post("/api/player/:publicId/revoke-sessions-by-launch", async (req: any, res: any) => {
+    try {
+      const { lmsLaunchToken } = req.body;
+      if (!lmsLaunchToken) return res.status(400).json({ message: "lmsLaunchToken required" });
+
+      if (!process.env.LMS_HMAC_SECRET) {
+        return res.status(500).json({ message: "LMS integration not configured" });
+      }
+
+      const launch = verifyLmsLaunchToken(lmsLaunchToken);
+      if (!launch) {
+        return res.status(403).json({ code: "INVALID_LAUNCH_TOKEN", message: "Invalid or expired launch token" });
+      }
+
+      const video = await storage.getVideoByPublicId(req.params.publicId);
+      if (!video) return res.status(404).json({ message: "Video not found" });
+      if (launch.publicId !== video.publicId) {
+        return res.status(403).json({ code: "INVALID_LAUNCH_TOKEN", message: "Launch token does not match this video" });
+      }
+
+      const revokedCount = await storage.revokeAllUserTokens(video.id, launch.userId);
+      log(`LMS_ALL_SESSIONS_REVOKED: userId=${launch.userId} videoId=${video.id} revokedCount=${revokedCount}`);
+      res.json({ ok: true, revokedCount });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
 
   app.get("/key/:publicId", async (req: any, res: any) => {
     const { sid, st, exp, dh } = req.query as Record<string, string>;

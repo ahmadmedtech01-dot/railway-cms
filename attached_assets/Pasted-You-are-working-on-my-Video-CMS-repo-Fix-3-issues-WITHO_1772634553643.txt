@@ -1,0 +1,25 @@
+You are working on my Video CMS repo.
+
+Fix 3 issues WITHOUT changing existing UX/UI design (only bug fixes):
+
+ISSUE 1 (LMS session limit + mint 403 + button not working):
+- In server/routes.ts verifyLmsLaunchToken currently blocks nonce reuse. This causes /api/player/:publicId/mint to return 403 on refresh if LMS sends same token. Make LMS integration resilient:
+  1) Add a stable client instance id header from the embed player: x-client-instance. Implement getClientInstanceId() in client/src/pages/embed-player.tsx using localStorage.
+  2) In /api/player/:publicId/mint read x-client-instance. Store it inside embed token label as ...:inst:<id>.
+  3) Before concurrent session check, automatically revoke any active tokens for same userId+videoId that have the same :inst:<id> label so refresh replaces its own token and does not count as a new device.
+  4) Add a new endpoint POST /api/player/:publicId/revoke-sessions-by-launch which accepts { lmsLaunchToken } and revokes all active tokens for that user+video (userId derived from verified launch token).
+  5) Update the “End Other Session & Continue Here” button in embed-player.tsx: if we are in SESSION_LIMIT state and we do not have activeTokenRef.current, call revoke-sessions-by-launch using the received LMS token, then mint again and continue.
+
+ISSUE 2 (Violation count persists after refresh):
+- client/src/security/useSecurityViolations.ts currently stores violations per videoId in localStorage. Change it to store per playback session using sessionCode.
+- Update hook signature to accept sessionKey/sessionCode and include it in the localStorage key.
+- Update embed player to pass sessionCode so refresh starts from 0.
+
+ISSUE 3 (video turns black after pause 3–4 minutes and never recovers):
+- Increase server/video-session.ts SESSION_MAX_AGE_MS to 20 minutes and TOKEN_TTL (manifest/playlist/segment/key) to 900 seconds.
+- In embed-player.tsx add a pause/resume recovery: track lastPausedAt; on play if paused > 90 seconds, call rotate-session immediately and reload HLS source using returned manifestUrl, preserving currentTime and paused state.
+
+After implementing:
+- Ensure TypeScript compiles.
+- Do not change UI layouts; only logic.
+- Test: LMS iframe refresh should not trigger session limit. Violation count resets on refresh. Pause for 5 minutes then play should recover.
