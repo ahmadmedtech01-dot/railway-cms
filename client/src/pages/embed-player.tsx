@@ -153,6 +153,7 @@ export default function EmbedPlayerPage() {
   const denialSignalRef = useRef("");
   const lastPausedAtRef = useRef<number>(-1);
   const isRotatingRef = useRef(false);
+  const rotationOpIdRef = useRef(0);
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
 
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
@@ -413,6 +414,8 @@ export default function EmbedPlayerPage() {
             levelLoadingRetryDelay: 1500,
             fragLoadingMaxRetry: 4,
             fragLoadingRetryDelay: 1000,
+            keyLoadingMaxRetry: 4,
+            keyLoadingRetryDelay: 1000,
           });
           hlsRef.current = hls;
           hls.loadSource(manifestUrl);
@@ -443,8 +446,7 @@ export default function EmbedPlayerPage() {
               return;
             }
 
-            // Any fatal error resets the rotation guard so recovery can proceed
-            isRotatingRef.current = false;
+            if (isRotatingRef.current) return;
 
             // Fatal 403/401 — security denial or token expiry
             if (code === 403 || code === 401) {
@@ -475,21 +477,27 @@ export default function EmbedPlayerPage() {
                     const rd = await r.json();
                     if (rd.manifestUrl && rd.sessionId) {
                       streamSidRef.current = rd.sessionId;
+                      const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
-                      hls.startPosition = savedTime;
+                      hls.stopLoad();
+                      hls.detachMedia();
                       hls.loadSource(rd.manifestUrl);
+                      const vid = videoRef.current;
+                      if (vid) hls.attachMedia(vid);
                       const safetyTimer = setTimeout(() => {
+                        if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
                           isRotatingRef.current = false;
-                          hls.startLoad();
+                          if (vid) { vid.currentTime = savedTime; vid.play().catch(() => {}); }
                         }
                       }, 15000);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
                         clearTimeout(safetyTimer);
+                        if (opId !== rotationOpIdRef.current) return;
                         isRotatingRef.current = false;
-                        if (videoRef.current) {
-                          videoRef.current.currentTime = savedTime;
-                          videoRef.current.play().catch(() => {});
+                        if (vid) {
+                          vid.currentTime = savedTime;
+                          vid.play().catch(() => {});
                         }
                         fetch(`/api/stream/${publicId}/progress`, {
                           method: "POST",
@@ -514,13 +522,27 @@ export default function EmbedPlayerPage() {
                     const rd = await r.json();
                     if (rd.token) activeTokenRef.current = rd.token;
                     if (rd.manifestUrl) {
+                      const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
+                      hls.stopLoad();
+                      hls.detachMedia();
                       hls.loadSource(rd.manifestUrl);
+                      const vid = videoRef.current;
+                      if (vid) hls.attachMedia(vid);
+                      const refreshSafetyTimer = setTimeout(() => {
+                        if (opId !== rotationOpIdRef.current) return;
+                        if (isRotatingRef.current) {
+                          isRotatingRef.current = false;
+                          if (vid) { vid.currentTime = savedTime; vid.play().catch(() => {}); }
+                        }
+                      }, 15000);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                        clearTimeout(refreshSafetyTimer);
+                        if (opId !== rotationOpIdRef.current) return;
                         isRotatingRef.current = false;
-                        if (videoRef.current) {
-                          videoRef.current.currentTime = savedTime;
-                          videoRef.current.play().catch(() => {});
+                        if (vid) {
+                          vid.currentTime = savedTime;
+                          vid.play().catch(() => {});
                         }
                       });
                     } else {
@@ -634,17 +656,22 @@ export default function EmbedPlayerPage() {
           const v = videoRef.current;
           const savedTime = v ? v.currentTime : 0;
           const wasPaused = v ? v.paused : true;
+          const opId = ++rotationOpIdRef.current;
           isRotatingRef.current = true;
-          hls.startPosition = savedTime;
+          hls.stopLoad();
+          hls.detachMedia();
           hls.loadSource(data.manifestUrl);
+          if (v) hls.attachMedia(v);
           const rotationSafetyTimer = setTimeout(() => {
+            if (opId !== rotationOpIdRef.current) return;
             if (isRotatingRef.current) {
               isRotatingRef.current = false;
-              hls.startLoad();
+              if (v) { v.currentTime = savedTime; if (!wasPaused) v.play().catch(() => {}); }
             }
           }, 15000);
           hls.once(Hls.Events.MANIFEST_PARSED, () => {
             clearTimeout(rotationSafetyTimer);
+            if (opId !== rotationOpIdRef.current) return;
             isRotatingRef.current = false;
             if (v) {
               v.currentTime = savedTime;
@@ -875,17 +902,23 @@ export default function EmbedPlayerPage() {
                 streamSidRef.current = data.sessionId;
                 const hls = hlsRef.current;
                 if (hls) {
+                  const opId = ++rotationOpIdRef.current;
                   isRotatingRef.current = true;
-                  hls.startPosition = savedTime;
+                  hls.stopLoad();
+                  hls.detachMedia();
                   hls.loadSource(data.manifestUrl);
+                  hls.attachMedia(v);
                   const pauseSafetyTimer = setTimeout(() => {
+                    if (opId !== rotationOpIdRef.current) return;
                     if (isRotatingRef.current) {
                       isRotatingRef.current = false;
-                      hls.startLoad();
+                      v.currentTime = savedTime;
+                      v.play().catch(() => {});
                     }
                   }, 15000);
                   hls.once(Hls.Events.MANIFEST_PARSED, () => {
                     clearTimeout(pauseSafetyTimer);
+                    if (opId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
                     v.currentTime = savedTime;
                     v.play().catch(() => {});
