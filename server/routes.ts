@@ -147,10 +147,22 @@ async function deleteStoragePrefix(client: S3Client, bucket: string, prefix: str
       Bucket: bucket, Prefix: prefix, MaxKeys: 1000,
       ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
     }));
-    const keys = (listResp.Contents || []).map(o => ({ Key: o.Key! }));
+    const keys = (listResp.Contents || []).map(o => o.Key!).filter(Boolean);
     if (keys.length > 0) {
-      await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys } }));
-      deleted += keys.length;
+      try {
+        await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys.map(k => ({ Key: k })) } }));
+        deleted += keys.length;
+      } catch (batchErr: any) {
+        log(`[delete] Batch delete failed (${batchErr.message}), falling back to individual deletes`);
+        for (const key of keys) {
+          try {
+            await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+            deleted++;
+          } catch (singleErr: any) {
+            log(`[delete] Failed to delete ${key}: ${singleErr.message}`);
+          }
+        }
+      }
     }
     continuationToken = listResp.IsTruncated ? listResp.NextContinuationToken : undefined;
   } while (continuationToken);
@@ -160,44 +172,74 @@ async function deleteStoragePrefix(client: S3Client, bucket: string, prefix: str
 async function deleteVideoStorage(v: { id: string; hlsS3Prefix?: string | null; rawS3Key?: string | null; storageConnectionId?: string | null; sourceType?: string | null }): Promise<void> {
   const hlsPrefix = v.hlsS3Prefix;
   const connId = v.storageConnectionId;
+  const assetsPrefix = `assets/videos/${v.id}/`;
 
-  // B2 storage
   const conn = connId ? await storage.getStorageConnectionById(connId) : await storage.getActiveStorageConnection();
-  if (conn?.provider === "backblaze_b2" && hlsPrefix) {
-    try {
-      const cfg = conn.config as any;
-      const b2 = makeB2Client(cfg);
-      const deleted = await deleteStoragePrefix(b2, cfg.bucket, hlsPrefix);
-      log(`[delete] B2: removed ${deleted} files from prefix ${hlsPrefix}`);
-      // Also delete raw video if stored
-      if (v.rawS3Key) {
-        await b2.send(new DeleteObjectCommand({ Bucket: cfg.bucket, Key: v.rawS3Key })).catch(() => {});
-        log(`[delete] B2: removed raw file ${v.rawS3Key}`);
+
+  if (conn?.provider === "backblaze_b2") {
+    const cfg = conn.config as any;
+    const b2 = makeB2Client(cfg);
+    const bucket = cfg.bucket;
+
+    if (hlsPrefix) {
+      try {
+        const deleted = await deleteStoragePrefix(b2, bucket, hlsPrefix);
+        log(`[delete] B2: removed ${deleted} HLS files from ${hlsPrefix}`);
+      } catch (err: any) {
+        log(`[delete] B2 HLS cleanup error for ${hlsPrefix}: ${err.message}`);
       }
-    } catch (err: any) {
-      log(`[delete] B2 cleanup error: ${err.message}`);
     }
+
+    if (v.rawS3Key) {
+      try {
+        await b2.send(new DeleteObjectCommand({ Bucket: bucket, Key: v.rawS3Key }));
+        log(`[delete] B2: removed raw file ${v.rawS3Key}`);
+      } catch (err: any) {
+        log(`[delete] B2 raw cleanup error for ${v.rawS3Key}: ${err.message}`);
+      }
+    }
+
+    try {
+      const deleted = await deleteStoragePrefix(b2, bucket, assetsPrefix);
+      if (deleted > 0) log(`[delete] B2: removed ${deleted} asset files from ${assetsPrefix}`);
+    } catch (err: any) {
+      log(`[delete] B2 asset cleanup error for ${assetsPrefix}: ${err.message}`);
+    }
+
     return;
   }
 
-  // Legacy S3 storage
   const s3 = await getS3Client();
   const s3cfg = await getS3Config();
-  if (s3 && s3cfg.bucket && hlsPrefix) {
-    try {
-      const deleted = await deleteStoragePrefix(s3, s3cfg.bucket, hlsPrefix);
-      log(`[delete] S3: removed ${deleted} files from prefix ${hlsPrefix}`);
-      if (v.rawS3Key) {
-        await s3.send(new DeleteObjectCommand({ Bucket: s3cfg.bucket, Key: v.rawS3Key })).catch(() => {});
-        log(`[delete] S3: removed raw file ${v.rawS3Key}`);
+  if (s3 && s3cfg.bucket) {
+    if (hlsPrefix) {
+      try {
+        const deleted = await deleteStoragePrefix(s3, s3cfg.bucket, hlsPrefix);
+        log(`[delete] S3: removed ${deleted} HLS files from ${hlsPrefix}`);
+      } catch (err: any) {
+        log(`[delete] S3 HLS cleanup error for ${hlsPrefix}: ${err.message}`);
       }
-    } catch (err: any) {
-      log(`[delete] S3 cleanup error: ${err.message}`);
     }
+
+    if (v.rawS3Key) {
+      try {
+        await s3.send(new DeleteObjectCommand({ Bucket: s3cfg.bucket, Key: v.rawS3Key }));
+        log(`[delete] S3: removed raw file ${v.rawS3Key}`);
+      } catch (err: any) {
+        log(`[delete] S3 raw cleanup error for ${v.rawS3Key}: ${err.message}`);
+      }
+    }
+
+    try {
+      const deleted = await deleteStoragePrefix(s3, s3cfg.bucket, assetsPrefix);
+      if (deleted > 0) log(`[delete] S3: removed ${deleted} asset files from ${assetsPrefix}`);
+    } catch (err: any) {
+      log(`[delete] S3 asset cleanup error for ${assetsPrefix}: ${err.message}`);
+    }
+
     return;
   }
 
-  // Local HLS directory
   if (hlsPrefix && fs.existsSync(hlsPrefix)) {
     try {
       fs.rmSync(hlsPrefix, { recursive: true, force: true });

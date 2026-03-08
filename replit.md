@@ -108,6 +108,8 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 
 **Manifest Guard**: Direct external m3u8 URLs are blocked with `UNSECURE_MANIFEST_BLOCKED` log. External URLs in playlists are stripped.
 
+**Storage Cleanup on Delete**: When a video is deleted from the CMS, `deleteVideoStorage()` deletes all associated files from B2/S3: HLS segments (under `hlsS3Prefix`), raw upload (`rawS3Key`), and assets like thumbnails (`assets/videos/<videoId>/`). Uses batch `DeleteObjectsCommand` with automatic fallback to individual `DeleteObjectCommand` calls for B2 compatibility. Each cleanup step (HLS, raw, assets) has independent error handling so one failure doesn't block others.
+
 **AES-128 Double Encryption**: Server decrypts segments with master key (fetched from B2, cached), re-encrypts with session-specific ephemeral key/IV. Player never sees master key.
 
 **Client-Side Protection** (useSecurityViolations hook): Violation counter with per-video localStorage persistence, 3s debounce per event type, configurable limit. On limit reached: 10-minute cooldown with countdown overlay. Events: RIGHT_CLICK, FOCUS_LOST, DEVTOOLS_DETECTED, FULLSCREEN_REQUIRED_BREACH, DOWNLOAD_ATTEMPT.
