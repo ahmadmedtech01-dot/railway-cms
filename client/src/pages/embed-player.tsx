@@ -480,10 +480,8 @@ export default function EmbedPlayerPage() {
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
                       hls.stopLoad();
-                      hls.detachMedia();
                       hls.loadSource(rd.manifestUrl);
                       const vid = videoRef.current;
-                      if (vid) hls.attachMedia(vid);
                       const safetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
@@ -525,10 +523,8 @@ export default function EmbedPlayerPage() {
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
                       hls.stopLoad();
-                      hls.detachMedia();
                       hls.loadSource(rd.manifestUrl);
                       const vid = videoRef.current;
-                      if (vid) hls.attachMedia(vid);
                       const refreshSafetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
@@ -659,9 +655,7 @@ export default function EmbedPlayerPage() {
           const opId = ++rotationOpIdRef.current;
           isRotatingRef.current = true;
           hls.stopLoad();
-          hls.detachMedia();
           hls.loadSource(data.manifestUrl);
-          if (v) hls.attachMedia(v);
           const rotationSafetyTimer = setTimeout(() => {
             if (opId !== rotationOpIdRef.current) return;
             if (isRotatingRef.current) {
@@ -905,9 +899,7 @@ export default function EmbedPlayerPage() {
                   const opId = ++rotationOpIdRef.current;
                   isRotatingRef.current = true;
                   hls.stopLoad();
-                  hls.detachMedia();
                   hls.loadSource(data.manifestUrl);
-                  hls.attachMedia(v);
                   const pauseSafetyTimer = setTimeout(() => {
                     if (opId !== rotationOpIdRef.current) return;
                     if (isRotatingRef.current) {
