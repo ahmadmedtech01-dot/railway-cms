@@ -327,7 +327,7 @@ export default function SystemSettingsPage() {
                   } else if (v === "cloudflare_r2") {
                     setConnName("Cloudflare R2 - my-bucket");
                     setConnBucket("my-bucket");
-                    setConnEndpoint("https://<account-id>.r2.cloudflarestorage.com");
+                    setConnEndpoint("");
                   } else {
                     setConnName("AWS S3 - my-bucket");
                     setConnEndpoint("");
