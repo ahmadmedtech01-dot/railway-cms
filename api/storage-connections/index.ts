@@ -29,10 +29,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const message = String(error?.message || error);
     const isValidation = [
       "Request body must be an object",
-      "provider must be backblaze_b2 or aws_s3",
+      "provider must be backblaze_b2, aws_s3, or cloudflare_r2",
       "name is required",
       "bucket is required",
       "endpoint is required for backblaze_b2",
+      "endpoint is required for cloudflare_r2 (or set R2_ENDPOINT env var)",
     ].includes(message);
 
     if (isValidation) {

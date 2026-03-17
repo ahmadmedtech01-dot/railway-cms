@@ -253,7 +253,7 @@ export default function UploadPage() {
                         <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">Active</Badge>
                       )}
                       <span className="text-xs text-muted-foreground capitalize">
-                        ({conn.provider === "backblaze_b2" ? "Backblaze B2" : "Amazon S3"})
+                        ({conn.provider === "backblaze_b2" ? "Backblaze B2" : conn.provider === "cloudflare_r2" ? "Cloudflare R2" : "Amazon S3"})
                       </span>
                     </span>
                   </SelectItem>

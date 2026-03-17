@@ -4,7 +4,7 @@ import { db } from "./_lib/db.js";
 import { getSessionFromRequest } from "./_lib/auth.js";
 import { storageConnections } from "./_lib/schema.js";
 
-type StorageProvider = "backblaze_b2" | "aws_s3";
+type StorageProvider = "backblaze_b2" | "aws_s3" | "cloudflare_r2";
 
 interface StorageConfigInput {
   bucket?: unknown;
@@ -52,8 +52,8 @@ function parseCreatePayload(body: unknown): ParsedCreatePayload {
   }
 
   const providerRaw = asNonEmptyString(body.provider);
-  if (providerRaw !== "backblaze_b2" && providerRaw !== "aws_s3") {
-    throw new Error("provider must be one of: backblaze_b2, aws_s3");
+  if (providerRaw !== "backblaze_b2" && providerRaw !== "aws_s3" && providerRaw !== "cloudflare_r2") {
+    throw new Error("provider must be one of: backblaze_b2, aws_s3, cloudflare_r2");
   }
 
   const name = asNonEmptyString(body.name) || asNonEmptyString(body.connectionName);
@@ -74,6 +74,10 @@ function parseCreatePayload(body: unknown): ParsedCreatePayload {
 
   if (providerRaw === "backblaze_b2" && !endpoint) {
     throw new Error("endpoint is required for backblaze_b2");
+  }
+
+  if (providerRaw === "cloudflare_r2" && !endpoint) {
+    throw new Error("endpoint is required for cloudflare_r2");
   }
 
   return {
@@ -126,10 +130,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const message = typeof error?.message === "string" ? error.message : "Unexpected server error";
     const isValidationError = [
       "Request body must be a JSON object",
-      "provider must be one of: backblaze_b2, aws_s3",
+      "provider must be one of: backblaze_b2, aws_s3, cloudflare_r2",
       "connectionName (or name) is required",
       "bucketName (or config.bucket) is required",
       "endpoint is required for backblaze_b2",
+      "endpoint is required for cloudflare_r2",
     ].includes(message);
 
     if (isValidationError) {

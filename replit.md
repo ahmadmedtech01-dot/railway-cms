@@ -9,7 +9,7 @@ A full-stack secure video content management system for a single admin user.
 - **Frontend**: React + TypeScript + Vite + Tailwind CSS + shadcn/ui + TanStack Query + Wouter
 - **Backend**: Node.js + Express 5 (TypeScript)
 - **Database**: PostgreSQL via Drizzle ORM
-- **Storage**: Backblaze B2 (S3-Compatible, primary) + AWS S3 (legacy) + local fallback — managed via Storage Connections in System Settings
+- **Storage**: Backblaze B2 (S3-Compatible) + Cloudflare R2 (S3-Compatible) + AWS S3 (legacy) + local fallback — managed via Storage Connections in System Settings
 - **Video Processing**: ffmpeg for HLS transcoding (2s segment duration, AES-128 encrypted)
 - **Auth**: Session-based (express-session + connect-pg-simple)
 
@@ -30,7 +30,7 @@ A full-stack secure video content management system for a single admin user.
   - Tokens: create/revoke/delete embed tokens
 - **Embed Manager**: Global view of all tokens across videos
 - **Audit Logs**: Full admin action history
-- **System Settings**: Storage Connections (B2 + S3), Vimeo integration, AWS/S3 legacy config, global kill switch, signing secret, ffmpeg toggle
+- **System Settings**: Storage Connections (B2 + R2 + S3), Vimeo integration, AWS/S3 legacy config, global kill switch, signing secret, ffmpeg toggle
 
 ### Public Pages
 - `/embed/:publicId` — Iframe-only LMS player. Shows "Waiting for LMS authorization..." until a postMessage arrives. Blocked if opened as top-level page.
@@ -175,16 +175,21 @@ Signing secret: `SIGNING_SECRET` env var (REQUIRED in production). No fallbacks 
 - `B2_APPLICATION_KEY` — Backblaze B2 Application Key secret (required for B2 uploads)
 - `B2_S3_ENDPOINT` — B2 S3-compatible endpoint (e.g. `https://s3.ca-east-006.backblazeb2.com`)
 - `B2_BUCKET` — Default B2 bucket name (e.g. `mytestvideo`)
+- `R2_ACCESS_KEY_ID` — Cloudflare R2 API Token Access Key ID (required for R2 uploads)
+- `R2_SECRET_ACCESS_KEY` — Cloudflare R2 API Token Secret Access Key (required for R2 uploads)
+- `R2_ENDPOINT` — R2 S3-compatible endpoint (e.g. `https://<account-id>.r2.cloudflarestorage.com`)
+- `R2_REGION` — R2 region (defaults to `auto`)
 - `LMS_HMAC_SECRET` — HMAC-SHA256 secret for verifying LMS launch tokens (required for external LMS embed flow)
 - `ALLOWED_ORIGINS` — Comma-separated list of allowed CORS origins for production (e.g. `https://yourdomain.com,https://app.yourdomain.com`)
 
 ## Storage Configuration
 
-The system supports two storage backends managed via System Settings → Storage Connections:
+The system supports three storage backends managed via System Settings → Storage Connections:
 
-1. **Backblaze B2 (S3-Compatible)** — Recommended. Requires `B2_KEY_ID` and `B2_APPLICATION_KEY` in Replit Secrets. Non-secret config (endpoint, bucket, prefixes) stored in `storage_connections` table.
-2. **AWS S3** — Legacy. Credentials stored in `system_settings` key-value store.
-3. **Local fallback** — When no cloud storage is configured, files stored on local disk (not persistent between restarts).
+1. **Backblaze B2 (S3-Compatible)** — Requires `B2_KEY_ID` and `B2_APPLICATION_KEY` in Replit Secrets. Non-secret config (endpoint, bucket, prefixes) stored in `storage_connections` table.
+2. **Cloudflare R2 (S3-Compatible)** — Requires `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` in Replit Secrets. Endpoint format: `https://<account-id>.r2.cloudflarestorage.com`. Region defaults to `auto`.
+3. **AWS S3** — Legacy. Credentials stored in `system_settings` key-value store.
+4. **Local fallback** — When no cloud storage is configured, files stored on local disk (not persistent between restarts).
 
 The active connection is selected per connection card in System Settings. New uploads and HLS outputs automatically use the active connection. The manifest endpoint signs URLs using the connection associated with each video.
 

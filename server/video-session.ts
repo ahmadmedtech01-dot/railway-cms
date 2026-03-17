@@ -61,7 +61,7 @@ export interface PlaylistCache {
 export interface VideoSession {
   publicId: string;
   hlsPrefix: string;
-  storageProvider: "backblaze_b2" | "s3" | "local";
+  storageProvider: "backblaze_b2" | "cloudflare_r2" | "s3" | "local";
   storageConfig: any;
   connId: string | null;
   createdAt: number;
@@ -119,7 +119,7 @@ export function computeDeviceHash(ua: string): string {
 export function createSession(
   publicId: string,
   hlsPrefix: string,
-  storageProvider: "backblaze_b2" | "s3" | "local",
+  storageProvider: "backblaze_b2" | "cloudflare_r2" | "s3" | "local",
   storageConfig: any,
   connId: string | null,
   deviceHash?: string,

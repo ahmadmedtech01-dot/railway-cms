@@ -229,7 +229,7 @@ export const videoClientSecurity = pgTable("video_client_security", {
 export const storageConnections = pgTable("storage_connections", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
-  provider: text("provider").notNull(), // 'aws_s3' | 'backblaze_b2'
+  provider: text("provider").notNull(), // 'aws_s3' | 'backblaze_b2' | 'cloudflare_r2'
   config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
   isActive: boolean("is_active").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),

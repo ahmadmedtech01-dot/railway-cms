@@ -18,7 +18,7 @@ const FFPROBE_BIN = process.env.FFPROBE_PATH || ffprobeStatic.path || "ffprobe";
 import os from "os";
 import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } from "./vimeo";
 import crypto from "crypto";
-import { makeB2Client, b2PresignGetObject, b2UploadFile } from "./b2";
+import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import QRCode from "qrcode";
 import { createSession, rotateSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS } from "./video-session";
 import type { PlaylistCache } from "./video-session";
@@ -76,9 +76,8 @@ async function getActiveStorageConn() {
   return storage.getActiveStorageConnection();
 }
 
-// Generate a signed URL for HLS playback — supports B2 and AWS S3
+// Generate a signed URL for HLS playback — supports B2, R2, and AWS S3
 async function generateSignedUrl(key: string, ttlSeconds = 120, connId?: string | null): Promise<string> {
-  // Try active storage connection first
   const conn = connId
     ? await storage.getStorageConnectionById(connId)
     : await storage.getActiveStorageConnection();
@@ -86,11 +85,14 @@ async function generateSignedUrl(key: string, ttlSeconds = 120, connId?: string 
     const cfg = conn.config as any;
     return b2PresignGetObject(cfg.bucket, key, cfg.endpoint, ttlSeconds);
   }
-  // Fall back to legacy AWS S3 settings
+  if (conn?.provider === "cloudflare_r2") {
+    const cfg = conn.config as any;
+    return r2PresignGetObject(cfg.bucket, key, cfg.endpoint, ttlSeconds);
+  }
   return generateSignedS3Url(key, ttlSeconds);
 }
 
-// Upload a local file to active storage (B2 or S3)
+// Upload a local file to active storage (B2, R2, or S3)
 async function uploadToActiveStorage(localPath: string, key: string, contentType: string, conn?: Awaited<ReturnType<typeof storage.getActiveStorageConnection>>): Promise<void> {
   const active = conn ?? await storage.getActiveStorageConnection();
   if (active?.provider === "backblaze_b2") {
@@ -99,7 +101,12 @@ async function uploadToActiveStorage(localPath: string, key: string, contentType
     await b2UploadFile(cfg.bucket, key, data, contentType, cfg.endpoint);
     return;
   }
-  // Fall back to legacy S3
+  if (active?.provider === "cloudflare_r2") {
+    const cfg = active.config as any;
+    const data = fs.readFileSync(localPath);
+    await r2UploadFile(cfg.bucket, key, data, contentType, cfg.endpoint);
+    return;
+  }
   await uploadToS3(localPath, key, contentType);
 }
 
@@ -176,34 +183,36 @@ async function deleteVideoStorage(v: { id: string; hlsS3Prefix?: string | null; 
 
   const conn = connId ? await storage.getStorageConnectionById(connId) : await storage.getActiveStorageConnection();
 
-  if (conn?.provider === "backblaze_b2") {
-    const cfg = conn.config as any;
-    const b2 = makeB2Client(cfg);
+  const isS3Compatible = conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2";
+  if (isS3Compatible) {
+    const cfg = conn!.config as any;
+    const client = conn!.provider === "backblaze_b2" ? makeB2Client(cfg) : makeR2Client(cfg);
+    const providerLabel = conn!.provider === "backblaze_b2" ? "B2" : "R2";
     const bucket = cfg.bucket;
 
     if (hlsPrefix) {
       try {
-        const deleted = await deleteStoragePrefix(b2, bucket, hlsPrefix);
-        log(`[delete] B2: removed ${deleted} HLS files from ${hlsPrefix}`);
+        const deleted = await deleteStoragePrefix(client, bucket, hlsPrefix);
+        log(`[delete] ${providerLabel}: removed ${deleted} HLS files from ${hlsPrefix}`);
       } catch (err: any) {
-        log(`[delete] B2 HLS cleanup error for ${hlsPrefix}: ${err.message}`);
+        log(`[delete] ${providerLabel} HLS cleanup error for ${hlsPrefix}: ${err.message}`);
       }
     }
 
     if (v.rawS3Key) {
       try {
-        await b2.send(new DeleteObjectCommand({ Bucket: bucket, Key: v.rawS3Key }));
-        log(`[delete] B2: removed raw file ${v.rawS3Key}`);
+        await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: v.rawS3Key }));
+        log(`[delete] ${providerLabel}: removed raw file ${v.rawS3Key}`);
       } catch (err: any) {
-        log(`[delete] B2 raw cleanup error for ${v.rawS3Key}: ${err.message}`);
+        log(`[delete] ${providerLabel} raw cleanup error for ${v.rawS3Key}: ${err.message}`);
       }
     }
 
     try {
-      const deleted = await deleteStoragePrefix(b2, bucket, assetsPrefix);
-      if (deleted > 0) log(`[delete] B2: removed ${deleted} asset files from ${assetsPrefix}`);
+      const deleted = await deleteStoragePrefix(client, bucket, assetsPrefix);
+      if (deleted > 0) log(`[delete] ${providerLabel}: removed ${deleted} asset files from ${assetsPrefix}`);
     } catch (err: any) {
-      log(`[delete] B2 asset cleanup error for ${assetsPrefix}: ${err.message}`);
+      log(`[delete] ${providerLabel} asset cleanup error for ${assetsPrefix}: ${err.message}`);
     }
 
     return;
@@ -288,16 +297,19 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
   if (videoId) transcodeProgress.set(videoId, { time: "", speed: "", stage: "uploading" });
   const activeConn = connOverride ?? await storage.getActiveStorageConnection();
 
-  if (activeConn?.provider === "backblaze_b2") {
-    const cfg = activeConn.config as any;
+  const isS3CompatConn = activeConn?.provider === "backblaze_b2" || activeConn?.provider === "cloudflare_r2";
+  if (isS3CompatConn) {
+    const cfg = activeConn!.config as any;
+    const uploadFn = activeConn!.provider === "backblaze_b2" ? b2UploadFile : r2UploadFile;
+    const providerLabel = activeConn!.provider === "backblaze_b2" ? "B2" : "R2";
     const hlsPrefix = `${cfg.hlsPrefix || "hls/"}${videoId}/`;
     const keyBucketPath = `${hlsPrefix}enc.key`;
-    await b2UploadFile(cfg.bucket, keyBucketPath, enc.keyBytes, "application/octet-stream", cfg.endpoint);
-    await uploadHlsDir(hlsOutputDir, hlsPrefix, activeConn);
+    await uploadFn(cfg.bucket, keyBucketPath, enc.keyBytes, "application/octet-stream", cfg.endpoint);
+    await uploadHlsDir(hlsOutputDir, hlsPrefix, activeConn!);
     await storage.updateVideo(videoId, {
       status: "ready",
       hlsS3Prefix: hlsPrefix,
-      storageConnectionId: activeConn.id,
+      storageConnectionId: activeConn!.id,
       encryptionKid: enc.kid,
       encryptionKeyPath: keyBucketPath,
       lastError: null,
@@ -305,7 +317,7 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
     } as any);
     try { fs.rmSync(hlsOutputDir, { recursive: true }); } catch {}
     transcodeProgress.delete(videoId);
-    log(`B2 HLS upload (AES-128 encrypted) complete for video ${videoId}`);
+    log(`${providerLabel} HLS upload (AES-128 encrypted) complete for video ${videoId}`);
     return;
   }
 
@@ -674,9 +686,9 @@ async function getMasterKey(encryptionKeyPath: string, session: any): Promise<Bu
   if (masterKeyCache.has(encryptionKeyPath)) return masterKeyCache.get(encryptionKeyPath)!;
   try {
     const cfg = session.storageConfig;
-    const b2 = makeB2Client({ endpoint: cfg.endpoint });
+    const client = session.storageProvider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
     const { GetObjectCommand } = await import("@aws-sdk/client-s3");
-    const resp = await b2.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: encryptionKeyPath }));
+    const resp = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: encryptionKeyPath }));
     const keyBytes = Buffer.from(await resp.Body!.transformToByteArray());
     masterKeyCache.set(encryptionKeyPath, keyBytes);
     return keyBytes;
@@ -805,17 +817,16 @@ export async function recoverProcessingVideos(): Promise<void> {
       const sourceUrl = video.sourceUrl;
 
       if (rawKey && connId) {
-        log(`[recovery] Re-transcoding video ${video.id} from B2 (${rawKey})`);
-        // Mark immediately so concurrent retranscode requests see it as active
+        log(`[recovery] Re-transcoding video ${video.id} from storage (${rawKey})`);
         transcodeProgress.set(video.id, { time: "", speed: "", stage: "recovering" });
         (async () => {
           try {
             const conn = await storage.getStorageConnectionById(connId);
             if (!conn) throw new Error("Storage connection not found");
             const cfg = conn.config as any;
-            const b2 = makeB2Client({ endpoint: cfg.endpoint });
+            const storageClient = conn.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
             const { GetObjectCommand } = await import("@aws-sdk/client-s3");
-            const resp = await b2.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
+            const resp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
             const tmpPath = path.join(os.tmpdir(), `recover-${video.id}.mp4`);
             const bodyStream = resp.Body as any;
             const ws = fs.createWriteStream(tmpPath);
@@ -1142,7 +1153,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!conn) return res.status(400).json({ message: "No storage connection found" });
 
         const cfg = conn.config as any;
-        const b2 = makeB2Client({ endpoint: cfg.endpoint });
+        const storageClient = conn.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
         const { GetObjectCommand } = await import("@aws-sdk/client-s3");
 
         await storage.updateVideo(video.id, { status: "processing", lastError: null } as any);
@@ -1150,7 +1161,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         (async () => {
           try {
-            const resp = await b2.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
+            const resp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
             const tmpPath = path.join(os.tmpdir(), `retranscode-${video.id}.mp4`);
             const bodyStream = resp.Body as any;
             const ws = fs.createWriteStream(tmpPath);
@@ -1222,7 +1233,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? await storage.getStorageConnectionById(selectedConnId)
         : await storage.getActiveStorageConnection();
 
-      if (conn?.provider === "backblaze_b2") {
+      if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const rawKey = `${cfg.rawPrefix || "raw/"}${video.id}/${file.originalname}`;
         await uploadToActiveStorage(file.path, rawKey, file.mimetype, conn);
@@ -1292,7 +1303,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const uniqueId = nanoid(12);
       const bucketKey = `assets/videos/${video.id}/thumbnail/${uniqueId}${ext}`;
 
-      await b2UploadFile(cfg.bucket, bucketKey, fs.readFileSync(file.path), file.mimetype, cfg.endpoint);
+      const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
+      await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(file.path), file.mimetype, cfg.endpoint);
       try { fs.unlinkSync(file.path); } catch {}
 
       const asset = await storage.createMediaAsset({
@@ -1372,7 +1384,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const uniqueId = nanoid(12);
       const bucketKey = `assets/videos/${id}/${assetType}/${uniqueId}${ext}`;
 
-      await b2UploadFile(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
+      const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
+      await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
 
       const asset = await storage.createMediaAsset({
         type: `player_${assetType}`,
@@ -1442,14 +1455,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
       const conn = await storage.getActiveStorageConnection();
-      if (!conn || conn.provider !== "backblaze_b2") return res.status(400).json({ message: "No active B2 storage connection" });
+      if (!conn || (conn.provider !== "backblaze_b2" && conn.provider !== "cloudflare_r2")) return res.status(400).json({ message: "No active B2/R2 storage connection" });
 
       const cfg = conn.config as any;
       const ext = path.extname(req.file.originalname) || ".png";
       const uniqueId = nanoid(12);
       const bucketKey = `assets/${assetType}s/${uniqueId}${ext}`;
 
-      await b2UploadFile(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
+      const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
+      await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
 
       const asset = await storage.createMediaAsset({
         type: assetType,
@@ -1478,10 +1492,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const conn = asset.storageConnectionId
         ? await storage.getStorageConnectionById(asset.storageConnectionId)
         : await storage.getActiveStorageConnection();
-      if (!conn || conn.provider !== "backblaze_b2") return res.status(500).json({ message: "Storage not available" });
+      if (!conn || (conn.provider !== "backblaze_b2" && conn.provider !== "cloudflare_r2")) return res.status(500).json({ message: "Storage not available" });
 
       const cfg = conn.config as any;
-      const signedUrl = await b2PresignGetObject(cfg.bucket, asset.bucketKey, cfg.endpoint, 60);
+      const presignFn = conn.provider === "backblaze_b2" ? b2PresignGetObject : r2PresignGetObject;
+      const signedUrl = await presignFn(cfg.bucket, asset.bucketKey, cfg.endpoint, 60);
       const fetchRes = await fetch(signedUrl);
       if (!fetchRes.ok) return res.status(404).json({ message: "File not found in storage" });
 
@@ -1689,12 +1704,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const suspiciousEnabled = isAdminPreview ? false : (effectiveClientSec.suspiciousDetectionEnabled !== false);
       const effectiveViolationLimit = effectiveClientSec.violationLimit ?? 3;
 
-      if (conn?.provider === "backblaze_b2") {
+      if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
-        const sid = createSession(video.publicId, hlsPrefix, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit);
+        const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
+        const sid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
-        return res.json({ manifestUrl, sourceType: "b2_proxy", sessionId: sid, videoId: video.id, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
+        return res.json({ manifestUrl, sourceType: `${providerType}_proxy`, sessionId: sid, videoId: video.id, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       const client = await getS3Client();
@@ -1792,6 +1808,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let originUrl: string;
       if (storageProvider === "backblaze_b2") {
         originUrl = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
+      } else if (storageProvider === "cloudflare_r2") {
+        originUrl = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
       } else {
         const client = await getS3Client();
         const s3cfg = await getS3Config();
@@ -1961,6 +1979,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let b2Url: string;
       if (storageProvider === "backblaze_b2") {
         b2Url = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
+      } else if (storageProvider === "cloudflare_r2") {
+        b2Url = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
       } else {
         const client = await getS3Client();
         const s3cfg = await getS3Config();
@@ -2223,9 +2243,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const effectiveViolationLimit2 = effectiveClientSec2.violationLimit ?? 3;
       const ttls = getTokenTTL();
       let manifestUrl: string | null = null;
-      if (conn?.provider === "backblaze_b2") {
+      if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
-        const newSid = createSession(video.publicId, video.hlsS3Prefix!, "backblaze_b2", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2);
+        const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
+        const newSid = createSession(video.publicId, video.hlsS3Prefix!, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest, dh);
       }
 
@@ -2629,7 +2650,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           return res.status(400).json({ ok: false, message: "B2_KEY_ID and B2_APPLICATION_KEY must be set in Replit Secrets" });
         }
 
-        // Upload a small test file
         const testKey = "raw/__healthcheck.txt";
         const client = makeB2Client({ endpoint });
         const { PutObjectCommand, HeadObjectCommand } = await import("@aws-sdk/client-s3");
@@ -2643,7 +2663,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.json({ ok: true, message: "Backblaze B2 connection working — test file written successfully." });
       }
 
-      // AWS S3 test
+      if (conn.provider === "cloudflare_r2") {
+        const cfg = conn.config as any;
+        const endpoint = cfg.endpoint || process.env.R2_ENDPOINT || "";
+        const bucket = cfg.bucket || "";
+        if (!endpoint) return res.status(400).json({ ok: false, message: "R2 endpoint not configured in connection" });
+        if (!bucket) return res.status(400).json({ ok: false, message: "R2 bucket not configured in connection" });
+        if (!process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
+          return res.status(400).json({ ok: false, message: "R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY must be set in Replit Secrets" });
+        }
+
+        const testKey = "raw/__healthcheck.txt";
+        const r2Client = makeR2Client({ endpoint });
+        const { PutObjectCommand, HeadObjectCommand } = await import("@aws-sdk/client-s3");
+        await r2Client.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: testKey,
+          Body: Buffer.from("ok"),
+          ContentType: "text/plain",
+        }));
+        await r2Client.send(new HeadObjectCommand({ Bucket: bucket, Key: testKey }));
+        return res.json({ ok: true, message: "Cloudflare R2 connection working — test file written successfully." });
+      }
+
       const client = await getS3Client();
       const cfg = await getS3Config();
       if (!client || !cfg.bucket) return res.status(400).json({ ok: false, message: "AWS S3 credentials not configured in System Settings" });
@@ -2757,9 +2799,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         results["transcode_check"] = { status: "FAIL", detail: "No storage connection found" };
       } else {
         const cfg = conn.config as any;
-        const b2 = makeB2Client({ endpoint: cfg.endpoint });
+        const storageClient = conn.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
         const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
-        const listResp = await b2.send(new ListObjectsV2Command({ Bucket: cfg.bucket, Prefix: hlsPrefix, MaxKeys: 100 }));
+        const listResp = await storageClient.send(new ListObjectsV2Command({ Bucket: cfg.bucket, Prefix: hlsPrefix, MaxKeys: 100 }));
         const keys = (listResp.Contents || []).map((o: any) => o.Key || "");
         const hasMaster = keys.some((k: string) => k.endsWith("master.m3u8"));
         const hasVariant = keys.some((k: string) => /index\.m3u8$/.test(k));
@@ -2886,16 +2928,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const conn = connId
         ? await storage.getStorageConnectionById(connId)
         : await storage.getActiveStorageConnection();
-      if (!conn || conn.provider !== "backblaze_b2") {
-        return res.status(400).json({ message: "Only Backblaze B2 storage supported for this test" });
+      if (!conn || (conn.provider !== "backblaze_b2" && conn.provider !== "cloudflare_r2")) {
+        return res.status(400).json({ message: "Only Backblaze B2 or Cloudflare R2 storage supported for this test" });
       }
       const cfg = conn.config as any;
 
-      // Find the segment in storage — search variant prefixes (360p, 720p, 1080p)
       const hlsPrefix = video.hlsS3Prefix || `videos/${video.id}/hls/`;
       const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
-      const b2 = makeB2Client({ endpoint: cfg.endpoint });
-      const listResp = await b2.send(new ListObjectsV2Command({ Bucket: cfg.bucket, Prefix: hlsPrefix, MaxKeys: 500 }));
+      const storageClient = conn.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
+      const listResp = await storageClient.send(new ListObjectsV2Command({ Bucket: cfg.bucket, Prefix: hlsPrefix, MaxKeys: 500 }));
       const allKeys: string[] = (listResp.Contents || []).map((o: any) => o.Key || "");
 
       // Find segment key in B2 (match by filename)
@@ -2909,7 +2950,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let originalIV: Buffer | null = null;
       if (variantM3u8Key) {
         const { GetObjectCommand: GOC } = await import("@aws-sdk/client-s3");
-        const playlistResp = await b2.send(new GOC({ Bucket: cfg.bucket, Key: variantM3u8Key }));
+        const playlistResp = await storageClient.send(new GOC({ Bucket: cfg.bucket, Key: variantM3u8Key }));
         const playlistText = await (playlistResp.Body as any).transformToString();
         const parsed = parsePlaylist(playlistText);
         const segFile = segment.split("/").pop()!;
@@ -2917,9 +2958,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (segEntry?.keyTag) originalIV = extractIVFromKeyTag(segEntry.keyTag);
       }
 
-      // Fetch raw segment bytes from B2
       const { GetObjectCommand } = await import("@aws-sdk/client-s3");
-      const segResp = await b2.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: segKey }));
+      const segResp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: segKey }));
       const rawBytes = Buffer.from(await (segResp.Body as any).transformToByteArray());
       const rawSha256 = crypto.createHash("sha256").update(rawBytes).digest("hex");
 
@@ -2928,7 +2968,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const encKeyPath = video.encryptionKeyPath;
       if (encKeyPath) {
         try {
-          const keyResp = await b2.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: encKeyPath }));
+          const keyResp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: encKeyPath }));
           masterKey = Buffer.from(await (keyResp.Body as any).transformToByteArray());
         } catch (e: any) {
           return res.json({

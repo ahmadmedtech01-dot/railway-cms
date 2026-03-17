@@ -1,0 +1,213 @@
+Analyze my existing Video CMS codebase carefully and implement a new storage provider in the Storage Connections system:
+
+NEW PROVIDER TO ADD
+- Provider key: cloudflare_r2
+- Provider label in UI: Cloudflare R2 (S3 Compatible)
+
+MY R2 DETAILS
+- Bucket name: syan-video-storage
+- S3 endpoint: https://e85e4b54f24a7b76dddcc285693f42ac.r2.cloudflarestorage.com
+- Account ID: e85e4b54f24a7b76dddcc285693f42ac
+- Region: auto
+- Default raw prefix: raw/
+- Default HLS prefix: hls/
+
+IMPORTANT RULES
+- Do not break existing Backblaze B2 support
+- Do not break existing AWS S3 support
+- Do not change unrelated UI or backend logic
+- Keep the current Storage Connections UX and architecture
+- Secrets must NEVER be stored in database
+- Secrets must NEVER be shown in UI
+- Secrets must ONLY come from server environment variables
+- Use minimal safe changes and production-safe implementation
+- Follow the existing code style and patterns already used in this repo
+
+SERVER ENV VARIABLES TO USE
+- R2_ACCESS_KEY_ID
+- R2_SECRET_ACCESS_KEY
+- R2_ENDPOINT
+- R2_REGION
+
+EXPECTED ENV VALUES
+- R2_ENDPOINT=https://e85e4b54f24a7b76dddcc285693f42ac.r2.cloudflarestorage.com
+- R2_REGION=auto
+
+IMPLEMENTATION SCOPE
+
+1. STORAGE CONNECTIONS UI
+Update the Storage Connections form and provider dropdown to support a new option:
+- Cloudflare R2 (S3 Compatible)
+
+When this provider is selected:
+- Auto-fill S3 Endpoint with:
+  https://e85e4b54f24a7b76dddcc285693f42ac.r2.cloudflarestorage.com
+- Auto-fill Raw Prefix with:
+  raw/
+- Auto-fill HLS Prefix with:
+  hls/
+- Keep Bucket Name editable
+- Show helper text:
+  "Credentials are stored in server environment variables and are never shown in the UI."
+
+Keep the existing Add / Test / Delete / Activate flow exactly as it is.
+
+2. DATA MODEL / VALIDATION
+Wherever provider values are validated, enum’d, typed, or parsed, add support for:
+- cloudflare_r2
+
+Examples of places to inspect:
+- schema
+- zod validation
+- route validation
+- TypeScript types
+- frontend provider dropdown config
+- storage adapter/provider switch logic
+
+Suggested display mapping:
+- cloudflare_r2 => Cloudflare R2 (S3 Compatible)
+
+3. BACKEND STORAGE ADAPTER / FACTORY
+Update the server storage abstraction so Cloudflare R2 works as an S3-compatible provider.
+
+Requirements:
+- Treat R2 as S3-compatible via AWS SDK S3 client
+- Add a provider case for cloudflare_r2
+- Build the S3 client using:
+  - endpoint = saved connection endpoint, or process.env.R2_ENDPOINT fallback
+  - region = process.env.R2_REGION || "auto"
+  - credentials from env only:
+    - process.env.R2_ACCESS_KEY_ID
+    - process.env.R2_SECRET_ACCESS_KEY
+- Do not hardcode any secrets
+- Do not log credentials
+- Do not store credentials in DB
+
+Compatibility required for:
+- upload object
+- read object
+- head object
+- list objects
+- delete object if app already supports it
+- future presigned URL compatibility
+
+If the AWS SDK rejects region=auto in any place, use a safe fallback only where needed, but preserve R2 compatibility.
+
+4. CONNECTION TESTING
+Update the storage connection test endpoint so Cloudflare R2 can be tested from the UI.
+
+Test flow for cloudflare_r2 should:
+- validate required env vars exist
+- validate bucket name exists
+- validate endpoint exists
+- attempt a safe lightweight bucket call such as:
+  - HeadBucket
+  OR
+  - ListObjectsV2 with MaxKeys: 1
+
+Return clean JSON success/failure with useful message.
+
+Missing env error should be explicit, like:
+- "R2_ACCESS_KEY_ID or R2_SECRET_ACCESS_KEY is missing from server environment"
+
+If endpoint/bucket/credentials are wrong, return a readable error.
+
+5. SET ACTIVE CONNECTION
+Cloudflare R2 must work with the existing Activate flow.
+
+When R2 is active:
+- all new raw video uploads go to this active connection
+- all newly generated HLS output goes to this active connection
+- existing videos should not break
+- no regressions for B2 or AWS S3
+
+6. OBJECT PATH / PREFIX BEHAVIOR
+Preserve current key structure conventions already used in the app.
+
+Use:
+- raw/ for raw uploaded source files
+- hls/ for transcoded HLS output
+
+Normalize prefixes safely:
+- trim spaces
+- ensure trailing slash
+- avoid double slashes in generated keys
+
+7. FRONTEND DISPLAY
+In the connection card for an R2 connection, display it consistently with the existing connection cards.
+
+Example details to show:
+- Provider badge: Cloudflare R2
+- Endpoint
+- Bucket
+- Raw prefix
+- HLS prefix
+- Credentials note:
+  "R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY from server environment (never shown here)"
+
+Keep current styling and layout.
+
+8. SYSTEM SETTINGS / STORAGE CONNECTIONS PAGE
+Inspect my current code and update all relevant places, likely including:
+- storage connection form
+- provider dropdown
+- save/create payload validation
+- test button request
+- active badge display
+- storage connection card display
+- backend create/update/test/set-active handlers
+
+Make sure no part of the UI assumes only Backblaze B2 or AWS S3.
+
+9. SAFE FALLBACKS
+If an R2 connection record leaves endpoint blank, use:
+- process.env.R2_ENDPOINT
+
+If region is needed and not provided:
+- process.env.R2_REGION || "auto"
+
+But do not silently ignore missing credentials.
+
+10. FILES TO INSPECT
+Analyze and update all relevant files across frontend and backend, including likely areas such as:
+- server routes for storage connections
+- storage provider factory/adapter code
+- storage helper/service files
+- schema/type definitions
+- client system settings page
+- any storage connection form component
+- any provider label mapping utilities
+
+11. DO NOT BREAK CURRENT VIDEO SECURITY FLOW
+Do not alter or break:
+- secure HLS routes
+- session mint flow
+- LMS embed flow
+- token signing logic
+- Cloudflare worker logic
+- B2 direct segment redirect logic
+
+This task is only to add Cloudflare R2 as a supported storage connection provider inside the current storage system.
+
+12. IMPLEMENTATION GOAL
+After this change, I should be able to:
+- open Storage Connections
+- choose Cloudflare R2 (S3 Compatible)
+- enter bucket: syan-video-storage
+- endpoint should auto-fill
+- click Save
+- click Test
+- click Activate
+- upload new videos using R2 as active storage
+
+13. OUTPUT I WANT AFTER IMPLEMENTATION
+After making the changes, provide:
+- exact files changed
+- what was changed in each file
+- required env vars
+- any migration/schema changes
+- short manual test steps
+- any limitations or follow-up improvements needed
+
+IMPORTANT FINAL NOTE
+Keep changes minimal, safe, and targeted. Do not redesign the app. Do not refactor unrelated code. Only extend the existing Storage Connections system to properly support Cloudflare R2.

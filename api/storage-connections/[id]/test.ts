@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { getSessionFromRequest } from "../../_lib/auth.js";
-import { getStorageConnectionById, testStorageConnectionB2 } from "../../_lib/storageConnections.js";
+import { getStorageConnectionById, testStorageConnection } from "../../_lib/storageConnections.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
@@ -23,7 +23,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({ ok: false, error: "Connection not found" });
     }
 
-    const result = await testStorageConnectionB2(connection);
+    const result = await testStorageConnection(connection);
     return res.status(200).json(result);
   } catch (error) {
     console.error("STORAGE_CONNECTION_TEST_HANDLER_ERROR", error);
