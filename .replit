@@ -9,6 +9,10 @@ channel = "stable-25_05"
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 5904
+externalPort = 3000
+
 [env]
 PORT = "5000"
 
@@ -60,6 +64,7 @@ R2_SECRET_ACCESS_KEY = "85ed97e68a2c80910a9ad6636284c726e00645c4bc6b6d25bbb7b153
 R2_ENDPOINT = "https://e85e4b54f24a7b76dddcc285693f42ac.r2.cloudflarestorage.com"
 R2_REGION = "Auto"
 ADMIN_PASSWORD = "Pak@1234"
+HLS_GATEWAY_BASE = "https://syan-video-gateway.ahmadmedtech01.workers.dev"
 
 [agent]
 expertMode = true
