@@ -6,7 +6,7 @@ import {
   type VideoSecuritySettings, type EmbedToken, type PlaybackSession, type AuditLog,
   type SystemSetting, type StorageConnection, type MediaAsset, type VideoBanner,
 } from "@shared/schema";
-import { eq, desc, and, sql, asc } from "drizzle-orm";
+import { eq, desc, and, sql, asc, like } from "drizzle-orm";
 
 export const storage = {
   // Admin
@@ -279,6 +279,10 @@ export const storage = {
 
   async getMediaAssets(): Promise<MediaAsset[]> {
     return db.select().from(mediaAssets).orderBy(desc(mediaAssets.createdAt));
+  },
+
+  async deleteMediaAssetsByVideoId(videoId: string): Promise<void> {
+    await db.delete(mediaAssets).where(like(mediaAssets.bucketKey, `assets/videos/${videoId}/%`));
   },
 
   // Banners

@@ -1003,8 +1003,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/videos/:id", requireAuth, async (req, res) => {
     const v = await storage.getVideoById(req.params.id);
     if (!v) return res.status(404).json({ message: "Not found" });
-    // Delete all storage files (B2/S3/local) before removing DB record
+    // 1. Delete all storage files (HLS segments, raw upload, thumbnails, logos, overlays, intro/outro, banners)
     await deleteVideoStorage(v as any);
+    // 2. Delete orphaned media asset DB records (thumbnail, logo, overlay, intro, outro, banner images)
+    await storage.deleteMediaAssetsByVideoId(req.params.id);
+    // 3. Delete video DB record — cascades to player settings, security settings, watermark,
+    //    embed tokens, playback sessions, banners, client security rows automatically
     await storage.deleteVideo(req.params.id);
     await storage.createAuditLog({ action: "video_deleted", meta: { videoId: req.params.id, title: v.title }, ip: req.ip });
     res.json({ ok: true });

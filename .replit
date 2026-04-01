@@ -62,7 +62,7 @@ B2_KEY_ID = "006a54c2d7114110000000002"
 R2_ACCESS_KEY_ID = "be01a2c65c60151a37bd6345a29a8069"
 R2_SECRET_ACCESS_KEY = "85ed97e68a2c80910a9ad6636284c726e00645c4bc6b6d25bbb7b15398e077f6"
 R2_ENDPOINT = "https://e85e4b54f24a7b76dddcc285693f42ac.r2.cloudflarestorage.com"
-R2_REGION = "Auto"
+R2_REGION = "auto"
 ADMIN_PASSWORD = "Pak@1234"
 HLS_GATEWAY_BASE = "https://syan-video-gateway.ahmadmedtech01.workers.dev"
 
