@@ -137,6 +137,8 @@ export default function EmbedPlayerPage() {
   const token = urlToken;
   const receivedLmsTokenRef = useRef<string | null>(null);
   const lmsOriginsRef = useRef<string[]>([]);
+  // Prevents cascading mints: once a session is active, ignore new LMS tokens until the session fails
+  const lmsSessionActiveRef = useRef(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -217,6 +219,7 @@ export default function EmbedPlayerPage() {
     setPlaybackDenied(false);
     setDenialSignal("");
     denialSignalRef.current = "";
+    lmsSessionActiveRef.current = false; // allow fresh LMS token on retry
     hlsRef.current?.destroy();
     hlsRef.current = null;
     setStatus("loading");
@@ -256,6 +259,10 @@ export default function EmbedPlayerPage() {
       if (!lmsOriginsRef.current.includes(event.origin)) return;
       const msg = event.data;
       if (!msg || msg.type !== "LMS_LAUNCH_TOKEN" || typeof msg.token !== "string") return;
+      // Lock immediately on first token to prevent the LMS retry loop (which fires every 1s
+      // for 10s) from spawning multiple concurrent mints that revoke each other
+      if (lmsSessionActiveRef.current) return;
+      lmsSessionActiveRef.current = true;
       receivedLmsTokenRef.current = msg.token;
       setStatus("loading");
       setRetryKey(k => k + 1);
@@ -289,6 +296,7 @@ export default function EmbedPlayerPage() {
           if (mintRes.status === 429) {
             const d = await mintRes.json().catch(() => ({}));
             if (d.code === "SESSION_LIMIT") {
+              lmsSessionActiveRef.current = false;
               setSessionLimitInfo({ activeSessions: d.activeSessions || [] });
               setStatus("error");
               setErrorMsg("SESSION_LIMIT");
@@ -297,6 +305,7 @@ export default function EmbedPlayerPage() {
           }
           if (!mintRes.ok) {
             const d = await mintRes.json().catch(() => ({}));
+            lmsSessionActiveRef.current = false; // unlock so next LMS token can retry
             setStatus("error");
             setErrorMsg(d.message || "Could not start session");
             return;
@@ -351,6 +360,8 @@ export default function EmbedPlayerPage() {
         }
 
         const data = await manifestRes.json();
+        // Session is now established — lock out further LMS postMessage tokens to prevent cascade revocations
+        if (!urlToken) lmsSessionActiveRef.current = true;
         const resolvedVideoId = data.videoId || "";
         setVideoId(resolvedVideoId);
         if (data.adminPreview === true) setIsAdminPreview(true);
