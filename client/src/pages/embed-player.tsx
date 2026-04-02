@@ -129,9 +129,9 @@ export default function EmbedPlayerPage() {
   const { publicId } = useParams<{ publicId: string }>();
   const search = useSearch();
   const urlParams = new URLSearchParams(search);
-  // Only accept ?token= for admin preview tokens (adminPreview:true JWT).
-  // LMS tokens must arrive via postMessage — never via URL.
-  const urlToken = urlParams.get("token") || "";
+  const rawUrlToken = urlParams.get("token") || "";
+  const isLmsHmacToken = rawUrlToken ? rawUrlToken.split(".").length === 2 : false;
+  const urlToken = isLmsHmacToken ? "" : rawUrlToken;
 
   const activeTokenRef = useRef(urlToken);
   const token = urlToken;
@@ -159,7 +159,7 @@ export default function EmbedPlayerPage() {
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
 
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
-    urlToken ? "loading" : "waiting"
+    urlToken || isLmsHmacToken ? "loading" : "waiting"
   );
   const [errorMsg, setErrorMsg] = useState("");
   const [playing, setPlaying] = useState(false);
@@ -240,7 +240,16 @@ export default function EmbedPlayerPage() {
 
   // Iframe-only enforcement + postMessage receiver for LMS launch tokens
   useEffect(() => {
-    if (urlToken) return; // admin preview token in URL — skip iframe enforcement
+    if (urlToken) return; // admin preview / static embed token in URL — skip iframe enforcement
+
+    // If HMAC token was in URL (Query Param mode from LMS), inject it directly
+    if (isLmsHmacToken && rawUrlToken && !lmsSessionActiveRef.current) {
+      lmsSessionActiveRef.current = true;
+      receivedLmsTokenRef.current = rawUrlToken;
+      setStatus("loading");
+      setRetryKey(k => k + 1);
+      return;
+    }
 
     // Block if opened as a top-level page (not embedded in an iframe)
     if (window.top === window.self) {
@@ -259,8 +268,6 @@ export default function EmbedPlayerPage() {
       if (!lmsOriginsRef.current.includes(event.origin)) return;
       const msg = event.data;
       if (!msg || msg.type !== "LMS_LAUNCH_TOKEN" || typeof msg.token !== "string") return;
-      // Lock immediately on first token to prevent the LMS retry loop (which fires every 1s
-      // for 10s) from spawning multiple concurrent mints that revoke each other
       if (lmsSessionActiveRef.current) return;
       lmsSessionActiveRef.current = true;
       receivedLmsTokenRef.current = msg.token;
@@ -271,7 +278,7 @@ export default function EmbedPlayerPage() {
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [publicId, urlToken]);
+  }, [publicId, urlToken, isLmsHmacToken, rawUrlToken]);
 
   // Initialize player
   useEffect(() => {
