@@ -1,0 +1,81 @@
+The Two-Layer System
+Your app has two separate auth systems working together:
+
+Layer 1 — User Login (Session-Based Auth)
+This is the standard login system for your students and admin.
+
+How it works:
+
+User logs in → POST /api/auth/login
+The server looks up the user in the database by email
+It uses bcrypt.compare() to check the submitted password against the stored hashed password — the plain password is never stored
+If valid, the server saves userId and userRole into the session (a server-side cookie called connect.sid)
+Every subsequent request from that browser automatically carries this cookie, proving who they are
+Protected routes use two middleware functions:
+
+requireAuth — checks if req.session.userId exists (any logged-in user)
+requireAdmin — additionally checks if req.session.userRole === "admin"
+Session cookies are set with:
+
+httpOnly: true — JavaScript in the browser can't steal it
+secure: true in production — only sent over HTTPS
+maxAge: 24 hours — auto-expires
+Layer 2 — Video Token (HMAC-Signed Token for CMS)
+This is the more complex part — it controls who can play a video from your external CMS.
+
+The problem it solves: Your CMS needs to know "is this person actually a logged-in student on my LMS, and are they allowed to watch this specific video?" without sharing passwords.
+
+Step-by-step flow:
+
+Step 1 — Student clicks a video
+The frontend calls GET /api/video-token/:publicId (where publicId is the CMS video's unique ID)
+
+Step 2 — Server builds a payload
+payload = {
+  userId: "123",           ← who is watching
+  publicId: "abc-xyz",    ← which video
+  exp: (now + 240s),      ← expires in 4 minutes
+  nonce: (random hex),    ← prevents replay attacks
+  aud: "video-cms",       ← intended audience
+  origin: "your-lms-url"  ← where the request came from
+}
+Step 3 — Server signs the payload with HMAC-SHA256
+payloadB64 = base64url(JSON.stringify(payload))
+signature  = HMAC_SHA256(payloadB64, LMS_HMAC_SECRET)
+token      = payloadB64 + "." + signature
+The LMS_HMAC_SECRET is a secret key shared between your LMS and your CMS. Only those two systems know it.
+
+Step 4 — Frontend sends the token to the CMS player
+The player app receives the token and sends it to:
+
+POST https://railway-cms-production.up.railway.app/api/player/:publicId/mint
+Body: { lmsLaunchToken: token }
+Step 5 — CMS validates the token
+On the CMS side, it:
+
+Splits the token on . to get payloadB64 and signature
+Re-computes HMAC_SHA256(payloadB64, sharedSecret) on its own
+Compares its computed signature with the one in the token
+If they match → the token is genuine (wasn't tampered with)
+Also checks: exp hasn't passed, aud === "video-cms", origin is your LMS
+If all checks pass → CMS issues a playback session back to the player
+Why this is secure
+Threat	Protection
+Someone forges a token	Can't — they don't know LMS_HMAC_SECRET
+Someone replays an old token	exp (4 min expiry) + nonce prevent this
+Non-logged-in user gets a token	requireAuth blocks the /api/video-token endpoint
+Token works on a different video	publicId is baked into the signed payload
+Man-in-the-middle swaps payload	Signature would no longer match
+Summary Flow Diagram
+Student Browser
+    │
+    ├─ 1. Login → LMS sets session cookie
+    │
+    ├─ 2. Click video → GET /api/video-token/:publicId (cookie proves identity)
+    │
+    ├─ 3. LMS signs a token with HMAC_SECRET → returns token
+    │
+    ├─ 4. Browser sends token → CMS Player
+    │
+    └─ 5. CMS verifies HMAC signature → issues playback session → video plays
+The key requirement for this to work is that LMS_HMAC_SECRET must be set as an environment variable on both your LMS and your CMS, and they must be identical. If you haven't set this yet, let me know and I can help you configure it.
