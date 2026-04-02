@@ -211,6 +211,20 @@ export function rotateSession(oldSid: string): string | null {
   return newSid;
 }
 
+/**
+ * Extend an existing session's TTL without creating a new SID.
+ * Used by the heartbeat endpoint so the player never needs to call
+ * hls.loadSource() during normal playback — eliminating the 1-2s black
+ * screen that a full session rotation causes by flushing the MSE buffer.
+ */
+export function extendSession(sid: string): boolean {
+  const s = sessions.get(sid);
+  if (!s || s.revoked) return false;
+  s.expiresAt = Date.now() + SESSION_MAX_AGE_MS;
+  console.log(`[video-session] SESSION_EXTENDED: sid=${sid}, publicId=${s.publicId}, newExpiry=${new Date(s.expiresAt).toISOString()}`);
+  return true;
+}
+
 export function getSession(sid: string): VideoSession | undefined {
   const s = sessions.get(sid);
   if (!s) return undefined;

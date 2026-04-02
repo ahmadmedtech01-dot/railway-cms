@@ -641,7 +641,12 @@ export default function EmbedPlayerPage() {
     return () => { if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); };
   }, [publicId, status]);
 
-  // Session rotation — rotate every 3 minutes to invalidate old session and ephemeral key
+  // Session heartbeat — ping every 3 minutes to extend the session TTL.
+  // Previously this called rotate-session which created a new SID and forced
+  // hls.loadSource(newManifest). That flushed the MSE SourceBuffer, causing a
+  // 1-2s black screen every 3 minutes.
+  // Now we call extend-session which keeps the same SID, extends expiresAt,
+  // and returns nothing that requires a manifest reload. Zero HLS disruption.
   useEffect(() => {
     const sid = streamSidRef.current;
     if (!sid || !publicId) return;
@@ -649,56 +654,20 @@ export default function EmbedPlayerPage() {
       const currentSid = streamSidRef.current;
       if (!currentSid) return;
       try {
-        const res = await fetch(`/api/player/${publicId}/rotate-session`, {
+        const res = await fetch(`/api/player/${publicId}/extend-session`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sid: currentSid }),
         });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!data.manifestUrl || !data.sessionId) return;
-        streamSidRef.current = data.sessionId;
-        const hls = hlsRef.current;
-        if (hls) {
-          const v = videoRef.current;
-          const savedTime = v ? v.currentTime : 0;
-          const wasPaused = v ? v.paused : true;
-          const opId = ++rotationOpIdRef.current;
-          isRotatingRef.current = true;
-          // Do NOT call hls.stopLoad() here — loadSource() handles stopping internally.
-          // Calling stopLoad() first just drains the existing buffer unnecessarily,
-          // making the video stall longer during the switch.
-          hls.loadSource(data.manifestUrl);
-          const rotationSafetyTimer = setTimeout(() => {
-            if (opId !== rotationOpIdRef.current) return;
-            if (isRotatingRef.current) {
-              isRotatingRef.current = false;
-              if (v) {
-                hls.startLoad(savedTime);
-                v.currentTime = savedTime;
-                if (!wasPaused) v.play().catch(() => {});
-              }
-            }
-          }, 15000);
-          hls.once(Hls.Events.MANIFEST_PARSED, () => {
-            clearTimeout(rotationSafetyTimer);
-            if (opId !== rotationOpIdRef.current) return;
-            isRotatingRef.current = false;
-            if (v) {
-              // Override HLS.js auto-start-at-0: tell it to buffer from current position.
-              // Without this, HLS.js buffers from position 0, then we seek to savedTime,
-              // clearing that buffer — causing the 1-2s black screen every 3 minutes.
-              hls.startLoad(savedTime);
-              v.currentTime = savedTime;
-              if (!wasPaused) v.play().catch(() => {});
-            }
-            fetch(`/api/stream/${publicId}/progress`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ sid: data.sessionId, currentTime: savedTime }),
-            }).catch(() => {});
-          });
+        if (!res.ok) {
+          // Session was revoked or expired — trigger denial so the user sees the
+          // proper "session ended" overlay rather than a silent stall.
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 403 && data.code === "PLAYBACK_DENIED") {
+            triggerDenial(data.signal || "rate_limit");
+          }
         }
+        // On success: session TTL extended, same SID, no manifest reload needed.
       } catch {}
     }, 3 * 60 * 1000);
     return () => { if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current); };

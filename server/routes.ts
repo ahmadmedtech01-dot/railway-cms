@@ -20,7 +20,7 @@ import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } fro
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import QRCode from "qrcode";
-import { createSession, rotateSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS } from "./video-session";
 import type { PlaylistCache } from "./video-session";
 
 function log(message: string) {
@@ -2051,6 +2051,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ── Session Rotation — called by player every SESSION_ROTATION_MS ─────────
+  // NOTE: Prefer /extend-session for new clients — it avoids hls.loadSource()
+  // and the MSE SourceBuffer flush that causes a 1-2s black screen.
   app.post("/api/player/:publicId/rotate-session", async (req: any, res: any) => {
     try {
       const { sid } = req.body;
@@ -2072,6 +2074,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const manifestUrl = buildSignedProxyUrl(proxyBase, newSid, "/master.m3u8", ttls.manifest, dh);
 
       return res.json({ manifestUrl, sessionId: newSid, rotationIntervalMs: SESSION_ROTATION_MS });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ── Session Heartbeat — replaces rotation for active playback ─────────────
+  // Extends the existing session TTL without creating a new SID or manifest URL.
+  // The player calls this every SESSION_ROTATION_MS and never reloads the HLS
+  // source, completely eliminating the MSE SourceBuffer flush and resulting
+  // 1-2s black screen that full session rotation caused.
+  app.post("/api/player/:publicId/extend-session", async (req: any, res: any) => {
+    try {
+      const { sid } = req.body;
+      if (!sid) return res.status(400).json({ message: "Missing sid" });
+
+      const session = getSession(sid);
+      if (!session || session.revoked) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session invalid or expired" });
+      if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
+
+      const ok = extendSession(sid);
+      if (!ok) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session extend failed" });
+
+      return res.json({ ok: true, rotationIntervalMs: SESSION_ROTATION_MS });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
