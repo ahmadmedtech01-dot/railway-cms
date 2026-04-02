@@ -2179,8 +2179,18 @@ iframe.addEventListener('load', async () => {
               {embedMode === "postMessage" && (
                 <>
                   <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-sm text-blue-700 dark:text-blue-300">
-                    <p className="font-medium mb-1">LMS Auto-Generate Mode</p>
-                    <p className="opacity-80 text-xs">Your LMS generates a fresh HMAC-signed token server-side on every page load and sends it to the iframe via postMessage. The token is never exposed in the URL. See the LMS Integration Guide for implementation details.</p>
+                    <p className="font-medium mb-1">Secure Mode (postMessage)</p>
+                    <p className="opacity-80 text-xs">Your LMS generates a fresh HMAC-signed token server-side on every page load and sends it to the iframe via postMessage. The token is never exposed in the URL.</p>
+                  </div>
+
+                  <div className="rounded-lg border border-green-500/30 bg-green-500/5 p-4 text-sm space-y-2">
+                    <p className="font-bold text-green-800 dark:text-green-300">What to paste into your LMS:</p>
+                    <ol className="list-decimal list-inside space-y-1 text-xs text-green-700 dark:text-green-400">
+                      <li><strong>Copy the iFrame Embed Code below</strong> and paste it into your LMS embed/HTML field</li>
+                      <li><strong>Copy the Public Video ID</strong> and add it to your LMS video settings</li>
+                      <li>Your LMS must have the <strong>HMAC secret</strong> configured to generate tokens server-side</li>
+                    </ol>
+                    <p className="text-xs text-green-600 dark:text-green-500 italic">No token is needed in the URL — the LMS sends it securely via postMessage on each page load.</p>
                   </div>
 
                   <div className="space-y-2">
@@ -2205,8 +2215,17 @@ iframe.addEventListener('load', async () => {
               {embedMode === "queryParam" && (
                 <>
                   <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-3 text-sm text-orange-700 dark:text-orange-300">
-                    <p className="font-medium mb-1">Static Token Mode</p>
+                    <p className="font-medium mb-1">Static Token Mode (Query Param)</p>
                     <p className="opacity-80 text-xs">The embed token is included directly in the iframe URL. Use a "Never expires" token for LMS integration so the link stays valid permanently.</p>
+                  </div>
+
+                  <div className="rounded-lg border border-green-500/30 bg-green-500/5 p-4 text-sm space-y-2">
+                    <p className="font-bold text-green-800 dark:text-green-300">What to paste into your LMS:</p>
+                    <ol className="list-decimal list-inside space-y-1 text-xs text-green-700 dark:text-green-400">
+                      <li><strong>Select a "never expires" token</strong> from the dropdown below</li>
+                      <li><strong>Copy the Direct Embed URL</strong> below and paste it into your LMS embed URL field</li>
+                    </ol>
+                    <p className="text-xs text-green-600 dark:text-green-500 italic">The token is embedded in the URL — no server-side code needed on your LMS.</p>
                   </div>
 
                   {activeTokens.length > 0 && (
@@ -2222,6 +2241,17 @@ iframe.addEventListener('load', async () => {
                           ))}
                         </SelectContent>
                       </Select>
+                      {selectedToken && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-medium text-muted-foreground">Using:</span>
+                          <span className={`font-bold ${selectedToken.expiresAt ? "text-orange-600 dark:text-orange-400" : "text-green-600 dark:text-green-400"}`}>
+                            {selectedToken.label || "Token"}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${selectedToken.expiresAt ? "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300" : "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"}`}>
+                            {selectedToken.expiresAt ? `expires ${formatDistanceToNow(new Date(selectedToken.expiresAt), { addSuffix: true })}` : "NEVER EXPIRES"}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -2246,7 +2276,7 @@ iframe.addEventListener('load', async () => {
                       <Input value={embedSrcWithToken} readOnly className="font-mono text-xs" data-testid="input-embed-url-queryparam" />
                       <CopyButton text={embedSrcWithToken} />
                     </div>
-                    <p className="text-xs text-muted-foreground">Use this URL directly in your LMS embed settings.</p>
+                    <p className="text-xs text-muted-foreground">Paste this URL into your LMS embed settings. When you select a different token above, this URL updates automatically.</p>
                   </div>
                 </>
               )}
