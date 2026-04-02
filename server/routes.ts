@@ -438,7 +438,10 @@ function getSigningSecret(): string {
   return s;
 }
 
-function generateToken(payload: object, ttlSeconds: number): string {
+function generateToken(payload: object, ttlSeconds: number | null): string {
+  if (ttlSeconds === null || ttlSeconds === 0) {
+    return jwt.sign(payload, getSigningSecret());
+  }
   return jwt.sign(payload, getSigningSecret(), { expiresIn: ttlSeconds });
 }
 
@@ -1550,8 +1553,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!video) return res.status(404).json({ message: "Video not found" });
 
       const { label, allowedDomain, ttlHours } = req.body;
-      const ttlSecs = (ttlHours || 24) * 3600;
-      const expiresAt = new Date(Date.now() + ttlSecs * 1000);
+      const isPermanent = ttlHours === 0 || ttlHours === null || ttlHours === "0";
+      const ttlSecs = isPermanent ? null : (ttlHours || 24) * 3600;
+      const expiresAt = isPermanent ? null : new Date(Date.now() + (ttlSecs as number) * 1000);
       const tokenValue = generateToken({ videoId: video.id, publicId: video.publicId }, ttlSecs);
 
       const token = await storage.createEmbedToken({

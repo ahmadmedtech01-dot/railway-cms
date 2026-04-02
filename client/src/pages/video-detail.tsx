@@ -231,7 +231,7 @@ export default function VideoDetailPage() {
 
   const [tokenLabel, setTokenLabel] = useState("Embed Token");
   const [tokenDomain, setTokenDomain] = useState("");
-  const [tokenTtl, setTokenTtl] = useState("24");
+  const [tokenTtl, setTokenTtl] = useState("0");
   const [embedWidth, setEmbedWidth] = useState("100%");
   const [embedHeight, setEmbedHeight] = useState("500");
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
@@ -425,13 +425,14 @@ export default function VideoDetailPage() {
 
   const createToken = useMutation({
     mutationFn: () => apiRequest("POST", `/api/videos/${id}/tokens`, {
-      label: tokenLabel, allowedDomain: tokenDomain || null, ttlHours: parseInt(tokenTtl),
+      label: tokenLabel, allowedDomain: tokenDomain || null, ttlHours: tokenTtl === "0" ? 0 : parseInt(tokenTtl),
     }),
     onSuccess: () => {
       refetchTokens();
       setTokenDialogOpen(false);
       setTokenLabel("Embed Token");
       setTokenDomain("");
+      setTokenTtl("0");
       toast({ title: "Token created" });
     },
     onError: () => toast({ title: "Failed to create token", variant: "destructive" }),
@@ -2292,10 +2293,11 @@ iframe.addEventListener('load', () => {
             <Input value={tokenDomain} onChange={e => setTokenDomain(e.target.value)} placeholder="example.com" data-testid="input-token-domain" />
           </div>
           <div className="space-y-1.5">
-            <Label>Expires In (hours)</Label>
+            <Label>Expires In</Label>
             <Select value={tokenTtl} onValueChange={setTokenTtl}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
+                <SelectItem value="0">Never expires (recommended for LMS)</SelectItem>
                 <SelectItem value="1">1 hour</SelectItem>
                 <SelectItem value="24">24 hours</SelectItem>
                 <SelectItem value="168">7 days</SelectItem>
