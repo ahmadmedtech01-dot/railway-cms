@@ -491,7 +491,7 @@ function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: 
     const sigBuf = Buffer.from(sig, "hex");
     const expectedBuf = Buffer.from(expectedSig, "hex");
     if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-      log(`[lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: ${Object.keys(payload).join(", ")}`);
+      log(`[lms-verify] FAIL: HMAC signature mismatch — received sig tail: ...${sig.slice(-8)}, expected tail: ...${expectedSig.slice(-8)} — secret length: ${secret.length} chars. Payload fields: ${Object.keys(payload).join(", ")}`);
       return null;
     }
     const missing = ["userId","publicId","exp","nonce","aud","origin"].filter(f => !payload[f]);
@@ -2781,6 +2781,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/lms/origins", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.json({ origins: getAllowedLmsOrigins() });
+  });
+
+  // Admin-only debug endpoint: diagnoses an HMAC token without revealing the secret
+  // POST /api/lms/debug-hmac  { token: "payloadB64.hexSig" }
+  app.post("/api/lms/debug-hmac", requireAuth, (req: Request, res: Response) => {
+    const { token } = req.body as { token?: string };
+    if (!token || typeof token !== "string") return res.status(400).json({ error: "token required" });
+    const secret = process.env.LMS_HMAC_SECRET;
+    if (!secret) return res.status(500).json({ error: "LMS_HMAC_SECRET not configured on server" });
+    const parts = token.split(".");
+    if (parts.length !== 2) {
+      return res.json({ ok: false, error: `Token has ${parts.length} parts — must be exactly 2 (payloadB64.hexSig). Likely a JWT (3 parts) or wrong format.` });
+    }
+    const [payloadB64, sig] = parts;
+    let payload: any = null;
+    let parseError = "";
+    try {
+      payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+    } catch (e: any) {
+      parseError = e.message;
+    }
+    const expectedSig = crypto.createHmac("sha256", secret).update(payloadB64).digest("hex");
+    const allowedOrigins = getAllowedLmsOrigins();
+    const nowSec = Math.floor(Date.now() / 1000);
+    return res.json({
+      ok: sig === expectedSig,
+      parts: parts.length,
+      payloadParsed: parseError ? false : true,
+      payloadParseError: parseError || undefined,
+      payloadFields: payload ? Object.keys(payload) : [],
+      payloadValues: payload ? {
+        aud: payload.aud,
+        origin: payload.origin,
+        publicId: payload.publicId,
+        expIn: payload.exp ? `${payload.exp - nowSec}s from now` : undefined,
+      } : undefined,
+      signatureMatch: sig === expectedSig,
+      sigReceivedTail: `...${sig.slice(-8)}`,
+      sigExpectedTail: `...${expectedSig.slice(-8)}`,
+      sigLengthOk: sig.length === 64,
+      secretLengthOnServer: secret.length,
+      originAllowed: payload?.origin ? allowedOrigins.includes(payload.origin) : false,
+      allowedOrigins,
+      diagnosis: sig === expectedSig
+        ? "Token signature is VALID ✓"
+        : parseError
+          ? `Payload is not valid base64url JSON: ${parseError}`
+          : `HMAC mismatch — received tail ...${sig.slice(-8)}, expected tail ...${expectedSig.slice(-8)}. ` +
+            `This means the LMS is either signing the wrong data (raw JSON instead of base64url string), ` +
+            `using a different secret value, or appending extra characters to the secret.`
+    });
   });
 
   app.get("/api/security/effective/:videoId", async (req, res) => {
