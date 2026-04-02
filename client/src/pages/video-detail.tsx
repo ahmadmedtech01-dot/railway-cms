@@ -452,7 +452,7 @@ export default function VideoDetailPage() {
 
   const resetShareLink = useMutation({
     mutationFn: async () => {
-      const oldShareToken = tokens.find(t => !t.revoked && t.label === "Share Link") ?? firstToken;
+      const oldShareToken = tokens.find(t => !t.revoked && t.label === "Share Link") ?? tokens.find(t => !t.revoked);
       await apiRequest("POST", `/api/videos/${id}/tokens`, {
         label: "Share Link",
         allowedDomain: null,
@@ -575,15 +575,16 @@ export default function VideoDetailPage() {
   const ps = video.playerSettings || {};
   const ws = video.watermarkSettings || {};
   const ss = video.securitySettings || {};
-  const firstToken = tokens.find(t => !t.revoked);
   const activeTokens = tokens.filter(t => !t.revoked && (!t.expiresAt || new Date(t.expiresAt) > new Date()));
-  const selectedToken = activeTokens.find(t => t.id === selectedTokenId) || activeTokens[0];
+  const neverExpiresTokens = activeTokens.filter(t => !t.expiresAt);
+  const selectedToken = activeTokens.find(t => t.id === selectedTokenId) || neverExpiresTokens[0] || activeTokens[0];
+  const shareToken = activeTokens.find(t => (t.label || "").toLowerCase().includes("share")) || selectedToken;
   const embedSrc = `${baseUrl}/embed/${video.publicId}`;
   const embedSrcWithToken = selectedToken
     ? `${baseUrl}/embed/${video.publicId}?token=${selectedToken.token}`
     : embedSrc;
-  const shareLink = firstToken
-    ? `${baseUrl}/v/${video.publicId}?token=${firstToken.token}`
+  const shareLink = shareToken
+    ? `${baseUrl}/v/${video.publicId}?token=${shareToken.token}`
     : `${baseUrl}/v/${video.publicId}`;
 
   const iframeCodePostMessage = `<iframe
