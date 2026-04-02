@@ -490,14 +490,13 @@ export default function EmbedPlayerPage() {
                       streamSidRef.current = rd.sessionId;
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
-                      hls.stopLoad();
                       hls.loadSource(rd.manifestUrl);
                       const vid = videoRef.current;
                       const safetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
                           isRotatingRef.current = false;
-                          if (vid) { vid.currentTime = savedTime; vid.play().catch(() => {}); }
+                          if (vid) { hls.startLoad(savedTime); vid.currentTime = savedTime; vid.play().catch(() => {}); }
                         }
                       }, 15000);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
@@ -505,6 +504,7 @@ export default function EmbedPlayerPage() {
                         if (opId !== rotationOpIdRef.current) return;
                         isRotatingRef.current = false;
                         if (vid) {
+                          hls.startLoad(savedTime);
                           vid.currentTime = savedTime;
                           vid.play().catch(() => {});
                         }
@@ -533,14 +533,13 @@ export default function EmbedPlayerPage() {
                     if (rd.manifestUrl) {
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
-                      hls.stopLoad();
                       hls.loadSource(rd.manifestUrl);
                       const vid = videoRef.current;
                       const refreshSafetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
                           isRotatingRef.current = false;
-                          if (vid) { vid.currentTime = savedTime; vid.play().catch(() => {}); }
+                          if (vid) { hls.startLoad(savedTime); vid.currentTime = savedTime; vid.play().catch(() => {}); }
                         }
                       }, 15000);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
@@ -548,6 +547,7 @@ export default function EmbedPlayerPage() {
                         if (opId !== rotationOpIdRef.current) return;
                         isRotatingRef.current = false;
                         if (vid) {
+                          hls.startLoad(savedTime);
                           vid.currentTime = savedTime;
                           vid.play().catch(() => {});
                         }
@@ -665,13 +665,19 @@ export default function EmbedPlayerPage() {
           const wasPaused = v ? v.paused : true;
           const opId = ++rotationOpIdRef.current;
           isRotatingRef.current = true;
-          hls.stopLoad();
+          // Do NOT call hls.stopLoad() here — loadSource() handles stopping internally.
+          // Calling stopLoad() first just drains the existing buffer unnecessarily,
+          // making the video stall longer during the switch.
           hls.loadSource(data.manifestUrl);
           const rotationSafetyTimer = setTimeout(() => {
             if (opId !== rotationOpIdRef.current) return;
             if (isRotatingRef.current) {
               isRotatingRef.current = false;
-              if (v) { v.currentTime = savedTime; if (!wasPaused) v.play().catch(() => {}); }
+              if (v) {
+                hls.startLoad(savedTime);
+                v.currentTime = savedTime;
+                if (!wasPaused) v.play().catch(() => {});
+              }
             }
           }, 15000);
           hls.once(Hls.Events.MANIFEST_PARSED, () => {
@@ -679,6 +685,10 @@ export default function EmbedPlayerPage() {
             if (opId !== rotationOpIdRef.current) return;
             isRotatingRef.current = false;
             if (v) {
+              // Override HLS.js auto-start-at-0: tell it to buffer from current position.
+              // Without this, HLS.js buffers from position 0, then we seek to savedTime,
+              // clearing that buffer — causing the 1-2s black screen every 3 minutes.
+              hls.startLoad(savedTime);
               v.currentTime = savedTime;
               if (!wasPaused) v.play().catch(() => {});
             }
@@ -909,12 +919,12 @@ export default function EmbedPlayerPage() {
                 if (hls) {
                   const opId = ++rotationOpIdRef.current;
                   isRotatingRef.current = true;
-                  hls.stopLoad();
                   hls.loadSource(data.manifestUrl);
                   const pauseSafetyTimer = setTimeout(() => {
                     if (opId !== rotationOpIdRef.current) return;
                     if (isRotatingRef.current) {
                       isRotatingRef.current = false;
+                      hls.startLoad(savedTime);
                       v.currentTime = savedTime;
                       v.play().catch(() => {});
                     }
@@ -923,6 +933,7 @@ export default function EmbedPlayerPage() {
                     clearTimeout(pauseSafetyTimer);
                     if (opId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
+                    hls.startLoad(savedTime);
                     v.currentTime = savedTime;
                     v.play().catch(() => {});
                     fetch(`/api/stream/${publicId}/progress`, {
