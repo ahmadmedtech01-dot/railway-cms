@@ -470,30 +470,44 @@ setInterval(() => {
 
 function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: string; exp: number; nonce: string; aud: string; origin: string } | null {
   const secret = process.env.LMS_HMAC_SECRET;
-  if (!secret) return null;
+  if (!secret) { log("[lms-verify] FAIL: LMS_HMAC_SECRET not set"); return null; }
   const allowedOrigins = getAllowedLmsOrigins();
-  if (allowedOrigins.length === 0) return null;
+  if (allowedOrigins.length === 0) { log("[lms-verify] FAIL: no allowed origins configured"); return null; }
   try {
     const parts = launchToken.split(".");
-    if (parts.length !== 2) return null;
+    if (parts.length !== 2) {
+      log(`[lms-verify] FAIL: token has ${parts.length} parts (expected 2) — token may be a JWT or wrong format`);
+      return null;
+    }
     const [payloadB64, sig] = parts;
+    let payload: any;
+    try {
+      payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+    } catch {
+      log("[lms-verify] FAIL: payload is not valid base64url JSON");
+      return null;
+    }
     const expectedSig = crypto.createHmac("sha256", secret).update(payloadB64).digest("hex");
     const sigBuf = Buffer.from(sig, "hex");
     const expectedBuf = Buffer.from(expectedSig, "hex");
-    if (sigBuf.length !== expectedBuf.length) return null;
-    if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
-    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
-    if (!payload.userId || !payload.publicId || !payload.exp || !payload.nonce || !payload.aud || !payload.origin) return null;
-    if (payload.aud !== "video-cms") return null;
-    if (!allowedOrigins.includes(payload.origin)) return null;
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      log(`[lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: ${Object.keys(payload).join(", ")}`);
+      return null;
+    }
+    const missing = ["userId","publicId","exp","nonce","aud","origin"].filter(f => !payload[f]);
+    if (missing.length > 0) { log(`[lms-verify] FAIL: missing payload fields: ${missing.join(", ")}`); return null; }
+    if (payload.aud !== "video-cms") { log(`[lms-verify] FAIL: aud="${payload.aud}" (expected "video-cms")`); return null; }
+    if (!allowedOrigins.includes(payload.origin)) {
+      log(`[lms-verify] FAIL: origin="${payload.origin}" not in allowed list: [${allowedOrigins.join(", ")}]`);
+      return null;
+    }
     const nowSec = Date.now() / 1000;
-    if (nowSec > payload.exp) return null;
-    if (payload.exp - nowSec > 300) return null; // must expire within 5 minutes
-    // Nonce check intentionally removed: on LMS iframe refresh the same launch token
-    // is reused. Replay protection is provided by exp (short-lived) + x-client-instance
-    // scoped session auto-revocation in the mint endpoint.
+    if (nowSec > payload.exp) { log(`[lms-verify] FAIL: token expired ${Math.round(nowSec - payload.exp)}s ago`); return null; }
+    if (payload.exp - nowSec > 300) { log(`[lms-verify] FAIL: token exp is ${Math.round(payload.exp - nowSec)}s away (max 300s) — generate tokens closer to use`); return null; }
+    log(`[lms-verify] OK: userId=${payload.userId} publicId=${payload.publicId} origin=${payload.origin}`);
     return payload;
-  } catch {
+  } catch (e: any) {
+    log(`[lms-verify] FAIL: unexpected error: ${e.message}`);
     return null;
   }
 }
