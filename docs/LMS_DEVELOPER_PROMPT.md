@@ -1,241 +1,180 @@
 # PROMPT FOR LMS DEVELOPER
 
 Copy everything below and give it to your LMS developer or AI coding assistant.
+The full reference guide is at `docs/LMS_INTEGRATION_GUIDE.md`.
 
 ---
 
-## TASK: Fix Video Player Integration with Secure Video CMS
+## YOUR TASK
 
-The LMS needs to automatically generate HMAC-signed tokens and send them to the
-CMS video player iframe via postMessage. The player currently shows
-"Waiting for LMS authorization..." because the token is not being delivered correctly.
+Integrate the Secure Video CMS player into your LMS so that videos play automatically for students.
 
-### WHAT IS ALREADY WORKING
-
-- The LMS has an API endpoint `/api/video-courses/:id/lms-token` that returns 200 OK
-- The LMS embeds the CMS player in an iframe
-- The environment variable `LMS_HMAC_SECRET` is already set on Render
-
-### WHAT NEEDS TO BE FIXED
-
-There are exactly 2 things that need to work together:
+**CMS player URL:** `https://railway-cms-production.up.railway.app`
+**Shared HMAC secret:** ask the CMS admin — they will give you the value of `LMS_HMAC_SECRET` from Railway.
+**Your LMS origin:** the exact URL your LMS is deployed at, e.g. `https://your-lms.com` — no trailing slash.
 
 ---
 
-### PART 1: Backend — The `/lms-token` endpoint must return a valid HMAC token
+## STEP 1 — Backend: Token generation endpoint
 
-The token is NOT a JWT. It is a two-part string: `{base64url_payload}.{hex_signature}`
-
-Here is the exact Node.js code for generating the token:
+Add this function and endpoint to your LMS backend.
 
 ```javascript
 const crypto = require('crypto');
 
-function generateCmsLaunchToken(publicId, userId) {
-  const LMS_ORIGIN = 'https://complete-video-hr-syan-exams-test-final-dww7.onrender.com';
-  const secret = process.env.LMS_HMAC_SECRET;
+const LMS_HMAC_SECRET = process.env.LMS_HMAC_SECRET; // set in your env vars
+const LMS_ORIGIN = 'https://your-lms.com';           // your deployed URL, no trailing slash
 
+function generateCmsLaunchToken(publicId, userId) {
   const payload = {
     userId:   String(userId),
     publicId: String(publicId),
-    exp:      Math.floor(Date.now() / 1000) + 240,
-    nonce:    crypto.randomUUID(),
-    aud:      'video-cms',
-    origin:   LMS_ORIGIN
+    exp:      Math.floor(Date.now() / 1000) + 240,  // 4 minutes from now
+    nonce:    crypto.randomUUID(),                   // fresh UUID every time — never reuse
+    aud:      'video-cms',                           // must be exactly this string
+    origin:   LMS_ORIGIN,                            // must match ALLOWED_LMS_ORIGINS on CMS
   };
 
+  // IMPORTANT: sign the base64url string, NOT the raw JSON
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const sig = crypto.createHmac('sha256', secret).update(payloadB64).digest('hex');
+  const signature  = crypto.createHmac('sha256', LMS_HMAC_SECRET)
+                           .update(payloadB64)
+                           .digest('hex');
 
-  return `${payloadB64}.${sig}`;
+  return `${payloadB64}.${signature}`;
 }
-```
 
-The `/lms-token` endpoint should look like this:
-
-```javascript
-router.post('/api/video-courses/:id/lms-token', requireAuth, async (req, res) => {
-  const course = await getCourseById(req.params.id);
-  if (!course) return res.status(404).json({ error: 'Not found' });
-
-  const token = generateCmsLaunchToken(course.cmsPublicVideoId, req.user.id);
-  res.json({ token, publicId: course.cmsPublicVideoId });
+// Endpoint — your frontend calls this to get a fresh token
+app.post('/api/lms-token', requireAuth, (req, res) => {
+  const { publicId } = req.body;
+  const token = generateCmsLaunchToken(publicId, req.user.id);
+  res.json({ token });
 });
 ```
 
-**CRITICAL RULES for the token:**
-- `userId` — the logged-in student's unique ID (string)
-- `publicId` — the CMS video's public ID, e.g. `"mjakYG627Y"` (stored in your DB per video)
-- `exp` — Unix timestamp in SECONDS, must be 1-5 minutes in the future
-- `nonce` — a fresh random UUID for every request, never reuse
-- `aud` — must be exactly the string `"video-cms"`
-- `origin` — must be exactly `"https://complete-video-hr-syan-exams-test-final-dww7.onrender.com"` with NO trailing slash
-- The signature signs the base64url-encoded string, NOT the raw JSON
+**Python version:**
+```python
+import hmac, hashlib, json, base64, time, uuid, os
+
+LMS_HMAC_SECRET = os.environ['LMS_HMAC_SECRET']
+LMS_ORIGIN = 'https://your-lms.com'
+
+def generate_cms_launch_token(public_id, user_id):
+    payload = {
+        'userId':   str(user_id),
+        'publicId': str(public_id),
+        'exp':      int(time.time()) + 240,
+        'nonce':    str(uuid.uuid4()),
+        'aud':      'video-cms',
+        'origin':   LMS_ORIGIN,
+    }
+    payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(',',':')).encode()
+    ).rstrip(b'=').decode()
+    sig = hmac.new(LMS_HMAC_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f'{payload_b64}.{sig}'
+```
 
 ---
 
-### PART 2: Frontend — Send the token to the iframe via postMessage
+## STEP 2 — Frontend: Embed the iframe (no token in URL)
 
-After the iframe loads, the LMS frontend must:
-1. Call the backend `/lms-token` endpoint to get a fresh token
-2. Send it to the iframe using `window.postMessage`
-
-**The postMessage MUST use this EXACT format:**
-
-```javascript
-iframe.contentWindow.postMessage(
-  {
-    type: 'LMS_LAUNCH_TOKEN',
-    token: 'the-hmac-token-string-from-backend'
-  },
-  'https://railway-cms-production.up.railway.app'
-);
+```html
+<iframe
+  id="cms-video-player"
+  src="https://railway-cms-production.up.railway.app/embed/VIDEO_PUBLIC_ID"
+  width="100%" height="500"
+  frameborder="0" allowfullscreen
+  allow="autoplay; fullscreen; encrypted-media"
+  referrerpolicy="no-referrer-when-downgrade"
+  sandbox="allow-scripts allow-same-origin allow-presentation"
+></iframe>
 ```
 
-Here is complete working frontend code:
+**There must be NO `?token=` in the `src`.** The token is sent via `postMessage` only.
+
+---
+
+## STEP 3 — Frontend: Send the token via postMessage
 
 ```javascript
-async function authorizeVideoPlayer(iframeElement, courseId) {
-  const CMS_ORIGIN = 'https://railway-cms-production.up.railway.app';
+const CMS_ORIGIN = 'https://railway-cms-production.up.railway.app';
 
-  // 1. Get fresh token from your backend
-  const res = await fetch(`/api/video-courses/${courseId}/lms-token`, {
+async function initCmsPlayer(iframeId, publicId) {
+  const iframe = document.getElementById(iframeId);
+  if (!iframe) return;
+
+  const res = await fetch('/api/lms-token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
+    body: JSON.stringify({ publicId }),
   });
-  if (!res.ok) return console.error('Token generation failed');
+  if (!res.ok) return;
   const { token } = await res.json();
 
-  // 2. Send to the CMS player iframe
-  function send() {
-    iframeElement.contentWindow.postMessage(
-      { type: 'LMS_LAUNCH_TOKEN', token: token },
-      CMS_ORIGIN
+  function sendToken() {
+    iframe.contentWindow?.postMessage(
+      { type: 'LMS_LAUNCH_TOKEN', token },  // type must be exactly this string
+      CMS_ORIGIN                              // targetOrigin must be exactly this
     );
   }
 
-  // 3. Send immediately + retry every second for 10 seconds
-  send();
-  let count = 0;
+  // Send immediately + retry every second for 10 seconds
+  sendToken();
+  let retries = 0;
   const interval = setInterval(() => {
-    if (++count >= 10) return clearInterval(interval);
-    send();
+    if (++retries >= 10) { clearInterval(interval); return; }
+    sendToken();
   }, 1000);
 }
-```
 
-Call it like this after the iframe loads:
-
-```javascript
-const iframe = document.getElementById('video-player-iframe');
-iframe.addEventListener('load', () => {
-  authorizeVideoPlayer(iframe, courseId);
+document.getElementById('cms-video-player').addEventListener('load', () => {
+  initCmsPlayer('cms-video-player', 'VIDEO_PUBLIC_ID');
 });
 ```
 
-If using React:
+---
 
-```jsx
-const iframeRef = useRef(null);
+## THINGS THAT WILL BREAK IT
 
-useEffect(() => {
-  const iframe = iframeRef.current;
-  if (!iframe) return;
-
-  const onLoad = () => authorizeVideoPlayer(iframe, courseId);
-  iframe.addEventListener('load', onLoad);
-  return () => iframe.removeEventListener('load', onLoad);
-}, [courseId]);
-
-return (
-  <iframe
-    ref={iframeRef}
-    src={`https://railway-cms-production.up.railway.app/embed/${publicId}`}
-    width="100%"
-    height="480"
-    frameBorder="0"
-    allowFullScreen
-    allow="autoplay; fullscreen; encrypted-media"
-  />
-);
-```
+| Mistake | Result |
+|---------|--------|
+| `type: 'token'` or any other type | Player ignores the message, waits forever |
+| `postMessage(msg, '*')` | Player may reject the wildcard origin |
+| Trailing slash on targetOrigin or LMS_ORIGIN | Token rejected |
+| `?token=` in the iframe src | Expires after a day, can't refresh |
+| LMS_HMAC_SECRET value different from CMS | HMAC mismatch, 401 |
+| Signing raw JSON instead of base64url string | HMAC mismatch, 401 |
+| `aud` not exactly `"video-cms"` | Token rejected |
+| `exp` more than 300 seconds from now | Token rejected |
+| Reusing the same nonce | Token rejected on second use |
 
 ---
 
-### THE IFRAME URL
+## QUICK TEST
 
-The iframe `src` must be:
-```
-https://railway-cms-production.up.railway.app/embed/{publicId}
-```
-
-**DO NOT put any `?token=` in the iframe URL.** The token goes through postMessage only.
-
----
-
-### THINGS THAT WILL CAUSE FAILURE
-
-| Mistake | Why it fails |
-|---------|-------------|
-| `postMessage({ type: 'token', ... })` | Player only accepts `type: 'LMS_LAUNCH_TOKEN'` exactly |
-| `postMessage({ token: '...' })` | Missing `type` field — player ignores it |
-| `postMessage(msg, '*')` | Insecure — player may reject wildcard origin |
-| `postMessage(msg, 'https://railway-cms.up.railway.app')` | Wrong subdomain — must be `railway-cms-production` |
-| Token with trailing slash in `origin` field | CMS does exact string match — no trailing slash |
-| Token with `aud: 'lms'` or any value other than `"video-cms"` | CMS rejects tokens with wrong audience |
-| Reusing old tokens instead of generating fresh ones | Tokens expire after 5 minutes — always generate new |
-| Signing raw JSON instead of base64url string | Signature won't match — CMS rejects |
-| Putting `?token=eyJ...` in the iframe URL | URL tokens expire and can't be refreshed — use postMessage |
-
----
-
-### HOW TO TEST
-
-Run this in your terminal to verify your backend generates valid tokens:
+Run this in your terminal to verify your token generation is correct before browser testing:
 
 ```bash
-# Generate a test token
 TOKEN=$(node -e "
 const crypto = require('crypto');
-const p = {
-  userId: 'test',
-  publicId: 'mjakYG627Y',
-  exp: Math.floor(Date.now()/1000) + 240,
-  nonce: crypto.randomUUID(),
-  aud: 'video-cms',
-  origin: 'https://complete-video-hr-syan-exams-test-final-dww7.onrender.com'
-};
-const b = Buffer.from(JSON.stringify(p)).toString('base64url');
-const s = crypto.createHmac('sha256','a41afc36c3216bc49b9e780ed4004dfa847a3c26446d1a216be6cecf836bf5d6').update(b).digest('hex');
-console.log(b+'.'+s);
+const secret = 'PASTE_YOUR_LMS_HMAC_SECRET_HERE';
+const origin = 'https://your-lms.com';
+const p = { userId:'test', publicId:'mjakYG627Y', exp:Math.floor(Date.now()/1000)+240, nonce:crypto.randomUUID(), aud:'video-cms', origin };
+const b64 = Buffer.from(JSON.stringify(p)).toString('base64url');
+const sig = crypto.createHmac('sha256',secret).update(b64).digest('hex');
+console.log(b64+'.'+sig);
 ")
 
-# Test against the CMS
-curl -s -X POST \
-  https://railway-cms-production.up.railway.app/api/player/mjakYG627Y/mint \
+curl -s -X POST https://railway-cms-production.up.railway.app/api/player/mjakYG627Y/mint \
   -H 'Content-Type: application/json' \
   -d "{\"lmsLaunchToken\":\"$TOKEN\"}"
 ```
 
-**Expected success response:**
-```json
-{"token":"eyJ...","expiresAt":"2026-...","tokenId":"..."}
-```
-
-If you get this response, your token format is correct and the CMS accepts it.
+Expected success: `{"token":"eyJ...","expiresAt":"...","tokenId":"..."}`
+Any 4xx response means the token is wrong — the message will tell you exactly why.
 
 ---
 
-### SUMMARY OF CHANGES NEEDED IN LMS CODE
-
-1. **Backend file** (wherever `/api/video-courses/:id/lms-token` is defined):
-   - Add the `generateCmsLaunchToken()` function shown above
-   - Make the endpoint return `{ token, publicId }` using that function
-
-2. **Frontend file** (wherever the video player iframe is rendered):
-   - Add the `authorizeVideoPlayer()` function shown above
-   - Call it when the iframe loads
-   - Make sure the iframe `src` has NO `?token=` parameter
-
-That's it. Two files, two changes. The video will start playing automatically.
+For full debugging reference, error message explanations, and Python/PHP code: see `docs/LMS_INTEGRATION_GUIDE.md`.
