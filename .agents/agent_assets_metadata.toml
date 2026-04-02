@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "w9TLQCm8UZBDy-J2XeFKI"
+uri = "file://docs/LMS_INTEGRATION_GUIDE.md"
+type = "text"
+title = "LMS Integration Guide — Send to your LMS developer"
