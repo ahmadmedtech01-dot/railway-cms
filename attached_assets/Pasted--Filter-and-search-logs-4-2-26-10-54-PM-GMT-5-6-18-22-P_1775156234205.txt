@@ -1,0 +1,135 @@
+
+
+Filter and search logs
+
+4/2/26, 10:54 PM GMT+5
+
+
+6:18:22 PM [express] GET /api/videos/123f965a-2b7b-463e-8dbe-3d32accbaeb7/admin-preview-token 200 in 1014ms :: {"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiMTIzZjk2NWEtMmI3Yi00NjNlLThkYmUtM2QzMmFjY2JhZWI3IiwicHVibGljSWQiOiJtamFrWUc2MjdZIiwiYWRtaW5QcmV2aWV3Ijp0cnVlLCJpYXQiOjE3NzUxNTM5MDIsImV4cCI6MTc3NTI...
+6:18:22 PM [express] GET /api/security/video/123f965a-2b7b-463e-8dbe-3d32accbaeb7 200 in 1016ms :: {"blockVideoRecording":true,"blockScreenshots":false,"disableRightClick":true,"blockDevTools":true,"enableFocusMode":false,"disableDownloads":true,"requireFullscreen":false,"antiScreenSharing":false,"suspiciousDetectionEna...
+6:18:23 PM [express] GET /api/videos/123f965a-2b7b-463e-8dbe-3d32accbaeb7/tokens 200 in 1015ms :: [{"id":"2dbf84b1-d3d3-4206-9d71-0c48b7c45141","videoId":"123f965a-2b7b-463e-8dbe-3d32accbaeb7","token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiMTIzZjk2NWEtMmI3Yi00NjNlLThkYmUtM2QzMmFjY2JhZWI3IiwicHVibGljSWQiOi...
+6:18:23 PM [express] GET /api/security/video/123f965a-2b7b-463e-8dbe-3d32accbaeb7/use-global 200 in 1015ms :: {"useGlobal":false}
+6:18:23 PM [express] GET /api/videos/123f965a-2b7b-463e-8dbe-3d32accbaeb7/banners 304 in 1004ms :: []
+6:18:23 PM [express] GET /api/videos/123f965a-2b7b-463e-8dbe-3d32accbaeb7 304 in 1988ms :: {"id":"123f965a-2b7b-463e-8dbe-3d32accbaeb7","publicId":"mjakYG627Y","title":"test video","description":"sssssssssssssssssssss","author":"ALi","tags":["ssss"],"thumbnailUrl":null,"thumbnailAssetId":null,"thumbnailUpdatedAt":null,"...
+6:18:24 PM [express] GET /api/videos/123f965a-2b7b-463e-8dbe-3d32accbaeb7/analytics 200 in 509ms :: {"totalPlays":10,"totalWatchSeconds":3811,"uniqueDomains":2,"topDomains":[["simple-lmstest-production.up.railway.app",8],["71c7b14d-6c92-4629-9506-f607f170023a-00-yiw8lh7al4uf.worf.replit.dev",2]],"recentSessions":[{"id":...
+6:18:35 PM [express] GET /api/player/mjakYG627Y/manifest 401 in 1009ms :: {"message":"Token expired"}
+6:18:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 1ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:18:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 253ms :: {"ok":true}
+6:19:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 254ms :: {"ok":true}
+6:20:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 256ms :: {"ok":true}
+6:21:52 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app"]}
+6:21:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 1ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:21:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 332ms :: {"ok":true}
+6:22:12 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app"]}
+6:22:18 PM [express] GET /api/lms/origins 200 in 0ms :: {"origins":["https://simple-lmstest-production.up.railway.app"]}
+6:22:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 255ms :: {"ok":true}
+6:23:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 254ms :: {"ok":true}
+6:24:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 1ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:24:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 254ms :: {"ok":true}
+6:25:26 PM [express] GET /api/lms/origins 200 in 0ms :: {"origins":["https://simple-lmstest-production.up.railway.app"]}
+6:25:38 PM [express] GET /api/lms/origins 200 in 0ms :: {"origins":["https://simple-lmstest-production.up.railway.app"]}
+6:25:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 253ms :: {"ok":true}
+6:26:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 254ms :: {"ok":true}
+6:27:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 1ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:27:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 254ms :: {"ok":true}
+6:28:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 253ms :: {"ok":true}
+6:29:53 PM [express] GET /api/player/mjakYG627Y/manifest 401 in 1022ms :: {"message":"Invalid token"}
+6:29:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 251ms :: {"ok":true}
+6:30:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 1ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:30:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 253ms :: {"ok":true}
+6:31:15 PM [express] GET /api/videos/123f965a-2b7b-463e-8dbe-3d32accbaeb7/tokens 200 in 506ms :: [{"id":"d702c468-93d0-493b-b5a6-532f60c84a00","videoId":"123f965a-2b7b-463e-8dbe-3d32accbaeb7","token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiMTIzZjk2NWEtMmI3Yi00NjNlLThkYmUtM2QzMmFjY2JhZWI3IiwicHVibGljSWQiOiJ...
+6:31:14 PM [express] POST /api/videos/123f965a-2b7b-463e-8dbe-3d32accbaeb7/tokens 200 in 1060ms :: {"id":"d702c468-93d0-493b-b5a6-532f60c84a00","videoId":"123f965a-2b7b-463e-8dbe-3d32accbaeb7","token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiMTIzZjk2NWEtMmI3Yi00NjNlLThkYmUtM2QzMmFjY2JhZWI3IiwicHVibGljSWQiOi...
+6:31:43 PM [express] GET /api/player/mjakYG627Y/manifest 401 in 1052ms :: {"message":"Invalid token"}
+6:31:53 PM [express] GET /api/player/mjakYG627Y/manifest 401 in 1003ms :: {"message":"Invalid token"}
+6:31:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 260ms :: {"ok":true}
+6:32:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 252ms :: {"ok":true}
+6:33:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 0ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:33:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 253ms :: {"ok":true}
+6:34:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 264ms :: {"ok":true}
+6:35:42 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app"]}
+6:35:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 257ms :: {"ok":true}
+6:36:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 1ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:36:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 252ms :: {"ok":true}
+6:37:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 252ms :: {"ok":true}
+6:38:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 255ms :: {"ok":true}
+Starting Container
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 start
+> NODE_ENV=production node dist/index.cjs
+[db] Using Supabase database
+6:39:54 PM [express] Supabase connection pre-warmed
+6:39:54 PM [express] serving on port 8080
+[security] SIGNING_SECRET loaded: true
+[hls] using gateway: https://video.syanmedtech.com
+6:39:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 3ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+Stopping Container
+6:39:59 PM [express] POST /api/player/mjakYG627Y/ping 200 in 2281ms :: {"ok":true}
+npm error path /app
+npm error command failed
+npm error signal SIGTERM
+npm error command sh -c NODE_ENV=production node dist/index.cjs
+npm error A complete log of this run can be found in: /root/.npm/_logs/2026-04-02T18_17_35_285Z-debug-0.log
+6:40:58 PM [express] POST /api/player/mjakYG627Y/ping 200 in 257ms :: {"ok":true}
+6:41:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 258ms :: {"ok":true}
+6:42:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 0ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:42:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 255ms :: {"ok":true}
+6:43:09 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com"]}
+6:43:18 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com"]}
+6:43:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 255ms :: {"ok":true}
+6:44:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 255ms :: {"ok":true}
+6:45:04 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com"]}
+6:45:06 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:45:06 PM [express] POST /api/player/mjakYG627Y/mint 403 in 256ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:45:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 0ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:45:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 259ms :: {"ok":true}
+6:46:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 252ms :: {"ok":true}
+6:47:58 PM [express] POST /api/player/mjakYG627Y/ping 200 in 253ms :: {"ok":true}
+6:48:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 0ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:48:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 252ms :: {"ok":true}
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 start
+> NODE_ENV=production node dist/index.cjs
+[db] Using Supabase database
+Starting Container
+6:49:54 PM [express] Supabase connection pre-warmed
+6:49:54 PM [express] serving on port 8080
+[security] SIGNING_SECRET loaded: true
+[hls] using gateway: https://video.syanmedtech.com
+6:49:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 260ms :: {"ok":true}
+Stopping Container
+npm error path /app
+npm error command failed
+npm error signal SIGTERM
+npm error command sh -c NODE_ENV=production node dist/index.cjs
+npm error A complete log of this run can be found in: /root/.npm/_logs/2026-04-02T18_39_52_563Z-debug-0.log
+6:50:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 292ms :: {"ok":true}
+6:51:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 1ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:51:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 256ms :: {"ok":true}
+6:52:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 255ms :: {"ok":true}
+6:53:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 255ms :: {"ok":true}
+6:54:57 PM [express] POST /api/player/mjakYG627Y/rotate-session 403 in 0ms :: {"code":"PLAYBACK_DENIED","message":"Session invalid or expired"}
+6:54:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 258ms :: {"ok":true}
+6:55:57 PM [express] POST /api/player/mjakYG627Y/ping 200 in 259ms :: {"ok":true}
+6:56:33 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com"]}
+6:56:34 PM [express] POST /api/player/mjakYG627Y/mint 403 in 264ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:56:35 PM [routes] [lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: userId, publicId, exp, nonce, aud, origin
+6:56:36 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:36 PM [express] POST /api/player/mjakYG627Y/mint 403 in 258ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:56:37 PM [express] POST /api/player/mjakYG627Y/mint 403 in 259ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:56:38 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:38 PM [express] POST /api/player/mjakYG627Y/mint 403 in 258ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:56:39 PM [routes] [lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: userId, publicId, exp, nonce, aud, origin
+6:56:39 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:39 PM [express] POST /api/player/mjakYG627Y/mint 403 in 258ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:56:40 PM [routes] [lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: userId, publicId, exp, nonce, aud, origin
+6:56:40 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:41 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:42 PM [routes] [lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: userId, publicId, exp, nonce, aud, origin
+6:56:42 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:42 PM [express] POST /api/player/mjakYG627Y/mint 403 in 263ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:56:43 PM [routes] [lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: userId, publicId, exp, nonce, aud, origin
+6:56:43 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:43 PM [express] POST /api/player/mjakYG627Y/mint 403 in 257ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
+6:56:44 PM [routes] [lms-verify] FAIL: HMAC signature mismatch — check LMS_HMAC_SECRET matches on both sides. Payload fields: userId, publicId, exp, nonce, aud, origin
+6:56:44 PM [routes] TOKEN_MINT_DENIED: reason=invalid_launch_token publicId=mjakYG627Y
+6:56:44 PM [express] POST /api/player/mjakYG627Y/mint 403 in 256ms :: {"code":"INVALID_LAUNCH_TOKEN","message":"Invalid or expired launch token"}
