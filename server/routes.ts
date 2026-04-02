@@ -439,10 +439,11 @@ function getSigningSecret(): string {
 }
 
 function generateToken(payload: object, ttlSeconds: number | null): string {
+  const uniquePayload = { ...payload, jti: crypto.randomUUID() };
   if (ttlSeconds === null || ttlSeconds === 0) {
-    return jwt.sign(payload, getSigningSecret());
+    return jwt.sign(uniquePayload, getSigningSecret());
   }
-  return jwt.sign(payload, getSigningSecret(), { expiresIn: ttlSeconds });
+  return jwt.sign(uniquePayload, getSigningSecret(), { expiresIn: ttlSeconds });
 }
 
 function verifyToken(token: string): any {
