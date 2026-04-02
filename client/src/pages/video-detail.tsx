@@ -234,6 +234,8 @@ export default function VideoDetailPage() {
   const [tokenTtl, setTokenTtl] = useState("0");
   const [embedWidth, setEmbedWidth] = useState("100%");
   const [embedHeight, setEmbedHeight] = useState("500");
+  const [embedMode, setEmbedMode] = useState<"postMessage" | "queryParam">("postMessage");
+  const [selectedTokenId, setSelectedTokenId] = useState<string>("");
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
   const [domainInput, setDomainInput] = useState("");
   const [baseUrl, setBaseUrl] = useState(() => window.location.origin);
@@ -574,12 +576,17 @@ export default function VideoDetailPage() {
   const ws = video.watermarkSettings || {};
   const ss = video.securitySettings || {};
   const firstToken = tokens.find(t => !t.revoked);
+  const activeTokens = tokens.filter(t => !t.revoked && (!t.expiresAt || new Date(t.expiresAt) > new Date()));
+  const selectedToken = activeTokens.find(t => t.id === selectedTokenId) || activeTokens[0];
   const embedSrc = `${baseUrl}/embed/${video.publicId}`;
+  const embedSrcWithToken = selectedToken
+    ? `${baseUrl}/embed/${video.publicId}?token=${selectedToken.token}`
+    : embedSrc;
   const shareLink = firstToken
     ? `${baseUrl}/v/${video.publicId}?token=${firstToken.token}`
     : `${baseUrl}/v/${video.publicId}`;
 
-  const iframeCode = `<iframe
+  const iframeCodePostMessage = `<iframe
   id="secure-video-player"
   src="${embedSrc}"
   width="${embedWidth}"
@@ -590,11 +597,33 @@ export default function VideoDetailPage() {
   frameborder="0">
 </iframe>`;
 
-  const postMessageCode = `// Send this after the iframe loads — replace the token with a signed LMS launch token
+  const iframeCodeQueryParam = `<iframe
+  id="secure-video-player"
+  src="${embedSrcWithToken}"
+  width="${embedWidth}"
+  height="${embedHeight}"
+  allow="fullscreen"
+  referrerpolicy="no-referrer-when-downgrade"
+  sandbox="allow-scripts allow-same-origin allow-presentation"
+  frameborder="0">
+</iframe>`;
+
+  const iframeCode = embedMode === "postMessage" ? iframeCodePostMessage : iframeCodeQueryParam;
+
+  const postMessageCode = `// After the iframe loads, send a signed HMAC launch token
 const iframe = document.getElementById('secure-video-player');
-iframe.addEventListener('load', () => {
+iframe.addEventListener('load', async () => {
+  // 1. Generate token on your backend (see LMS Integration Guide)
+  const res = await fetch('/api/your-lms/generate-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publicId: '${video.publicId}' })
+  });
+  const { token } = await res.json();
+
+  // 2. Send to the CMS player
   iframe.contentWindow.postMessage(
-    { type: 'LMS_LAUNCH_TOKEN', token: '<YOUR_SIGNED_LMS_LAUNCH_TOKEN>' },
+    { type: 'LMS_LAUNCH_TOKEN', token },
     '${baseUrl}'
   );
 });`;
@@ -2111,62 +2140,145 @@ iframe.addEventListener('load', () => {
             <CardHeader className="flex flex-row items-center justify-between gap-2">
               <div>
                 <CardTitle className="text-base">Embed Codes</CardTitle>
-                <CardDescription>Use these in external websites</CardDescription>
+                <CardDescription>Choose how your LMS or website authenticates the player</CardDescription>
               </div>
               <Button size="sm" onClick={() => setTokenDialogOpen(true)} data-testid="button-create-token">
                 <Plus className="h-3.5 w-3.5 mr-1" />New Token
               </Button>
             </CardHeader>
             <CardContent className="space-y-5">
-              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-sm text-blue-700 dark:text-blue-300">
-                <p className="font-medium mb-1">Secure LMS Embedding</p>
-                <p className="opacity-80 text-xs">This player uses postMessage authorization — the token is never exposed in the URL. Your LMS must send a signed launch token to the iframe after it loads.</p>
-              </div>
-
               <div className="space-y-2">
-                <Label>iFrame Embed Code</Label>
-                <div className="relative">
-                  <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto border border-border whitespace-pre-wrap break-all">{iframeCode}</pre>
-                </div>
-                <CopyButton text={iframeCode} label="Copy iFrame" />
-              </div>
-
-              <div className="space-y-2">
-                <Label>LMS Authorization Snippet (JavaScript)</Label>
-                <div className="relative">
-                  <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto border border-border whitespace-pre-wrap break-all font-mono">{postMessageCode}</pre>
-                </div>
-                <CopyButton text={postMessageCode} label="Copy JS Snippet" />
-                <p className="text-xs text-muted-foreground">Generate a signed LMS launch token on your server using <code className="bg-muted px-1 rounded">LMS_HMAC_SECRET</code> and send it via postMessage.</p>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>Masked Share Link</Label>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => resetShareLink.mutate()}
-                    disabled={resetShareLink.isPending}
-                    data-testid="button-reset-share-link"
-                    className="h-7 text-xs gap-1"
+                <Label>Embed Mode</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setEmbedMode("postMessage")}
+                    className={`rounded-lg border p-3 text-left transition-all ${embedMode === "postMessage" ? "border-blue-500 bg-blue-500/10 ring-1 ring-blue-500/30" : "border-border hover:border-muted-foreground/30"}`}
+                    data-testid="button-embed-mode-postmessage"
                   >
-                    <RotateCcw className="h-3 w-3" />
-                    {resetShareLink.isPending ? "Resetting…" : "Reset Link"}
-                  </Button>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Shield className="h-4 w-4 text-blue-500" />
+                      <span className="text-sm font-medium text-foreground">postMessage (Secure)</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">LMS auto-generates tokens on each page load. Most secure — token never in URL.</p>
+                  </button>
+                  <button
+                    onClick={() => setEmbedMode("queryParam")}
+                    className={`rounded-lg border p-3 text-left transition-all ${embedMode === "queryParam" ? "border-blue-500 bg-blue-500/10 ring-1 ring-blue-500/30" : "border-border hover:border-muted-foreground/30"}`}
+                    data-testid="button-embed-mode-queryparam"
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <Key className="h-4 w-4 text-orange-500" />
+                      <span className="text-sm font-medium text-foreground">Query Param (Static)</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Embed token in the URL. Simpler setup — use a non-expiring token for LMS.</p>
+                  </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Input value={shareLink} readOnly className="font-mono text-xs" />
-                  <CopyButton text={shareLink} />
-                </div>
-                <p className="text-xs text-muted-foreground">Reset generates a new link and invalidates the current one.</p>
               </div>
 
-              <div className="space-y-2">
-                <Label>Public Video ID</Label>
-                <div className="flex items-center gap-2">
-                  <Input value={video.publicId} readOnly className="font-mono text-sm" />
-                  <CopyButton text={video.publicId} />
+              {embedMode === "postMessage" && (
+                <>
+                  <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-sm text-blue-700 dark:text-blue-300">
+                    <p className="font-medium mb-1">LMS Auto-Generate Mode</p>
+                    <p className="opacity-80 text-xs">Your LMS generates a fresh HMAC-signed token server-side on every page load and sends it to the iframe via postMessage. The token is never exposed in the URL. See the LMS Integration Guide for implementation details.</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>iFrame Embed Code (no token in URL)</Label>
+                    <div className="relative">
+                      <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto border border-border whitespace-pre-wrap break-all">{iframeCode}</pre>
+                    </div>
+                    <CopyButton text={iframeCode} label="Copy iFrame" />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>LMS Authorization Snippet (JavaScript)</Label>
+                    <div className="relative">
+                      <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto border border-border whitespace-pre-wrap break-all font-mono">{postMessageCode}</pre>
+                    </div>
+                    <CopyButton text={postMessageCode} label="Copy JS Snippet" />
+                    <p className="text-xs text-muted-foreground">Your LMS backend must generate the HMAC token using <code className="bg-muted px-1 rounded">LMS_HMAC_SECRET</code>. See the LMS Integration Guide for the full backend code.</p>
+                  </div>
+                </>
+              )}
+
+              {embedMode === "queryParam" && (
+                <>
+                  <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-3 text-sm text-orange-700 dark:text-orange-300">
+                    <p className="font-medium mb-1">Static Token Mode</p>
+                    <p className="opacity-80 text-xs">The embed token is included directly in the iframe URL. Use a "Never expires" token for LMS integration so the link stays valid permanently.</p>
+                  </div>
+
+                  {activeTokens.length > 0 && (
+                    <div className="space-y-2">
+                      <Label>Select Token</Label>
+                      <Select value={selectedToken?.id || ""} onValueChange={setSelectedTokenId}>
+                        <SelectTrigger data-testid="select-embed-token"><SelectValue placeholder="Choose a token" /></SelectTrigger>
+                        <SelectContent>
+                          {activeTokens.map(t => (
+                            <SelectItem key={t.id} value={t.id}>
+                              {t.label || "Token"} — {t.expiresAt ? `expires ${formatDistanceToNow(new Date(t.expiresAt), { addSuffix: true })}` : "never expires"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  {activeTokens.length === 0 && (
+                    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                      <p className="font-medium">No active tokens available</p>
+                      <p className="opacity-80 text-xs mt-1">Create a new token with "Never expires" to use Query Param mode.</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <Label>iFrame Embed Code (token in URL)</Label>
+                    <div className="relative">
+                      <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto border border-border whitespace-pre-wrap break-all">{iframeCode}</pre>
+                    </div>
+                    <CopyButton text={iframeCode} label="Copy iFrame" />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Direct Embed URL</Label>
+                    <div className="flex items-center gap-2">
+                      <Input value={embedSrcWithToken} readOnly className="font-mono text-xs" data-testid="input-embed-url-queryparam" />
+                      <CopyButton text={embedSrcWithToken} />
+                    </div>
+                    <p className="text-xs text-muted-foreground">Use this URL directly in your LMS embed settings.</p>
+                  </div>
+                </>
+              )}
+
+              <div className="border-t border-border pt-4 space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Masked Share Link</Label>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => resetShareLink.mutate()}
+                      disabled={resetShareLink.isPending}
+                      data-testid="button-reset-share-link"
+                      className="h-7 text-xs gap-1"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      {resetShareLink.isPending ? "Resetting…" : "Reset Link"}
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input value={shareLink} readOnly className="font-mono text-xs" />
+                    <CopyButton text={shareLink} />
+                  </div>
+                  <p className="text-xs text-muted-foreground">Reset generates a new link and invalidates the current one.</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Public Video ID</Label>
+                  <div className="flex items-center gap-2">
+                    <Input value={video.publicId} readOnly className="font-mono text-sm" />
+                    <CopyButton text={video.publicId} />
+                  </div>
                 </div>
               </div>
             </CardContent>
