@@ -869,8 +869,8 @@ export default function EmbedPlayerPage() {
     const v = videoRef.current;
     if (!v || isBlocked || playbackDenied) return;
     // Fullscreen required — prompt fullscreen and count violation
-    if (effectiveSecurity.requireFullscreen && !document.fullscreenElement && v.paused) {
-      playerContainerRef.current?.requestFullscreen().catch(() => {});
+    if (effectiveSecurity.requireFullscreen && !isFullscreen && v.paused) {
+      enterFullscreen();
       reportViolation("FULLSCREEN_REQUIRED_BREACH" as ViolationType);
       return;
     }
@@ -979,16 +979,88 @@ export default function EmbedPlayerPage() {
     setMuted(vol === 0);
   };
 
+  const enterFullscreen = async () => {
+    const el = playerContainerRef.current;
+    const v = videoRef.current;
+    if (!el) return;
+
+    try {
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+        setIsFullscreen(true);
+      } else if ((el as any).webkitRequestFullscreen) {
+        (el as any).webkitRequestFullscreen();
+        setIsFullscreen(true);
+      } else if (v && (v as any).webkitEnterFullscreen) {
+        (v as any).webkitEnterFullscreen();
+        setIsFullscreen(true);
+      } else {
+        setIsFullscreen(true);
+      }
+    } catch {
+      setIsFullscreen(true);
+    }
+
+    try {
+      const orientation = screen.orientation as any;
+      if (orientation?.lock) {
+        await orientation.lock("landscape").catch(() => {});
+      }
+    } catch {}
+  };
+
+  const exitFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else if ((document as any).webkitFullscreenElement) {
+        (document as any).webkitCancelFullScreen();
+      }
+    } catch {}
+
+    setIsFullscreen(false);
+
+    try {
+      const orientation = screen.orientation as any;
+      if (orientation?.unlock) {
+        orientation.unlock();
+      } else if (orientation?.lock) {
+        await orientation.lock("portrait").catch(() => {});
+      }
+    } catch {}
+  };
+
   const toggleFullscreen = () => {
     if (!playerSettings.allowFullscreen) return;
-    const el = playerContainerRef.current;
-    if (!el) return;
-    if (!document.fullscreenElement) {
-      el.requestFullscreen().then(() => setIsFullscreen(true));
+    if (isFullscreen) {
+      exitFullscreen();
     } else {
-      document.exitFullscreen().then(() => setIsFullscreen(false));
+      enterFullscreen();
     }
   };
+
+  useEffect(() => {
+    const onFsChange = () => {
+      const inNativeFs = !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
+      if (!inNativeFs && isFullscreen) {
+        setIsFullscreen(false);
+        try {
+          const orientation = screen.orientation as any;
+          if (orientation?.unlock) orientation.unlock();
+        } catch {}
+      }
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+      try {
+        const orientation = screen.orientation as any;
+        if (orientation?.unlock) orientation.unlock();
+      } catch {}
+    };
+  }, [isFullscreen]);
 
   const changeSpeed = (rate: number) => {
     const v = videoRef.current;
@@ -1178,10 +1250,10 @@ export default function EmbedPlayerPage() {
   const popText = resolveWatermarkText(ws.popText || "{DOMAIN}", videoId, sessionCode);
 
   return (
-    <div className="bg-black w-full h-screen flex items-center justify-center overflow-hidden">
+    <div className={`bg-black w-full h-screen flex items-center justify-center overflow-hidden ${isFullscreen ? "fixed inset-0 z-[99999]" : ""}`}>
       <div
         ref={playerContainerRef}
-        className="relative w-full h-full select-none"
+        className={`relative w-full h-full select-none ${isFullscreen ? "fixed inset-0 z-[99999] bg-black" : ""}`}
         onMouseMove={showControlsTemporarily}
         onMouseLeave={() => playing && setShowControls(false)}
         onClick={togglePlay}

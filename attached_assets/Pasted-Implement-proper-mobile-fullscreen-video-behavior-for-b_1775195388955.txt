@@ -1,0 +1,124 @@
+Implement proper mobile fullscreen video behavior for both Android and iOS of player by default 
+
+GOAL
+When the user taps the fullscreen icon on the video player:
+1. The video must enter true fullscreen
+2. The device should rotate to landscape
+3. The player should cover the entire mobile screen edge-to-edge
+4. App header, tabs, extra content, bottom navigation, comments, description, and all other UI must hide while fullscreen is active
+5. When the user taps fullscreen again, or exits fullscreen, it should return to portrait mode and restore the normal page layout
+6. Behavior should feel like YouTube mobile fullscreen
+
+CURRENT ISSUE
+Right now fullscreen button is visible but pressing it does not make the video go into actual fullscreen landscape mode on Android/iOS.
+
+WHAT I WANT YOU TO DO
+First inspect the current mobile video player implementation and identify:
+- which screen/component renders the player
+- which video library is being used
+- where the current fullscreen icon handler exists
+- whether orientation lock is already partially implemented
+
+Then implement a clean production-ready solution.
+
+REQUIRED BEHAVIOR
+A. ENTER FULLSCREEN
+- On fullscreen button press:
+  - lock orientation to landscape
+  - render the player in fullscreen mode
+  - occupy full width and full height of the device
+  - hide status bar if appropriate
+  - hide all parent screen content
+  - ensure controls still work in fullscreen
+  - ensure video continues playing without reload if possible
+
+B. EXIT FULLSCREEN
+- On exit fullscreen:
+  - lock orientation back to portrait
+  - restore original page UI
+  - preserve playback position
+  - preserve paused/playing state correctly
+  - do not restart the video unless absolutely necessary
+
+C. USER EXPERIENCE
+- Fullscreen toggle must work from:
+  - tapping the fullscreen button
+  - rotating back if needed
+  - hardware back button on Android should exit fullscreen first before leaving the screen
+- On iOS and Android both, fullscreen should feel native and stable
+- No flicker, no duplicate players, no black screen, no stuck landscape mode
+
+D. PLAYER LAYOUT
+In fullscreen:
+- video fills the screen
+- black background behind player
+- safe area handled properly
+- controls remain accessible
+- no white margins
+- no header/footer visible
+- no chat/help floating button visible
+- no chapter card / author card / save/share UI visible
+
+E. PAGE LAYOUT AFTER EXIT
+After exiting fullscreen:
+- page returns exactly as before
+- portrait layout restored
+- user remains on same scroll position if possible
+- player continues from same timestamp
+
+IMPLEMENTATION NOTES
+- Keep code clean and minimal
+- Do not create unnecessary duplicate logic
+- Reuse existing player component where possible
+- Make fullscreen state controlled by a clear boolean such as isFullscreen
+- If needed, create a dedicated fullscreen wrapper/modal component
+- Handle both Android and iOS carefully
+- Add cleanup on unmount so orientation is reset to portrait if the user leaves the screen while fullscreen is active
+
+IMPORTANT TECHNICAL REQUIREMENTS
+1. Detect the current player library and use the correct fullscreen strategy for it
+2. If using Expo-managed workflow:
+   - use expo-screen-orientation
+   - use expo-status-bar if needed
+3. If using react-native-video or expo-video or another library, wire fullscreen correctly according to that library
+4. If native fullscreen callbacks exist, use them
+5. If native fullscreen is unreliable, implement custom fullscreen using a modal/absolute overlay + orientation lock
+6. Android hardware back:
+   - if fullscreen is active, back should exit fullscreen
+   - only then allow navigating away
+7. iOS:
+   - ensure safe area and status bar behavior are correct
+8. Prevent layout breaking on notch devices
+
+DELIVERABLES
+1. Implement the fullscreen feature fully
+2. Update the fullscreen icon handler
+3. Add orientation lock/unlock logic
+4. Add Android back-button handling
+5. Add cleanup logic on component unmount
+6. Make sure it works on both Android and iOS
+7. Do not change unrelated app behavior
+
+ALSO DO THESE CHECKS
+- test entering fullscreen while video is playing
+- test exiting fullscreen while video is playing
+- test pause/play inside fullscreen
+- test landscape to portrait restoration
+- test Android back button
+- test opening fullscreen multiple times
+- test entering fullscreen from embedded/course video screen
+- ensure no memory leak or event listener leak
+
+OUTPUT I WANT FROM YOU
+After implementation, give me:
+1. exact files changed
+2. what library/mechanism was used for fullscreen
+3. any package added
+4. any iOS/Android permission or config change needed
+5. short test steps for me to verify on real device
+
+IMPORTANT
+Do not give me a partial patch.
+Do not only rotate the screen.
+Do not only enlarge the player inside the page.
+I want true mobile fullscreen video behavior like YouTube.
