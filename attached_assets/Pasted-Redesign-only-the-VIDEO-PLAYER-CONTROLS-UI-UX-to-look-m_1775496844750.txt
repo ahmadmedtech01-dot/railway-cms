@@ -1,0 +1,202 @@
+Redesign only the VIDEO PLAYER CONTROLS UI/UX to look modern, premium, clean, and branded.
+
+IMPORTANT RULES:
+- DO NOT change any functionality.
+- DO NOT remove any existing option, button, control, or workflow.
+- DO NOT change logic, APIs, event handlers, keyboard shortcuts, fullscreen behavior, picture-in-picture behavior, captions behavior, speed/quality menus, mute/unmute, timeline seeking, or playback state handling.
+- This task is VISUAL DESIGN ONLY.
+- Keep the exact same controls and features that already exist.
+- Only improve styling, spacing, layout polish, icon treatment, hover states, active states, animations, and overall premium feel.
+
+PROJECT CONTEXT:
+This is for my Video CMS secure player. The player already works. I only want the controls/buttons to stop looking old/classic and instead look like a modern OTT / premium LMS / streaming player UI.
+
+DESIGN GOAL:
+Create a sleek, professional, minimal, high-end control bar inspired by modern premium players, but adapted to my brand.
+It should feel:
+- modern
+- clean
+- polished
+- premium
+- smooth
+- readable
+- mobile-friendly
+- not crowded
+- not overly glossy
+- not childish
+- not gaming-heavy
+
+USE MY BRAND COLORS TASTEFULLY:
+- Primary coral/rose: #EF6A77
+- Deep blue: #1565C0
+- Orange accent: #F9954B
+- Teal accent: #4FB1C1
+
+COLOR USAGE GUIDELINES:
+- Main active/selected state: #EF6A77
+- Secondary active/glow/accent use: #1565C0
+- Small highlight/accent details can use #4FB1C1 or #F9954B very sparingly
+- Backgrounds should remain dark and premium, not colorful
+- Avoid rainbow or loud gradients
+- Use brand colors as accents, not everywhere
+
+OVERALL VISUAL DIRECTION:
+Redesign the control bar with a modern dark glass-matte hybrid look:
+- dark charcoal / near-black base
+- subtle transparency
+- soft blur only if already supported and lightweight
+- refined border
+- subtle shadow
+- clean rounded corners (moderate, not too pillowy)
+- better spacing between controls
+- consistent icon sizes
+- better vertical alignment
+- clearer active states
+- elegant hover/focus transitions
+- improved legibility for duration/time text
+
+UI IMPROVEMENTS NEEDED:
+1. Control bar container
+- Replace the old flat/classic bar with a premium floating control dock
+- Give it a slightly elevated look
+- Add subtle inner border or outline
+- Improve padding left/right/top/bottom
+- Make the bar visually balanced on all screen sizes
+- Do not make it too tall
+
+2. Buttons
+- Redesign all control buttons (play/pause, mute, settings, PiP, fullscreen, captions if present)
+- Keep icons simple, sharp, modern
+- Use uniform button sizing
+- Use subtle hover background instead of old boxy styling
+- Active button state should use brand coral (#EF6A77)
+- Hover should feel premium, not flashy
+- Add smooth transition for hover/press/focus
+- Improve disabled state appearance if any
+
+3. Primary action emphasis
+- Play/pause should feel slightly more important than the rest
+- It can have a branded active background or stronger emphasis
+- But do not make it oversized or childish
+
+4. Timeline / progress bar
+- Redesign the seek bar to look more premium and modern
+- Slim track with elegant progress fill
+- Buffered portion should be visually distinct but subtle
+- Played progress should use brand color
+- Thumb/scrubber should look polished and easy to grab
+- Hover/focus on timeline should feel smoother
+- Keep existing seek behavior exactly the same
+
+5. Volume slider
+- Make the volume section cleaner and visually consistent with the timeline
+- Improve spacing between mute icon and slider
+- Slider thumb and track should match the main progress bar design
+- Keep existing volume functionality exactly the same
+
+6. Time display
+- Improve typography for current time / duration
+- Make it clean, crisp, and balanced
+- Slightly reduce “classic player” feel
+- Use better spacing and alignment with controls
+
+7. Settings / menu panels
+- Redesign the popup menu for Speed / Quality / Captions
+- Use a premium dark panel with subtle border, shadow, and clean item spacing
+- Better hover state for each row
+- Better active/selected indicator
+- Right-side value text should be elegant and readable
+- Keep exact same menu contents and actions
+- Do not change menu logic
+
+8. Tooltips
+- Improve tooltip styling for controls like Pause, Unmute, Enter Picture-in-Picture, etc.
+- Dark premium tooltip
+- Better padding
+- Small subtle arrow
+- Smooth appearance
+- Consistent font and spacing
+
+9. Fullscreen / PiP / settings grouping
+- Visually group secondary controls in a more intentional way
+- Maintain same order unless required for cleaner alignment
+- Keep existing functionality and control availability unchanged
+
+10. Responsiveness
+- Desktop should look premium and balanced
+- Tablet should remain clean
+- Mobile should be compact, touch-friendly, and polished
+- Do not remove controls on desktop
+- On smaller screens, only apply styling/layout responsiveness if already supported without changing functionality
+- Preserve all working mobile behaviors
+
+11. Animation
+- Add subtle transitions only:
+  - hover fade
+  - active press feedback
+  - menu open/close softness
+  - slider thumb emphasis on hover
+- Keep animations fast and professional
+- Avoid flashy motion or laggy effects
+
+12. Accessibility
+- Maintain keyboard accessibility
+- Maintain focus states
+- Improve visible focus ring styling to match brand
+- Maintain contrast for readability
+
+TECHNICAL REQUIREMENTS:
+- Reuse existing player structure/components as much as possible
+- Prefer editing only styles/classes/CSS/Tailwind layer/UI wrapper markup if needed
+- Do not refactor business logic
+- Do not break secure playback flow
+- Do not touch API calls or playback internals
+- Do not introduce heavy UI libraries unless absolutely necessary
+- Keep code clean, modular, and maintainable
+- Avoid duplication and random inline styles
+- If Tailwind is used, keep classes organized and reusable
+- Create small reusable style helpers/components only if needed for cleanliness
+- Preserve current icons if possible, but restyle their containers and presentation
+- If icon replacement is needed, use a cleaner modern icon set already in project dependencies only
+
+STYLE REFERENCES FROM THE ATTACHED IDEAS:
+Use these references only for inspiration:
+- modern floating dark control bar
+- clean icon spacing
+- premium settings panel
+- subtle glow/accent
+- better menu treatment
+- modern timeline and sliders
+- less “classic HTML5 player” feel
+Do NOT copy them literally.
+Adapt them into a more professional LMS/OTT design with my own brand colors.
+
+WHAT I WANT AS FINAL RESULT:
+- Same player
+- Same buttons
+- Same options
+- Same functionality
+- Much better looking controls
+- More modern
+- More premium
+- More branded
+- Cleaner spacing
+- Better hover/active/menu design
+- Better desktop + mobile visual polish
+
+DELIVERABLES:
+1. Implement the redesigned player controls UI
+2. Keep all existing functionality unchanged
+3. Ensure no regressions in player behavior
+4. Keep code clean and production-ready
+
+Before finishing, verify:
+- play/pause still works exactly as before
+- mute/unmute still works exactly as before
+- timeline seek still works exactly as before
+- settings menu still works exactly as before
+- speed/quality/captions still work exactly as before
+- PiP still works exactly as before
+- fullscreen still works exactly as before
+- no existing option is removed
+- only the visual design has changed

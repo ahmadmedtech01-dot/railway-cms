@@ -1239,7 +1239,7 @@ export default function EmbedPlayerPage() {
   const tickerText = resolveWatermarkText(ws.tickerText || "", videoId, sessionCode);
 
   // Layout constants for overlay stacking
-  const CONTROL_BAR_H = 60;  // height of the bottom controls bar
+  const CONTROL_BAR_H = 72;  // height of the bottom controls dock
   const TICKER_H = 32;        // approximate height of a ticker bar
   const controlsActive = showControls || !playing;
   const wmTickerActive = !!(ws.tickerEnabled && ws.tickerText);
@@ -1416,109 +1416,165 @@ export default function EmbedPlayerPage() {
 
           {/* Controls Overlay — z-[10]; brand overlays use z-[15] to appear above */}
           <div
-            className={`absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-transparent to-transparent transition-opacity duration-300 z-[10] ${showControls || !playing ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
+            className={`absolute inset-0 flex flex-col justify-end transition-opacity duration-300 z-[10] ${showControls || !playing ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
             onClick={e => e.stopPropagation()}
           >
-            {/* Seek Bar */}
-            {(playerSettings.allowSkip !== false) && (
-              <div className="px-3 pb-1">
-                <input
-                  type="range"
-                  min={0}
-                  max={duration || 100}
-                  step={0.1}
-                  value={currentTime}
-                  onChange={handleSeekBar}
-                  className="w-full h-1 cursor-pointer accent-white"
-                />
-              </div>
-            )}
+            {/* Gradient backdrop */}
+            <div className="absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none" />
 
-            {/* Controls Bar */}
-            <div className="flex items-center gap-2 px-3 pb-3 flex-wrap">
-              {/* Play/Pause */}
-              <button onClick={togglePlay} className="text-white hover:text-white/80 shrink-0 p-1">
-                {playing ? (
-                  <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-                ) : (
-                  <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21"/></svg>
+            {/* Controls dock */}
+            <div className="relative z-[1] mx-2 mb-2 sm:mx-3 sm:mb-3 rounded-xl bg-[#1a1a1f]/85 backdrop-blur-md border border-white/[0.08] shadow-[0_4px_24px_rgba(0,0,0,0.5)]">
+              {/* Seek Bar */}
+              {(playerSettings.allowSkip !== false) && (
+                <div className="px-3 pt-2.5 pb-0 group/seek">
+                  <input
+                    type="range"
+                    min={0}
+                    max={duration || 100}
+                    step={0.1}
+                    value={currentTime}
+                    onChange={handleSeekBar}
+                    className="player-seek w-full h-1 group-hover/seek:h-1.5 cursor-pointer transition-all duration-200 rounded-full"
+                    style={{
+                      background: duration ? `linear-gradient(to right, #EF6A77 0%, #EF6A77 ${(currentTime / duration) * 100}%, rgba(255,255,255,0.2) ${(currentTime / duration) * 100}%, rgba(255,255,255,0.2) 100%)` : "rgba(255,255,255,0.2)",
+                    }}
+                    data-testid="input-seek-bar"
+                  />
+                </div>
+              )}
+
+              {/* Controls Bar */}
+              <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 sm:py-2.5">
+                {/* Play/Pause — primary action */}
+                <button
+                  onClick={togglePlay}
+                  className="player-btn-primary group/play flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-[#EF6A77]/10 hover:bg-[#EF6A77]/25 active:bg-[#EF6A77]/35 text-white transition-all duration-200 shrink-0"
+                  data-testid="button-play-pause"
+                >
+                  {playing ? (
+                    <svg className="h-4 w-4 sm:h-[18px] sm:w-[18px] fill-current drop-shadow-sm" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                  ) : (
+                    <svg className="h-4 w-4 sm:h-[18px] sm:w-[18px] fill-current drop-shadow-sm ml-0.5" viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>
+                  )}
+                </button>
+
+                {/* Skip -10 / +10 */}
+                {playerSettings.allowSkip !== false && (
+                  <>
+                    <button
+                      onClick={() => seek(-10)}
+                      className="player-btn flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg text-white/70 hover:text-white hover:bg-white/10 active:bg-white/15 transition-all duration-200 shrink-0"
+                      data-testid="button-skip-back"
+                    >
+                      <span className="text-[10px] sm:text-xs font-semibold tracking-tight">-10</span>
+                    </button>
+                    <button
+                      onClick={() => seek(10)}
+                      className="player-btn flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg text-white/70 hover:text-white hover:bg-white/10 active:bg-white/15 transition-all duration-200 shrink-0"
+                      data-testid="button-skip-forward"
+                    >
+                      <span className="text-[10px] sm:text-xs font-semibold tracking-tight">+10</span>
+                    </button>
+                  </>
                 )}
-              </button>
 
-              {/* Skip -10 */}
-              {playerSettings.allowSkip !== false && (
-                <>
-                  <button onClick={() => seek(-10)} className="text-white text-xs hover:text-white/80 shrink-0 p-1">-10</button>
-                  <button onClick={() => seek(10)} className="text-white text-xs hover:text-white/80 shrink-0 p-1">+10</button>
-                </>
-              )}
+                {/* Time */}
+                <span className="text-white/60 text-[10px] sm:text-xs shrink-0 font-mono tracking-tight tabular-nums ml-0.5" data-testid="text-time-display">
+                  <span className="text-white/90">{formatTime(currentTime)}</span>
+                  <span className="mx-0.5 text-white/30">/</span>
+                  <span>{formatTime(duration)}</span>
+                </span>
 
-              {/* Time */}
-              <span className="text-white text-xs shrink-0">{formatTime(currentTime)} / {formatTime(duration)}</span>
+                <div className="flex-1 min-w-2" />
 
-              <div className="flex-1" />
+                {/* Volume */}
+                <div className="flex items-center gap-0.5 group/vol">
+                  <button
+                    onClick={() => { const v = videoRef.current; if (v) { v.muted = !v.muted; setMuted(v.muted); } }}
+                    className="player-btn flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg text-white/70 hover:text-white hover:bg-white/10 active:bg-white/15 transition-all duration-200"
+                    data-testid="button-mute"
+                  >
+                    {muted || volume === 0 ? (
+                      <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+                    ) : (
+                      <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                    )}
+                  </button>
+                  <input
+                    type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume}
+                    onChange={handleVolume}
+                    className="player-slider w-0 group-hover/vol:w-16 sm:w-14 sm:group-hover/vol:w-20 h-1 cursor-pointer transition-all duration-300 rounded-full overflow-hidden"
+                    style={{
+                      background: `linear-gradient(to right, #EF6A77 0%, #EF6A77 ${(muted ? 0 : volume) * 100}%, rgba(255,255,255,0.2) ${(muted ? 0 : volume) * 100}%, rgba(255,255,255,0.2) 100%)`,
+                    }}
+                    data-testid="input-volume"
+                  />
+                </div>
 
-              {/* Volume */}
-              <div className="flex items-center gap-1">
-                <button onClick={() => { const v = videoRef.current; if (v) { v.muted = !v.muted; setMuted(v.muted); } }} className="text-white p-1">
-                  {muted || volume === 0 ? (
-                    <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
-                  ) : (
-                    <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-                  )}
-                </button>
-                <input
-                  type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume}
-                  onChange={handleVolume}
-                  className="w-16 h-1 cursor-pointer accent-white"
-                />
+                {/* Brightness */}
+                {playerSettings.allowBrightness !== false && (
+                  <div className="flex items-center gap-0.5 group/brt">
+                    <button className="player-btn flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-all duration-200 cursor-default" title="Brightness" data-testid="button-brightness">
+                      <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 000-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>
+                    </button>
+                    <input
+                      type="range" min={30} max={150} step={5} value={brightness}
+                      onChange={e => setBrightness(parseInt(e.target.value))}
+                      className="player-slider w-0 group-hover/brt:w-16 sm:w-0 sm:group-hover/brt:w-16 h-1 cursor-pointer transition-all duration-300 rounded-full overflow-hidden"
+                      style={{
+                        background: `linear-gradient(to right, #4FB1C1 0%, #4FB1C1 ${((brightness - 30) / 120) * 100}%, rgba(255,255,255,0.2) ${((brightness - 30) / 120) * 100}%, rgba(255,255,255,0.2) 100%)`,
+                      }}
+                      title="Brightness"
+                      data-testid="input-brightness"
+                    />
+                  </div>
+                )}
+
+                {/* Divider */}
+                <div className="hidden sm:block w-px h-5 bg-white/10 mx-0.5" />
+
+                {/* Speed */}
+                {playerSettings.allowSpeed !== false && (
+                  <select
+                    value={playbackRate}
+                    onChange={e => changeSpeed(parseFloat(e.target.value))}
+                    className="player-select bg-white/[0.06] hover:bg-white/[0.12] text-white/80 hover:text-white text-[10px] sm:text-xs rounded-lg px-1.5 sm:px-2 py-1 sm:py-1.5 border border-white/[0.08] hover:border-white/[0.15] transition-all duration-200 cursor-pointer outline-none appearance-none font-medium"
+                    data-testid="select-speed"
+                  >
+                    {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3].map(r => (
+                      <option key={r} value={r}>{r}x</option>
+                    ))}
+                  </select>
+                )}
+
+                {/* Quality */}
+                {playerSettings.allowQuality !== false && qualities.length > 1 && (
+                  <select
+                    value={currentQuality}
+                    onChange={e => changeQuality(parseInt(e.target.value))}
+                    className="player-select bg-white/[0.06] hover:bg-white/[0.12] text-white/80 hover:text-white text-[10px] sm:text-xs rounded-lg px-1.5 sm:px-2 py-1 sm:py-1.5 border border-white/[0.08] hover:border-white/[0.15] transition-all duration-200 cursor-pointer outline-none appearance-none font-medium"
+                    data-testid="select-quality"
+                  >
+                    <option value={-1}>Auto</option>
+                    {qualities.map(q => <option key={q.index} value={q.index}>{q.height}p</option>)}
+                  </select>
+                )}
+
+                {/* Fullscreen */}
+                {playerSettings.allowFullscreen !== false && (
+                  <button
+                    onClick={toggleFullscreen}
+                    className="player-btn flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg text-white/70 hover:text-white hover:bg-white/10 active:bg-white/15 transition-all duration-200"
+                    data-testid="button-fullscreen"
+                  >
+                    {isFullscreen ? (
+                      <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+                    ) : (
+                      <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                    )}
+                  </button>
+                )}
               </div>
-
-              {/* Brightness */}
-              {playerSettings.allowBrightness !== false && (
-                <input
-                  type="range" min={30} max={150} step={5} value={brightness}
-                  onChange={e => setBrightness(parseInt(e.target.value))}
-                  className="w-16 h-1 cursor-pointer accent-white"
-                  title="Brightness"
-                />
-              )}
-
-              {/* Speed */}
-              {playerSettings.allowSpeed !== false && (
-                <select
-                  value={playbackRate}
-                  onChange={e => changeSpeed(parseFloat(e.target.value))}
-                  className="bg-black/60 text-white text-xs rounded px-1 py-0.5 border border-white/20"
-                >
-                  {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3].map(r => (
-                    <option key={r} value={r}>{r}x</option>
-                  ))}
-                </select>
-              )}
-
-              {/* Quality */}
-              {playerSettings.allowQuality !== false && qualities.length > 1 && (
-                <select
-                  value={currentQuality}
-                  onChange={e => changeQuality(parseInt(e.target.value))}
-                  className="bg-black/60 text-white text-xs rounded px-1 py-0.5 border border-white/20"
-                >
-                  <option value={-1}>Auto</option>
-                  {qualities.map(q => <option key={q.index} value={q.index}>{q.height}p</option>)}
-                </select>
-              )}
-
-              {/* Fullscreen */}
-              {playerSettings.allowFullscreen !== false && (
-                <button onClick={toggleFullscreen} className="text-white hover:text-white/80 p-1">
-                  {isFullscreen ? (
-                    <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
-                  ) : (
-                    <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
-                  )}
-                </button>
-              )}
             </div>
           </div>
 
