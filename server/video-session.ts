@@ -130,7 +130,7 @@ export function createSession(
   const sid = crypto.randomBytes(16).toString("hex");
   const uaHash = userAgent ? crypto.createHash("sha256").update(userAgent).digest("hex").slice(0, 32) : "";
   const keyExp = Math.floor(Date.now() / 1000) + Math.floor(SESSION_MAX_AGE_MS / 1000);
-  const keySig = signPath(sid, "/key", keyExp, deviceHash || "");
+  const keySig = signPath(sid, "/key", keyExp);
   sessions.set(sid, {
     publicId,
     hlsPrefix,
@@ -176,7 +176,7 @@ export function rotateSession(oldSid: string): string | null {
 
   const newSid = crypto.randomBytes(16).toString("hex");
   const keyExp = Math.floor(Date.now() / 1000) + Math.floor(SESSION_MAX_AGE_MS / 1000);
-  const keySig = signPath(newSid, "/key", keyExp, old.deviceHash || "");
+  const keySig = signPath(newSid, "/key", keyExp);
 
   sessions.set(newSid, {
     ...old,

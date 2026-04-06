@@ -1732,7 +1732,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
         const sid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
+        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest);
         return res.json({ manifestUrl, sourceType: `${providerType}_proxy`, sessionId: sid, videoId: video.id, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
@@ -1742,7 +1742,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (client && s3cfg.bucket) {
         const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest, dh);
+        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest);
         return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
@@ -1804,7 +1804,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const hlsUa = req.headers["user-agent"] || "";
     const hlsDh = computeDeviceHash(hlsUa);
-    if (!verifySignedPath(sid, subPath, parseInt(exp, 10), st, session.deviceHash ? hlsDh : undefined, 3)) {
+    if (!verifySignedPath(sid, subPath, parseInt(exp, 10), st, undefined, 3)) {
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid or expired token" });
     }
 
@@ -1862,7 +1862,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (/\.m3u8(\?|$)/i.test(trimmed)) {
             const variantSubPath = path.posix.join(variantDir, trimmed);
             const proxyBase = `/hls/${publicId}${variantSubPath}`;
-            return buildSignedProxyUrl(proxyBase, sid, variantSubPath, ttls.playlist, session.deviceHash);
+            return buildSignedProxyUrl(proxyBase, sid, variantSubPath, ttls.playlist);
           }
           return line;
         }).join("\n");
@@ -1929,7 +1929,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           lines.push(seg.extinf);
           const segSubPath = path.posix.join(variantDir, seg.uri);
           const proxyBase = `/seg/${publicId}${segSubPath}`;
-          lines.push(buildSignedProxyUrl(proxyBase, sid, segSubPath, ttls.segment, dh));
+          lines.push(buildSignedProxyUrl(proxyBase, sid, segSubPath, ttls.segment));
         }
 
         // VOD always ends with ENDLIST
@@ -1969,7 +1969,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const segUa = req.headers["user-agent"] || "";
     const segDh = computeDeviceHash(segUa);
 
-    if (!verifySignedPath(sid, segSubPath, parseInt(exp, 10), st, session.deviceHash ? segDh : undefined, 3)) {
+    if (!verifySignedPath(sid, segSubPath, parseInt(exp, 10), st, undefined, 3)) {
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid or expired segment token", signal: "token_expired" });
     }
 
@@ -2072,7 +2072,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ttls = getTokenTTL();
       const dh = newSession.deviceHash;
       const proxyBase = `/hls/${req.params.publicId}/master.m3u8`;
-      const manifestUrl = buildSignedProxyUrl(proxyBase, newSid, "/master.m3u8", ttls.manifest, dh);
+      const manifestUrl = buildSignedProxyUrl(proxyBase, newSid, "/master.m3u8", ttls.manifest);
 
       return res.json({ manifestUrl, sessionId: newSid, rotationIntervalMs: SESSION_ROTATION_MS });
     } catch (e: any) {
@@ -2295,7 +2295,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
         const newSid = createSession(video.publicId, video.hlsS3Prefix!, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2);
-        manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest, dh);
+        manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
       }
 
       log(`TOKEN_REFRESH_SUCCESS: userId=${userId} videoId=${video.id} oldTokenId=${oldDbToken?.id} newTokenId=${newDbToken.id}`);
@@ -2389,13 +2389,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const reqUa = req.headers["user-agent"] || "";
-    const reqDh = session.deviceHash ? computeDeviceHash(reqUa) : undefined;
 
-    if (session.deviceHash && reqDh !== session.deviceHash) {
-      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
-    }
-
-    if (!verifySignedPath(sid, "/key", parseInt(exp, 10), st, session.deviceHash || undefined)) {
+    if (!verifySignedPath(sid, "/key", parseInt(exp, 10), st, undefined)) {
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid key token" });
     }
 
@@ -2483,7 +2478,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const altViolationLimit = altEffectiveSec.violationLimit ?? 3;
       const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled, altViolationLimit);
       const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-      const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", altTtls.manifest, altDh);
+      const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", altTtls.manifest);
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
 
       res.json({ sessionId: sid, playlistUrl, expiresAt });

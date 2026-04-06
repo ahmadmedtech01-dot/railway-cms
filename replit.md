@@ -82,7 +82,7 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 - `GET /key/:publicId` — AES-128 key endpoint (ready for when ffmpeg encryption is enabled)
 - `POST /api/video/session` — alternative session creation endpoint for custom players
 
-**Layer 2 — Per-Chunk Signed Tokens**: Every segment URL includes an HMAC token (10s TTL) binding `sid`, path, expiry, and `deviceHash` (SHA256 of User-Agent). Key tokens expire in 10s. Playlist tokens expire in 60s. Manifest tokens expire in 60s. Segments from different browsers/devices are rejected. 3-second clock skew tolerance. User-Agent hash validated on all endpoints.
+**Layer 2 — Per-Chunk Signed Tokens**: Every segment URL includes an HMAC token (10s TTL) binding `sid`, path, and expiry. Key tokens expire in 10s. Playlist tokens expire in 60s. Manifest tokens expire in 60s. 3-second clock skew tolerance. User-Agent hash validated on all endpoints (via `validateUserAgent`). Note: `deviceHash` is NOT included in HMAC signing — it was removed because proxy environments (e.g., Replit preview) modify User-Agent headers between the CMS API call and the Cloudflare Worker gateway request, causing signature mismatches and 403 errors. Security is maintained through SID binding, UA hash validation, short TTLs, and abuse detection.
 
 **Layer 3 — Sliding Window Playlist**: Variant playlists return only the next 6 segments (not the entire video). The playlist is served as a live-like HLS stream (no `#EXT-X-ENDLIST` until the final window). hls.js reloads it periodically and only sees segments in the current window. Progress tracked via `POST /api/stream/:publicId/progress` (every 10s) and via segment access (auto-advances window when segments are fetched).
 
