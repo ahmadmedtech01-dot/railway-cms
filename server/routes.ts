@@ -916,8 +916,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerIntegrationAdminRoutes(app);
 
   // Serve SDK files at /sdk/*
-  const sdkPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "public", "sdk");
-  app.use("/sdk", (await import("express")).default.static(sdkPath, { maxAge: "1h" }));
+  const sdkCandidates = [
+    typeof __dirname !== "undefined" ? path.resolve(__dirname, "public", "sdk") : "",
+    typeof __dirname !== "undefined" ? path.resolve(__dirname, "..", "public", "sdk") : "",
+    path.resolve(process.cwd(), "public", "sdk"),
+    path.resolve(process.cwd(), "dist", "public", "sdk"),
+  ].filter(Boolean);
+  const fs = await import("fs");
+  const sdkDir = sdkCandidates.find(d => fs.existsSync(d)) || sdkCandidates[0];
+  app.use("/sdk", (await import("express")).default.static(sdkDir, { maxAge: "1h" }));
 
   // ── Auth ──────────────────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {

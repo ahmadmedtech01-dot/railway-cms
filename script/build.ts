@@ -1,6 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile } from "fs/promises";
+import { rm, readFile, mkdir, cp } from "fs/promises";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
@@ -60,6 +60,10 @@ async function buildAll() {
     external: externals,
     logLevel: "info",
   });
+
+  console.log("copying SDK files...");
+  await mkdir("dist/public/sdk", { recursive: true });
+  await cp("public/sdk", "dist/public/sdk", { recursive: true });
 }
 
 buildAll().catch((err) => {
