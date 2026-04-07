@@ -12,3 +12,9 @@ id = "l5jSF0WO4OteM2gHi1R2w"
 uri = "file://docs/LMS_DEVELOPER_PROMPT.md"
 type = "text"
 title = "LMS Developer Prompt — Copy and give to your LMS developer"
+
+[[outputs]]
+id = "IqNPoPSRtkAPpMdLL8VrM"
+uri = "file://docs/integration-guide.md"
+type = "text"
+title = "Integration API — Complete Guide & Flow"
