@@ -504,7 +504,7 @@ function verifyLmsLaunchToken(launchToken: string): { userId: string; publicId: 
     }
     const nowSec = Date.now() / 1000;
     if (nowSec > payload.exp) { log(`[lms-verify] FAIL: token expired ${Math.round(nowSec - payload.exp)}s ago`); return null; }
-    if (payload.exp - nowSec > 300) { log(`[lms-verify] FAIL: token exp is ${Math.round(payload.exp - nowSec)}s away (max 300s) — generate tokens closer to use`); return null; }
+    if (payload.exp - nowSec > 600) { log(`[lms-verify] FAIL: token exp is ${Math.round(payload.exp - nowSec)}s away (max 600s) — generate tokens closer to use`); return null; }
     log(`[lms-verify] OK: userId=${payload.userId} publicId=${payload.publicId} origin=${payload.origin}`);
     return payload;
   } catch (e: any) {

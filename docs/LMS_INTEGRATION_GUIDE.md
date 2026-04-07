@@ -118,7 +118,7 @@ All 6 fields are required. Missing any one will cause rejection.
 |-------|------|-------|
 | `userId` | string | The logged-in student's unique ID. Any stable unique string. |
 | `publicId` | string | The CMS video's Public Video ID, e.g. `"mjakYG627Y"` |
-| `exp` | number | Unix timestamp in **seconds**. Must be **1 to 300 seconds** from now. Tokens more than 5 minutes in the future are also rejected. |
+| `exp` | number | Unix timestamp in **seconds**. Must be **1 to 600 seconds** from now. Tokens more than 10 minutes in the future are rejected. |
 | `nonce` | string | A fresh random string for every single request. Never reuse. Use `crypto.randomUUID()`. |
 | `aud` | string | Must be exactly `"video-cms"` — no other value works. |
 | `origin` | string | Your LMS origin exactly as registered in `ALLOWED_LMS_ORIGINS`. No trailing slash. |
@@ -151,7 +151,7 @@ function generateCmsLaunchToken(publicId, userId) {
   const payload = {
     userId:   String(userId),
     publicId: String(publicId),
-    exp:      Math.floor(Date.now() / 1000) + 240,  // 4 minutes from now (must be ≤ 300s)
+    exp:      Math.floor(Date.now() / 1000) + 540,  // 9 minutes from now (max allowed: 600s)
     nonce:    crypto.randomUUID(),                   // fresh every time
     aud:      'video-cms',                           // must be exactly this
     origin:   LMS_ORIGIN,                            // must match ALLOWED_LMS_ORIGINS exactly
@@ -185,7 +185,7 @@ def generate_cms_launch_token(public_id, user_id):
     payload = {
         'userId':   str(user_id),
         'publicId': str(public_id),
-        'exp':      int(time.time()) + 240,
+        'exp':      int(time.time()) + 540,  # 9 minutes from now (max allowed: 600s)
         'nonce':    str(uuid.uuid4()),
         'aud':      'video-cms',
         'origin':   LMS_ORIGIN,
@@ -213,7 +213,7 @@ function generateCmsLaunchToken(string $publicId, string $userId): string {
     $payload = json_encode([
         'userId'   => $userId,
         'publicId' => $publicId,
-        'exp'      => time() + 240,
+        'exp'      => time() + 540,  // 9 minutes from now (max allowed: 600s)
         'nonce'    => bin2hex(random_bytes(16)),
         'aud'      => 'video-cms',
         'origin'   => $origin,
@@ -388,7 +388,7 @@ const origin = 'https://your-lms.com'; // use your actual registered LMS origin
 const payload = {
   userId:   'test-student-1',
   publicId: 'mjakYG627Y',
-  exp:      Math.floor(Date.now() / 1000) + 240,
+  exp:      Math.floor(Date.now() / 1000) + 540,
   nonce:    crypto.randomUUID(),
   aud:      'video-cms',
   origin:   origin,
@@ -458,7 +458,7 @@ Checklist:
 - [ ] Is your LMS URL in `ALLOWED_LMS_ORIGINS` on Railway? Check via `GET /api/lms/origins`.
 - [ ] Does the `origin` field in your payload exactly match one of those URLs (no trailing slash, https not http)?
 - [ ] Is `aud` exactly `"video-cms"`?
-- [ ] Is `exp` between 1 and 300 seconds from now? (Tokens valid for more than 5 minutes are rejected.)
+- [ ] Is `exp` between 1 and 600 seconds from now? (Tokens valid for more than 10 minutes are rejected.)
 - [ ] Are you signing the **base64url string**, not the raw JSON?
 
 Run the **Test 1 curl** above. If it succeeds there but fails in the browser, the issue is on the frontend (postMessage format or timing).
@@ -500,7 +500,7 @@ This was a known bug (session rotation every 3 minutes flushed the HLS buffer). 
 | LMS secret value differs from CMS secret | HMAC mismatch, 401 on mint | Copy exact value from Railway env vars |
 | `origin` field has trailing slash | Token rejected | `https://your-lms.com` not `https://your-lms.com/` |
 | `aud: 'lms'` or any other value | Token rejected | Must be exactly `"video-cms"` |
-| `exp` more than 5 minutes from now | Token rejected | Max is 300 seconds (`Date.now()/1000 + 240` is safe) |
+| `exp` more than 10 minutes from now | Token rejected | Max is 600 seconds (`Date.now()/1000 + 540` is safe) |
 | Reusing the same nonce | Token rejected on second use | Generate a new `crypto.randomUUID()` every call |
 | Signing raw JSON instead of base64url string | HMAC mismatch | Sign `payloadB64`, not `JSON.stringify(payload)` |
 | Python: not stripping base64 padding (`=`) | Signature mismatch | `.rstrip(b'=').decode()` after `b64encode()` |
@@ -556,7 +556,7 @@ Understanding this helps debug failures:
 5. Check aud === "video-cms"
 6. Check origin is in ALLOWED_LMS_ORIGINS
 7. Check exp is in the past? → rejected (expired)
-8. Check exp is more than 300s from now? → rejected (too far in future)
+8. Check exp is more than 600s from now? → rejected (too far in future)
 9. Recompute HMAC: createHmac('sha256', LMS_HMAC_SECRET).update(payloadB64).digest('hex')
 10. Timing-safe compare recomputed sig vs received sig → mismatch = rejected
 11. All checks pass → mint secure session → return HLS stream token to player

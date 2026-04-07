@@ -14,31 +14,31 @@ function resolveSecret(): string {
 
 const SECRET = resolveSecret();
 
-const SESSION_MAX_AGE_MS = 20 * 60 * 1000;
+const SESSION_MAX_AGE_MS = 60 * 60 * 1000;   // 60 min — covers long videos + pauses for 2k+ daily users
 export const SESSION_ROTATION_MS = 3 * 60 * 1000;
 
 const ABUSE_THRESHOLDS = {
   // Only used when suspiciousDetectionEnabled=true
-  concurrentSegments: 6,           // max parallel segment downloads (quality switches prefetch)
+  concurrentSegments: 10,          // max parallel segment downloads (raised for quality-switch prefetch at scale)
   segmentsPerSec: 30,              // segment requests/sec that triggers rate spike signal
   segmentRateSpikeWindowMs: 5000,  // must sustain above segmentsPerSec for this long
   playlistPerSec: 2,               // playlist fetches/sec that triggers scraper signal
   playlistSpikeWindowMs: 8000,     // must sustain above playlistPerSec for this long
-  keyHitsPerMin: 20,               // key requests per minute (re-fetched on quality switch/seek)
-  keyHitsTotal: 60,                // total key requests per session
+  keyHitsPerMin: 60,               // raised: VOD seeking re-fetches key; 60 covers heavy seek usage
+  keyHitsTotal: 200,               // raised: 60-min sessions with frequent seeking
   scoreToRevoke: 20,               // score needed to revoke session
   windowSize: 20,                  // segment window size (must cover hls.js maxBufferLength=30s ahead)
   outOfWindowPenalty: 2,           // penalty for out-of-window requests
 };
 
 const TOKEN_TTL = {
-  manifest: 900,
-  playlist: 900,
+  manifest: 3600,
+  playlist: 3600,
   // VOD: full playlist is served at once with all segment URLs embedded.
-  // 900s (15 min) covers the full rotation interval (3 min) many times over,
-  // and survives long pauses before the pause/resume recovery kicks in at 90s.
-  segment: 900,
-  key: 900,
+  // 3600s (60 min) matches SESSION_MAX_AGE_MS so signed URLs never expire
+  // before the session does — no mid-watch expiry for 2k+ daily users.
+  segment: 3600,
+  key: 3600,
 };
 
 export interface AbuseReason {

@@ -59,8 +59,8 @@ The embed player enforces strict iframe-only access:
 Required payload fields: `userId`, `publicId`, `exp`, `nonce`, `aud`, `origin`
 - `aud` must equal `"video-cms"`
 - `origin` must match one of `ALLOWED_LMS_ORIGINS`
-- `exp` must be in the future AND within 5 minutes (short-lived)
-- Nonce replay check removed — on iframe refresh the LMS reuses the same token. Replay protection is provided by `exp` (5-min short-lived window) + client instance ID scoped auto-revocation in the mint endpoint.
+- `exp` must be in the future AND within 10 minutes (max 600s from now)
+- Nonce replay check removed — on iframe refresh the LMS reuses the same token. Replay protection is provided by `exp` (up to 10-min window, max 600s) + client instance ID scoped auto-revocation in the mint endpoint.
 - HMAC-SHA256 signature verified with `LMS_HMAC_SECRET`
 - LMS launch token format: `base64url(JSON{userId,publicId,exp,nonce}).hmac_hex`
 - Requires `LMS_HMAC_SECRET` env var for LMS launch token verification
@@ -86,7 +86,7 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 
 **Layer 3 — Sliding Window Playlist**: Variant playlists return only the next 6 segments (not the entire video). The playlist is served as a live-like HLS stream (no `#EXT-X-ENDLIST` until the final window). hls.js reloads it periodically and only sees segments in the current window. Progress tracked via `POST /api/stream/:publicId/progress` (every 10s) and via segment access (auto-advances window when segments are fetched).
 
-**Session Binding**: Each session stores: sessionId, userAgent hash, deviceHash, boundIp, createdAt, expiresAt (20 min max). All /hls, /seg, /key requests validate token + session validity + UA match + device hash. TOKEN_TTL is 900s (15 min) for all resource types (manifest, playlist, segment, key).
+**Session Binding**: Each session stores: sessionId, userAgent hash, deviceHash, boundIp, createdAt, expiresAt (60 min max — raised for 2k+ daily users watching long videos). All /hls, /seg, /key requests validate token + session validity + UA match + device hash. TOKEN_TTL is 3600s (60 min) for all resource types (manifest, playlist, segment, key) — matches SESSION_MAX_AGE_MS so signed URLs never expire before the session ends.
 
 **HLS Session Heartbeat** (embed-player.tsx): Every 3 minutes, the player calls `POST /api/player/:publicId/extend-session` to extend the session TTL without changing the SID or reloading the manifest. This completely eliminates the 1-2s black screen that the old `rotate-session` approach caused: rotating created a new SID + new manifest URL → `hls.loadSource(newUrl)` → HLS.js flushed the MSE SourceBuffer → black screen while segments re-buffered. The heartbeat keeps the same SID so HLS.js never touches the manifest or SourceBuffer. Session stays alive for 20 minutes from each ping (so long videos play without expiry). The `rotate-session` endpoint is still available for forced rotation on error recovery paths. A monotonic `rotationOpIdRef` + `isRotatingRef` guard is used only by the error recovery paths (fatal-403, token-refresh, pause-resume >90s). HLS retries: manifest/level/fragment/key loading all retry 4 times.
 

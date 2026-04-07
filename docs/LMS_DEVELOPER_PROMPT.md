@@ -29,7 +29,7 @@ function generateCmsLaunchToken(publicId, userId) {
   const payload = {
     userId:   String(userId),
     publicId: String(publicId),
-    exp:      Math.floor(Date.now() / 1000) + 240,  // 4 minutes from now
+    exp:      Math.floor(Date.now() / 1000) + 540,  // 9 minutes from now (max allowed: 600s)
     nonce:    crypto.randomUUID(),                   // fresh UUID every time — never reuse
     aud:      'video-cms',                           // must be exactly this string
     origin:   LMS_ORIGIN,                            // must match ALLOWED_LMS_ORIGINS on CMS
@@ -63,7 +63,7 @@ def generate_cms_launch_token(public_id, user_id):
     payload = {
         'userId':   str(user_id),
         'publicId': str(public_id),
-        'exp':      int(time.time()) + 240,
+        'exp':      int(time.time()) + 540,  # 9 minutes from now (max allowed: 600s)
         'nonce':    str(uuid.uuid4()),
         'aud':      'video-cms',
         'origin':   LMS_ORIGIN,
