@@ -129,7 +129,7 @@ export default function EmbedPlayerPage() {
   const { publicId } = useParams<{ publicId: string }>();
   const search = useSearch();
   const urlParams = new URLSearchParams(search);
-  const rawUrlToken = urlParams.get("token") || "";
+  const rawUrlToken = urlParams.get("token") || urlParams.get("embedToken") || "";
   const isLmsHmacToken = rawUrlToken ? rawUrlToken.split(".").length === 2 : false;
   const urlToken = isLmsHmacToken ? "" : rawUrlToken;
 
