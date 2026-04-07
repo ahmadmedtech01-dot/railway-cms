@@ -1,0 +1,78 @@
+We found the real issue from LMS browser logs.
+
+At playback time, LMS direct CMS stream attempts fail with 401, so the player falls back to iframe mode. Console logs show:
+
+- Attempt 1 failed (CMS returned 401)
+- All attempts failed, using iframe fallback: CMS returned 401
+- mode=IFRAME_FALLBACK
+- videoRef.current: NULL
+- Total <video> elements found: 0
+- cmsStreamFailed=true
+- isUsingEmbed=true
+
+So the main problem now is not just seek logic — native HLS/direct stream is not being authorized from LMS.
+
+Please answer these exact questions:
+
+1. Which CMS endpoint is returning 401 during direct stream mode?
+   - Is it manifest endpoint?
+   - mint endpoint?
+   - player/direct-stream bootstrap endpoint?
+   - another protected endpoint?
+
+2. What exact auth does CMS expect from LMS for native direct stream mode?
+   - JWT bearer token?
+   - signed token query param?
+   - LMS launch token?
+   - referer/origin validation?
+   - session cookie?
+   - x-embed-referrer header?
+   - something else?
+
+3. Which exact validation is failing for the 401?
+   Please specify whether it is:
+   - missing token
+   - invalid token
+   - expired token
+   - wrong audience
+   - wrong signing secret
+   - referer mismatch
+   - origin mismatch
+   - SID/session mismatch
+   - embed-only restriction
+   - missing LMS launch context
+
+4. Is direct native stream mode intended to work from external LMS at all?
+   Answer only:
+   - YES
+   - YES but only with special token/header flow
+   - NO, iframe embed only
+
+5. If YES, what is the exact required LMS integration contract for native stream mode?
+   Please list:
+   - required endpoint call sequence
+   - required headers
+   - required query params
+   - required token type
+   - required token issuer/signing secret expectations
+   - required origin/referrer rules
+
+6. Does CMS currently allow iframe playback but reject direct manifest/native stream for the same LMS context?
+   If yes, why?
+
+7. Please check server logs for the exact 401 reason for one failed LMS playback attempt.
+   I need the actual rejection reason from CMS logs, not a guess.
+
+8. Is there any environment mismatch involved?
+   For example:
+   - wrong shared secret between LMS and CMS
+   - wrong origin base
+   - wrong embed domain allowed list
+   - stale token signing config
+   - different prod/staging secret
+   - invalid LMS URL in allowed origins
+
+9. Can you provide one successful example of native direct stream authorization from LMS, if this flow is supposed to work?
+
+10. Final exact answer needed:
+   Why is native CMS stream returning 401 from LMS, causing iframe fallback?
