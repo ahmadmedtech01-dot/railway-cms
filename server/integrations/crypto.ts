@@ -22,8 +22,7 @@ export function verifySecret(secret: string, hash: string): boolean {
 
 export function verifyHmacLaunchToken(
   token: string,
-  clientSecretHash: string,
-  rawSecretForVerify?: string
+  masterSecret: string
 ): { payload: Record<string, any>; valid: boolean } | null {
   try {
     const parts = token.split(".");
@@ -35,8 +34,8 @@ export function verifyHmacLaunchToken(
     } catch {
       return null;
     }
-    if (!rawSecretForVerify) return null;
-    const expectedSig = crypto.createHmac("sha256", rawSecretForVerify).update(payloadB64).digest("hex");
+    if (!masterSecret) return null;
+    const expectedSig = crypto.createHmac("sha256", masterSecret).update(payloadB64).digest("hex");
     const sigBuf = Buffer.from(sig, "hex");
     const expectedBuf = Buffer.from(expectedSig, "hex");
     if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {

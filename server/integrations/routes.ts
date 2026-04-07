@@ -88,7 +88,7 @@ export function registerIntegrationRoutes(app: Express) {
         return res.status(500).json(errorJson("INTERNAL_ERROR", "Server configuration error"));
       }
 
-      const verifyResult = verifyHmacLaunchToken(launchToken, client.secretHash, masterSecret);
+      const verifyResult = verifyHmacLaunchToken(launchToken, masterSecret);
       if (!verifyResult) {
         await storage.createLaunchLog({
           integrationClientId: client.id, publicId, lmsUserId: payload.sub,
@@ -298,14 +298,17 @@ export function registerIntegrationRoutes(app: Express) {
         EMBED_TOKEN_TTL
       );
 
+      const client = session.integrationClientId ? await storage.getIntegrationClientById(session.integrationClientId) : null;
+      const clientSlug = client?.slug || "unknown";
+
       await storage.createEmbedToken({
         videoId: video.id,
         token: newTokenValue,
-        label: `integration:refresh:${session.lmsUserId}`,
+        label: `integration:refresh:${clientSlug}:${session.lmsUserId}`,
         allowedDomain: null,
         expiresAt,
         revoked: false,
-        userId: `integration:${session.lmsUserId}`,
+        userId: `integration:${clientSlug}:${session.lmsUserId}`,
       } as any);
 
       await storage.updateIntegrationPlaybackSession(integrationSessionId, { lastPingAt: new Date() } as any);
@@ -339,9 +342,12 @@ export function registerIntegrationRoutes(app: Express) {
         return res.status(404).json(errorJson("INTEGRATION_SESSION_NOT_FOUND", "Session not found"));
       }
 
-      const watchedSeconds = Math.max(session.watchedSeconds, Math.floor(currentTime || 0));
-      const maxPos = Math.max(session.maxPositionSeconds, Math.floor(currentTime || 0));
-      const completionPercent = duration > 0 ? Math.min(100, Math.round((watchedSeconds / duration) * 100)) : 0;
+      const currentPos = Math.floor(currentTime || 0);
+      const pingIntervalSec = 10;
+      const watchedIncrement = (!paused && currentPos > session.maxPositionSeconds) ? Math.min(pingIntervalSec, currentPos - session.maxPositionSeconds) : 0;
+      const watchedSeconds = session.watchedSeconds + watchedIncrement;
+      const maxPos = Math.max(session.maxPositionSeconds, currentPos);
+      const completionPercent = duration > 0 ? Math.min(100, Math.round((maxPos / duration) * 100)) : 0;
 
       const updates: any = {
         lastPingAt: new Date(),
