@@ -266,5 +266,22 @@ async function seedDefaultSettings() {
     await seedAdmin();
     await seedDefaultSettings();
     recoverProcessingVideos();
+
+    // Auto-cleanup: delete expired tokens older than 7 days
+    const TOKEN_CLEANUP_DAYS = 7;
+    const TOKEN_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6 hours
+    async function cleanupExpiredTokens() {
+      try {
+        const { storage } = await import("./storage");
+        const count = await storage.deleteExpiredTokensOlderThan(TOKEN_CLEANUP_DAYS);
+        if (count > 0) {
+          log(`[cleanup] Deleted ${count} expired tokens older than ${TOKEN_CLEANUP_DAYS} days`);
+        }
+      } catch (e: any) {
+        log(`[cleanup] Token cleanup error: ${e.message}`);
+      }
+    }
+    cleanupExpiredTokens();
+    setInterval(cleanupExpiredTokens, TOKEN_CLEANUP_INTERVAL_MS);
   });
 })();

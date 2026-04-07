@@ -9,7 +9,7 @@ import {
   type IntegrationClient, type IntegrationClientVideoAccess, type IntegrationLaunchLog,
   type IntegrationPlaybackSession, type IntegrationEventLog, type IntegrationApiKey,
 } from "@shared/schema";
-import { eq, desc, and, sql, asc, like, inArray } from "drizzle-orm";
+import { eq, desc, and, sql, asc, like, inArray, lt } from "drizzle-orm";
 
 export const storage = {
   // Admin
@@ -132,6 +132,16 @@ export const storage = {
 
   async deleteToken(id: string): Promise<void> {
     await db.delete(embedTokens).where(eq(embedTokens.id, id));
+  },
+
+  async deleteExpiredTokensOlderThan(days: number): Promise<number> {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const result = await db.delete(embedTokens)
+      .where(and(
+        lt(embedTokens.expiresAt, cutoff),
+      ))
+      .returning({ id: embedTokens.id });
+    return result.length;
   },
 
   // Per-user token helpers — for LMS / per-student token minting
