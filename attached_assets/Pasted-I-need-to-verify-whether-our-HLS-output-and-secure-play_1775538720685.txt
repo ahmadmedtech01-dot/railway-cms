@@ -1,0 +1,91 @@
+I need to verify whether our HLS output and secure playback endpoints are fully VOD-seekable for programmatic seeking from an external LMS player.
+
+Please answer these exactly and precisely:
+
+1. HLS playlist type
+- Is the generated playlist definitely VOD and not live/event?
+- Does the media playlist include `#EXT-X-ENDLIST`?
+- Does it include `#EXT-X-PLAYLIST-TYPE:VOD`?
+
+2. Manifest structure
+- Please share one sample media playlist (not secrets, token can be redacted) showing:
+  - first 15 lines
+  - last 15 lines
+- I want to see:
+  - `#EXTM3U`
+  - `#EXT-X-TARGETDURATION`
+  - `#EXT-X-MEDIA-SEQUENCE`
+  - `#EXTINF`
+  - `#EXT-X-ENDLIST`
+  - any `#EXT-X-DISCONTINUITY`
+  - any `#EXT-X-START`
+
+3. Segment timeline and discontinuities
+- Are segment timestamps continuous from start to end?
+- Are there any discontinuities inserted?
+- If yes, why?
+- Are segment filenames normal sequential VOD segments like seg_001.ts, seg_002.ts, etc.?
+
+4. ffmpeg packaging details
+- What exact ffmpeg command/options are used to generate HLS?
+- Especially share:
+  - hls_time
+  - hls_list_size
+  - hls_flags
+  - gop/keyframe settings
+  - force_key_frames if used
+  - segment type (.ts or fmp4)
+
+5. Seekability / keyframes
+- Are keyframes forced at regular intervals suitable for HLS seeking?
+- What GOP/keyframe interval is used?
+- Are we packaging for VOD seeking or only general playback?
+
+6. Secure manifest endpoint behavior
+- When the LMS player requests the manifest URL multiple times during the same playback session, does the backend return a stable playlist for that session?
+- Or can the manifest/session/token logic regenerate or alter the effective stream state in a way that could reset playback behavior?
+
+7. Segment endpoint behavior
+- Does requesting later `.ts` segments require any special re-authentication or session mutation?
+- Can a player jump directly to later segments in the same session without the CMS resetting anything?
+
+8. Timeline offsets
+- Does the media playlist start at timeline 0?
+- Is there any non-zero start offset, `#EXT-X-START`, or timestamp shift that could affect `video.currentTime = X` behavior?
+
+9. AES encryption / keys
+- Is the stream encrypted?
+- If yes:
+  - standard HLS AES-128?
+  - key URI stable per playback session?
+  - any key rotation that could interfere with seeking?
+
+10. Browser seekability evidence
+- In your own CMS player or local test page using the same manifest, can you programmatically seek with:
+  `video.currentTime = 540`
+  on a 23-minute VOD and have it actually jump?
+- If yes, confirm.
+- If no, what happens?
+
+11. hls.js usage inside CMS
+- Does the CMS app itself use hls.js for playback?
+- If yes, during active playback seek, do you ever call `hls.startLoad()` after setting `video.currentTime`?
+- Or do you rely only on native media seek events?
+
+12. Manifest/session/token stability
+- Are signed manifest/segment URLs short-lived in a way that could expire during a seek attempt to later content?
+- What are the TTLs for:
+  - manifest URL
+  - segment URL
+  - key URL
+
+13. Any known seek limitations
+- Are there any known limitations in the CMS stream architecture where playback works but reliable random seeking is not guaranteed?
+
+14. Best exact answer needed
+- Based on the CMS implementation, should an external HLS player be able to jump directly to 9:00 / 10:00 in a 23-minute video by setting `video.currentTime` only?
+- Answer only:
+  - YES, definitely
+  - YES, but with limitations
+  - NO
+- Then explain why.
