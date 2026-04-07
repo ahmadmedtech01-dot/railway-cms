@@ -133,6 +133,14 @@ export default function EmbedPlayerPage() {
   const isLmsHmacToken = rawUrlToken ? rawUrlToken.split(".").length === 2 : false;
   const urlToken = isLmsHmacToken ? "" : rawUrlToken;
 
+  // URL-based start time: ?t=SECONDS takes priority over ?start=SECONDS
+  const urlSeekTime = (() => {
+    const raw = urlParams.get("t") || urlParams.get("start") || "";
+    const n = parseFloat(raw);
+    if (!isFinite(n) || n < 0 || n > 86400) return 0;
+    return n;
+  })();
+
   const activeTokenRef = useRef(urlToken);
   const token = urlToken;
   const receivedLmsTokenRef = useRef<string | null>(null);
@@ -157,6 +165,12 @@ export default function EmbedPlayerPage() {
   const isRotatingRef = useRef(false);
   const rotationOpIdRef = useRef(0);
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
+
+  // Control bridge refs
+  const playerReadyRef = useRef(false);
+  const pendingInitialSeekRef = useRef<number>(urlSeekTime);
+  const pendingMessageSeekRef = useRef<number | null>(null);
+  const parentOriginRef = useRef<string>("");
 
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
     urlToken || isLmsHmacToken ? "loading" : "waiting"
@@ -226,6 +240,36 @@ export default function EmbedPlayerPage() {
     setRetryKey(k => k + 1);
   };
 
+  // Post a message to the parent frame using the validated origin (never wildcard if known)
+  const postToParent = (msg: Record<string, any>) => {
+    if (window.parent === window) return;
+    const origin = parentOriginRef.current || "*";
+    try { window.parent.postMessage(msg, origin); } catch {}
+  };
+
+  // Apply the highest-priority pending seek once the player is ready
+  const applyPendingSeek = (overrideTime?: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const seekTime = overrideTime !== undefined
+      ? overrideTime
+      : pendingMessageSeekRef.current !== null
+        ? pendingMessageSeekRef.current
+        : pendingInitialSeekRef.current;
+    if (seekTime <= 0) return;
+    const dur = video.duration;
+    const clampedTime = isFinite(dur) && dur > 0 ? Math.min(seekTime, dur - 0.5) : seekTime;
+    video.currentTime = clampedTime;
+    pendingInitialSeekRef.current = 0;
+    pendingMessageSeekRef.current = null;
+    if (import.meta.env.DEV) console.debug("[EmbedControl] applied seek", clampedTime);
+    // Small delay to let the seek settle before reporting back
+    setTimeout(() => {
+      const actual = videoRef.current?.currentTime ?? clampedTime;
+      postToParent({ type: "SEEKED", time: actual });
+    }, 200);
+  };
+
   useEffect(() => {
     if (
       effectiveSecurity?.suspiciousDetectionEnabled === false &&
@@ -279,6 +323,74 @@ export default function EmbedPlayerPage() {
     return () => window.removeEventListener("message", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicId, urlToken, isLmsHmacToken, rawUrlToken]);
+
+  // Control bridge — postMessage API for parent LMS to seek/play/pause the player
+  useEffect(() => {
+    // Fetch allowed LMS origins if not already loaded (e.g. when urlToken path skipped it)
+    if (lmsOriginsRef.current.length === 0 && window.parent !== window) {
+      fetch("/api/lms/origins")
+        .then(r => r.json())
+        .then(data => { lmsOriginsRef.current = data.origins || []; })
+        .catch(() => {});
+    }
+
+    const controlHandler = (event: MessageEvent) => {
+      // Validate origin against the allowed LMS list OR against a known parent origin
+      const knownOrigin = parentOriginRef.current;
+      const isAllowed =
+        (lmsOriginsRef.current.length > 0 && lmsOriginsRef.current.includes(event.origin)) ||
+        (knownOrigin && event.origin === knownOrigin);
+
+      if (!isAllowed) {
+        if (import.meta.env.DEV) console.debug("[EmbedControl] blocked message from origin", event.origin);
+        return;
+      }
+
+      // Capture/refresh the validated parent origin for postToParent responses
+      if (event.origin && event.origin !== "null") {
+        parentOriginRef.current = event.origin;
+      }
+
+      const msg = event.data;
+      if (!msg || typeof msg.type !== "string") return;
+
+      if (import.meta.env.DEV) console.debug("[EmbedControl] received", msg.type, "from", event.origin);
+
+      switch (msg.type) {
+        case "SEEK_TO": {
+          const t = typeof msg.time === "number" ? msg.time : parseFloat(msg.time);
+          if (!isFinite(t) || t < 0) return;
+          if (playerReadyRef.current) {
+            applyPendingSeek(t);
+          } else {
+            pendingMessageSeekRef.current = t;
+            if (import.meta.env.DEV) console.debug("[EmbedControl] stored pending seek", t);
+          }
+          break;
+        }
+        case "PLAY": {
+          if (playerReadyRef.current) {
+            videoRef.current?.play().catch(() => {});
+          }
+          break;
+        }
+        case "PAUSE": {
+          videoRef.current?.pause();
+          break;
+        }
+        case "GET_CURRENT_TIME": {
+          postToParent({ type: "CURRENT_TIME", time: videoRef.current?.currentTime ?? 0 });
+          break;
+        }
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener("message", controlHandler);
+    return () => window.removeEventListener("message", controlHandler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicId]);
 
   // Initialize player
   useEffect(() => {
@@ -439,12 +551,24 @@ export default function EmbedPlayerPage() {
           hls.loadSource(manifestUrl);
           hls.attachMedia(video);
 
+          // Control bridge: relay native video play/pause events to parent
+          const onVideoPlay = () => postToParent({ type: "PLAY", time: video.currentTime });
+          const onVideoPause = () => postToParent({ type: "PAUSE", time: video.currentTime });
+          video.addEventListener("play", onVideoPlay);
+          video.addEventListener("pause", onVideoPause);
+
           // Track media error recovery attempts to avoid infinite loops
           let mediaErrorRecoveries = 0;
 
           hls.on(Hls.Events.MANIFEST_PARSED, (_, hlsData) => {
             setQualities(hlsData.levels.map((l, i) => ({ height: l.height, index: i })));
             setStatus("ready");
+            playerReadyRef.current = true;
+            const dur = (hlsData as any).totalduration || (hlsData.levels[0]?.details?.totalduration) || 0;
+            if (import.meta.env.DEV) console.debug("[EmbedControl] PLAYER_READY");
+            postToParent({ type: "PLAYER_READY", publicId, duration: dur });
+            // Apply any pending seek (URL-based or queued postMessage seek)
+            setTimeout(() => applyPendingSeek(), 80);
             // Suppress autoplay during rotation — the rotation handler restores position and plays
             if (playerSettings.autoplayAllowed && !isRotatingRef.current) video.play().catch(() => {});
           });
@@ -597,7 +721,15 @@ export default function EmbedPlayerPage() {
           });
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
           video.src = manifestUrl;
-          video.addEventListener("loadedmetadata", () => setStatus("ready"));
+          video.addEventListener("play", () => postToParent({ type: "PLAY", time: video.currentTime }));
+          video.addEventListener("pause", () => postToParent({ type: "PAUSE", time: video.currentTime }));
+          video.addEventListener("loadedmetadata", () => {
+            setStatus("ready");
+            playerReadyRef.current = true;
+            if (import.meta.env.DEV) console.debug("[EmbedControl] PLAYER_READY (native)");
+            postToParent({ type: "PLAYER_READY", publicId, duration: video.duration || 0 });
+            setTimeout(() => applyPendingSeek(), 80);
+          });
         } else {
           setStatus("error");
           setErrorMsg("HLS not supported in this browser");

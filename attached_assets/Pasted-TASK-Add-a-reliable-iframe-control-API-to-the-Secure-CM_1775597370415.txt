@@ -1,0 +1,289 @@
+TASK: Add a reliable iframe control API to the Secure CMS embedded player so LMS sidebar segment clicks can control playback properly without using a native player.
+
+IMPORTANT:
+- We will keep using the CMS embedded player inside an iframe as the permanent playback mode for secure_cms videos.
+- Do NOT redesign the player.
+- Do NOT remove or weaken existing security, watermark, token auth, session logic, analytics, or LMS origin restrictions.
+- This is an additive control-layer change for the embed player.
+
+==================================================
+GOAL
+==================================================
+
+Make the CMS embed player support BOTH:
+
+1. URL-based start time on load
+   - ?t=SECONDS
+   - ?start=SECONDS
+
+2. Parent-to-iframe postMessage control API
+   - SEEK_TO
+   - PLAY
+   - PAUSE
+   - optionally GET_CURRENT_TIME
+
+3. Iframe-to-parent event messages
+   - PLAYER_READY
+   - SEEKED
+   - PLAY
+   - PAUSE
+   - optionally TIME_UPDATE
+   - optionally ERROR
+
+This will allow the LMS sidebar segment buttons to work smoothly and reliably.
+
+==================================================
+CURRENT PROBLEM
+==================================================
+
+The LMS currently embeds the CMS player in an iframe.
+The LMS sidebar has segment chips like 9:00, 10:00, etc.
+Right now the iframe player is not reliably controllable from LMS.
+
+We need the CMS embed player itself to expose an official control bridge.
+
+==================================================
+FILES TO MODIFY
+==================================================
+
+Modify the CMS embed player page/component only.
+This is likely one or more of:
+- client/src/pages/embed-player.tsx
+- client/src/pages/v/:publicId player page
+- any shared player controller/hooks used by the embed page
+- any secure player bootstrap file
+
+Use the actual current CMS file structure.
+
+==================================================
+PART 1 — URL-BASED SEEK ON LOAD
+==================================================
+
+On embed page load, read query params:
+
+- t
+- start
+
+Rules:
+- prefer t if present
+- else use start
+- parse as seconds
+- ignore invalid, negative, NaN, absurd values
+- clamp to [0, duration - small buffer] once duration is known
+- if requested before metadata is ready, store as pending initial seek and apply after player readiness
+
+Implementation behavior:
+- if embed URL contains ?t=600 or ?start=600
+- player should load and begin playback from about 10:00
+- no dependence on LMS DOM access
+
+This must work consistently with:
+- embedToken auth
+- secure stream bootstrapping
+- watermark
+- session binding
+- overlays
+- analytics
+
+==================================================
+PART 2 — PARENT → IFRAME postMessage CONTROL API
+==================================================
+
+Inside the CMS embed player, add:
+
+window.addEventListener("message", ...)
+
+Supported message types:
+
+1. SEEK_TO
+Payload example:
+{ type: "SEEK_TO", time: 600 }
+
+Behavior:
+- validate sender origin against allowed LMS origins
+- validate payload
+- if player ready: seek immediately and resume playback
+- if player not yet ready: store as pending seek and apply once ready
+- after successful seek, send SEEKED event back to parent
+
+2. PLAY
+Payload:
+{ type: "PLAY" }
+
+3. PAUSE
+Payload:
+{ type: "PAUSE" }
+
+4. GET_CURRENT_TIME (optional but recommended)
+Payload:
+{ type: "GET_CURRENT_TIME" }
+Response:
+{ type: "CURRENT_TIME", time: number }
+
+Do not implement broad unsafe wildcard control.
+Only accepted known message types.
+
+==================================================
+PART 3 — IFRAME → PARENT EVENT API
+==================================================
+
+The CMS player should post events back to parent:
+
+1. PLAYER_READY
+Send when:
+- auth/bootstrap is complete
+- stream is attached
+- player is actually ready for control
+
+Example:
+{ type: "PLAYER_READY", publicId, duration }
+
+2. SEEKED
+After successful seek:
+{ type: "SEEKED", time: currentTime }
+
+3. PLAY
+{ type: "PLAY", time: currentTime }
+
+4. PAUSE
+{ type: "PAUSE", time: currentTime }
+
+5. CURRENT_TIME (optional)
+On GET_CURRENT_TIME response:
+{ type: "CURRENT_TIME", time: currentTime }
+
+6. ERROR (recommended)
+If seek/control fails:
+{ type: "ERROR", code: "SEEK_FAILED", message: "..." }
+
+==================================================
+PART 4 — SECURITY
+==================================================
+
+This is critical.
+
+Do NOT accept postMessage commands from any random origin.
+
+Use the CMS allowed LMS origins configuration already used elsewhere.
+Examples may include:
+- ALLOWED_LMS_ORIGINS
+- LMS origin allowlist
+- existing embed origin validation logic
+
+Rules:
+- verify event.origin
+- ignore unknown origins
+- optionally log blocked origin in dev mode
+- when posting back to parent, use validated parent origin, not "*", unless there is absolutely no safer alternative and current architecture requires it
+
+Do NOT break existing:
+- embedToken validation
+- tokenRequired
+- secure playback
+- session/device checks
+- iframe-only restrictions
+
+==================================================
+PART 5 — PLAYER READINESS + PENDING SEEK
+==================================================
+
+The player may receive a seek command before metadata or stream is ready.
+
+Implement:
+- pendingInitialSeekRef
+- pendingMessageSeekRef
+- playerReadyRef
+
+Flow:
+- if SEEK_TO arrives before ready, store it
+- when player becomes ready, apply latest pending seek
+- latest seek should win if multiple requests come quickly
+- do not lose a seek request just because the player is still loading
+
+Use robust events like:
+- loadedmetadata
+- canplay
+- player attached / manifest ready
+- whichever is correct for this CMS player architecture
+
+==================================================
+PART 6 — SEEK RELIABILITY
+==================================================
+
+For SEEK_TO:
+- validate time
+- apply seek to the actual active video element / player controller
+- verify success after a short delay
+- if necessary retry once or twice
+- then send SEEKED message back
+
+Do NOT create heavy loops.
+Keep it simple and reliable.
+
+Tolerance:
+- within about 1–2 seconds is fine due to keyframe snapping
+
+==================================================
+PART 7 — KEEP URL-BASED SEEK AS FALLBACK
+==================================================
+
+Even after postMessage API is added, keep URL-based seek support.
+
+Reason:
+- if LMS loads a fresh iframe with ?t=600, it should still start at that point
+- this gives a safe fallback path if parent messaging is delayed
+
+==================================================
+PART 8 — DEBUG LOGGING
+==================================================
+
+Add clean scoped logs in dev mode:
+
+[EmbedControl] PLAYER_READY
+[EmbedControl] received SEEK_TO 600 from allowed origin
+[EmbedControl] stored pending seek 600
+[EmbedControl] applied seek 600
+[EmbedControl] posted SEEKED 598.7
+[EmbedControl] blocked message from origin ...
+
+Do NOT log secrets or tokens.
+
+==================================================
+DO NOT BREAK
+==================================================
+
+Do NOT break:
+- current embed URL auth flow
+- secure CMS playback
+- watermark overlays
+- analytics
+- fullscreen
+- mobile behavior
+- existing session/security enforcement
+- existing iframe rendering path
+
+==================================================
+ACCEPTANCE CRITERIA
+==================================================
+
+This is complete only if all pass:
+
+1. Opening iframe URL with ?t=540 starts near 9:00
+2. Parent can send postMessage { type: "SEEK_TO", time: 540 } and player jumps there
+3. Parent receives PLAYER_READY
+4. Parent receives SEEKED after successful seek
+5. Unknown origins are ignored
+6. Existing embedToken flow still works
+7. No security regressions
+8. No player redesign
+
+==================================================
+DELIVERABLE
+==================================================
+
+Return:
+1. files changed
+2. exact message contract implemented
+3. how origin validation works
+4. how pending seek works
+5. any small limitations remaining
