@@ -10,6 +10,8 @@ import {
   timestamp,
   uuid,
   index,
+  uniqueIndex,
+  numeric,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -245,6 +247,119 @@ export const mediaAssets = pgTable("media_assets", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const integrationClients = pgTable("integration_clients", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  slug: text("slug").notNull().unique(),
+  status: text("status").notNull().default("active"),
+  authMode: text("auth_mode").notNull().default("hmac"),
+  clientKey: text("client_key").notNull().unique(),
+  secretHash: text("secret_hash").notNull(),
+  allowedOrigins: jsonb("allowed_origins").default(sql`'[]'::jsonb`),
+  allowedLmsBackendIps: jsonb("allowed_lms_backend_ips").default(sql`'[]'::jsonb`),
+  allowedVideoIdsMode: text("allowed_video_ids_mode").notNull().default("all"),
+  config: jsonb("config").default(sql`'{}'::jsonb`),
+  description: text("description"),
+  createdByAdminId: uuid("created_by_admin_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_integration_clients_status").on(table.status),
+]);
+
+export const integrationClientVideoAccess = pgTable("integration_client_video_access", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  integrationClientId: uuid("integration_client_id").notNull().references(() => integrationClients.id, { onDelete: "cascade" }),
+  videoId: uuid("video_id").notNull().references(() => videos.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("idx_icva_client_video").on(table.integrationClientId, table.videoId),
+]);
+
+export const integrationLaunchLogs = pgTable("integration_launch_logs", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  integrationClientId: uuid("integration_client_id").references(() => integrationClients.id, { onDelete: "set null" }),
+  videoId: uuid("video_id").references(() => videos.id, { onDelete: "set null" }),
+  publicId: text("public_id"),
+  lmsUserId: text("lms_user_id"),
+  lmsCourseId: text("lms_course_id"),
+  lmsLessonId: text("lms_lesson_id"),
+  lmsSessionId: text("lms_session_id"),
+  studentName: text("student_name"),
+  studentEmail: text("student_email"),
+  launchTokenJti: text("launch_token_jti"),
+  origin: text("origin"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  status: text("status").notNull(),
+  failureReason: text("failure_reason"),
+  requestPayload: jsonb("request_payload").default(sql`'{}'::jsonb`),
+  resolvedPermissions: jsonb("resolved_permissions").default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_ill_client_id").on(table.integrationClientId),
+  index("idx_ill_public_id").on(table.publicId),
+  index("idx_ill_lms_user_id").on(table.lmsUserId),
+  index("idx_ill_status").on(table.status),
+  index("idx_ill_created_at").on(table.createdAt),
+]);
+
+export const integrationPlaybackSessions = pgTable("integration_playback_sessions", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  integrationClientId: uuid("integration_client_id").references(() => integrationClients.id, { onDelete: "set null" }),
+  integrationLaunchLogId: uuid("integration_launch_log_id").references(() => integrationLaunchLogs.id, { onDelete: "set null" }),
+  playbackSessionId: uuid("playback_session_id").references(() => playbackSessions.id, { onDelete: "set null" }),
+  videoId: uuid("video_id").references(() => videos.id, { onDelete: "set null" }),
+  publicId: text("public_id").notNull(),
+  lmsUserId: text("lms_user_id").notNull(),
+  lmsCourseId: text("lms_course_id"),
+  lmsLessonId: text("lms_lesson_id"),
+  lmsSessionId: text("lms_session_id"),
+  studentName: text("student_name"),
+  studentEmail: text("student_email"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  lastPingAt: timestamp("last_ping_at").defaultNow().notNull(),
+  endedAt: timestamp("ended_at"),
+  completionPercent: integer("completion_percent").notNull().default(0),
+  watchedSeconds: integer("watched_seconds").notNull().default(0),
+  maxPositionSeconds: integer("max_position_seconds").notNull().default(0),
+  status: text("status").notNull().default("active"),
+  sessionMetadata: jsonb("session_metadata").default(sql`'{}'::jsonb`),
+}, (table) => [
+  index("idx_ips_client_id").on(table.integrationClientId),
+  index("idx_ips_lms_user_id").on(table.lmsUserId),
+  index("idx_ips_status").on(table.status),
+  index("idx_ips_public_id").on(table.publicId),
+]);
+
+export const integrationEventLogs = pgTable("integration_event_logs", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  integrationPlaybackSessionId: uuid("integration_playback_session_id").notNull().references(() => integrationPlaybackSessions.id, { onDelete: "cascade" }),
+  eventType: text("event_type").notNull(),
+  eventTimeSeconds: numeric("event_time_seconds"),
+  payload: jsonb("payload").default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const integrationApiKeys = pgTable("integration_api_keys", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  integrationClientId: uuid("integration_client_id").notNull().references(() => integrationClients.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),
+  apiKeyPrefix: text("api_key_prefix").notNull(),
+  apiKeyHash: text("api_key_hash").notNull(),
+  status: text("status").notNull().default("active"),
+  lastUsedAt: timestamp("last_used_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const sdkBuildMetadata = pgTable("sdk_build_metadata", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  version: text("version").notNull().unique(),
+  changelog: text("changelog"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const insertVideoSchema = createInsertSchema(videos).omit({
   id: true,
   createdAt: true,
@@ -275,5 +390,19 @@ export type VideoClientSecurity = typeof videoClientSecurity.$inferSelect;
 export type MediaAsset = typeof mediaAssets.$inferSelect;
 export type InsertStorageConnection = z.infer<typeof insertStorageConnectionSchema>;
 
+export const insertIntegrationClientSchema = createInsertSchema(integrationClients).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export type InsertVideo = z.infer<typeof insertVideoSchema>;
 export type InsertEmbedToken = z.infer<typeof insertEmbedTokenSchema>;
+export type InsertIntegrationClient = z.infer<typeof insertIntegrationClientSchema>;
+export type IntegrationClient = typeof integrationClients.$inferSelect;
+export type IntegrationClientVideoAccess = typeof integrationClientVideoAccess.$inferSelect;
+export type IntegrationLaunchLog = typeof integrationLaunchLogs.$inferSelect;
+export type IntegrationPlaybackSession = typeof integrationPlaybackSessions.$inferSelect;
+export type IntegrationEventLog = typeof integrationEventLogs.$inferSelect;
+export type IntegrationApiKey = typeof integrationApiKeys.$inferSelect;
+export type SdkBuildMetadata = typeof sdkBuildMetadata.$inferSelect;

@@ -909,6 +909,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     };
   }
 
+  // ── Integration API Module ────────────────────────────────
+  const { registerIntegrationRoutes } = await import("./integrations/routes");
+  const { registerIntegrationAdminRoutes } = await import("./integrations/admin-routes");
+  registerIntegrationRoutes(app);
+  registerIntegrationAdminRoutes(app);
+
+  // Serve SDK files at /sdk/*
+  const sdkPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "public", "sdk");
+  app.use("/sdk", (await import("express")).default.static(sdkPath, { maxAge: "1h" }));
+
   // ── Auth ──────────────────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {
     try {

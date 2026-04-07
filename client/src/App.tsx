@@ -19,6 +19,7 @@ import EmbedManagerPage from "@/pages/embed-manager";
 import SystemSettingsPage from "@/pages/system-settings";
 import AuditLogsPage from "@/pages/audit-logs";
 import GlobalSecurityPage from "@/pages/global-security";
+import IntegrationsPage from "@/pages/integrations";
 import EmbedPlayerPage from "@/pages/embed-player";
 import SharePlayerPage from "@/pages/share-player";
 import NotFound from "@/pages/not-found";
@@ -96,6 +97,7 @@ function Router() {
       <Route path="/settings" component={() => <ProtectedRoute component={SystemSettingsPage} />} />
       <Route path="/security" component={() => <ProtectedRoute component={GlobalSecurityPage} />} />
       <Route path="/audit" component={() => <ProtectedRoute component={AuditLogsPage} />} />
+      <Route path="/integrations" component={() => <ProtectedRoute component={IntegrationsPage} />} />
       <Route component={NotFound} />
     </Switch>
   );

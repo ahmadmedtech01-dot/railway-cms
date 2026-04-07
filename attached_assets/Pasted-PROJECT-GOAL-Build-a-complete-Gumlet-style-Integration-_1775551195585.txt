@@ -1,0 +1,1092 @@
+PROJECT GOAL
+Build a complete “Gumlet-style Integration API Module” inside my existing Video CMS so that any LMS can connect to the CMS using a simple API + SDK integration and play secure videos without tightly coupling LMS and CMS pages.
+
+This must be a production-ready architecture, cleanly implemented, database-backed, and fully integrated into my CURRENT CMS codebase.
+
+IMPORTANT CONTEXT
+This is my current Video CMS architecture. You must implement this feature INSIDE the existing codebase, not as a disconnected demo.
+
+Current stack and architecture:
+- Frontend: React 18 + TypeScript + Vite
+- Backend: Express 5 + TypeScript
+- ORM: Drizzle ORM
+- Database: Postgres / Supabase
+- Video delivery: HLS playback via hls.js
+- Existing secure flow already exists with:
+  - /api/player/:publicId/mint
+  - /api/player/:publicId/manifest
+  - /hls
+  - /seg
+  - /key
+  - playback sessions
+  - embed tokens
+  - session rotation
+  - analytics
+  - global/per-video security
+  - watermark/banner/security settings
+- CDN / secure path layer uses Cloudflare Worker + SIGNING_SECRET + ORIGIN_BASE
+- Existing architecture already has tables and logic for:
+  - videos
+  - video_player_settings
+  - video_banners
+  - video_watermark_settings
+  - video_security_settings
+  - embed_tokens
+  - playback_sessions
+  - audit_logs
+  - system_settings
+  - video_client_security
+  - storage_connections
+  - media_assets
+
+TARGET PRODUCT
+Turn my Video CMS into a reusable “Video Delivery Platform” for LMS, like Gumlet:
+- CMS is the secure video backend
+- LMS is the external client
+- LMS should only need:
+  1. an integration client key
+  2. a backend-signed launch token
+  3. a small JS embed script or React wrapper
+- Then LMS can render and control player behavior easily
+- CMS handles secure playback, session minting, tracking, playback policy, and secure manifest/segment/key delivery
+
+MAIN DELIVERABLES
+Implement all of the following completely:
+
+1. DATABASE LAYER
+Create all required database tables and relations using Drizzle ORM migrations and schema updates.
+
+2. BACKEND API LAYER
+Create a new Integration API module with secure external endpoints for LMS clients.
+
+3. SERVER-SIDE SECURITY MODEL
+Implement full trust chain:
+- LMS backend signs launch token
+- CMS validates integration client + signature
+- CMS mints internal playback/embed token
+- Only CMS-issued token can access manifest/segments/keys
+- Support origin restrictions, expiry, user binding, and session logging
+
+4. ADMIN PANEL
+Create admin UI pages to manage LMS integration clients, view logs, and issue test credentials.
+
+5. SDK / EMBED LAYER
+Create:
+- browser JS SDK file
+- React wrapper component
+- iframe embed option
+- JS API methods and events
+
+6. LMS INTEGRATION CONTRACT
+Define exact request/response contracts and implement a minimal test page inside CMS to simulate LMS integration.
+
+7. ANALYTICS + SESSION TRACKING
+Track external LMS playback sessions separately but linked to existing playback session logic.
+
+8. CLEAN ARCHITECTURE
+No hacks, no duplicated insecure logic, no breaking existing CMS player functionality.
+
+ABSOLUTE RULES
+- Do NOT break existing admin/player flows
+- Reuse current secure player architecture where possible
+- Do NOT expose raw storage URLs
+- Do NOT allow LMS launch token directly at manifest/seg/key endpoints
+- Do NOT introduce insecure fallback secrets in code
+- Use env-only secrets where needed
+- Keep code modular, typed, and maintainable
+- Add proper backend validation and error responses
+- Add audit logging for sensitive actions
+- Add migration files and seed/default logic where needed
+- Add comments only where useful, not noisy comments
+
+==================================================
+PHASE 1 — DATABASE DESIGN
+==================================================
+
+Add these new tables in the shared schema / Drizzle schema.
+
+1) integration_clients
+Purpose:
+Store trusted LMS clients that are allowed to connect to CMS.
+
+Fields:
+- id: uuid primary key
+- name: text not null
+- slug: text unique not null
+- status: text enum('active','disabled') default 'active'
+- auth_mode: text enum('hmac','jwt') default 'hmac'
+- client_key: text unique not null
+- secret_hash: text not null
+- allowed_origins: jsonb default []
+- allowed_lms_backend_ips: jsonb default []
+- allowed_video_ids_mode: text enum('all','selected') default 'all'
+- config: jsonb default {}
+- description: text nullable
+- created_by_admin_id: uuid nullable
+- created_at: timestamp default now
+- updated_at: timestamp default now
+
+Config JSON can store defaults such as:
+- defaultAutoplay
+- defaultControls
+- defaultAllowFullscreen
+- defaultAllowedRates
+- defaultTheme
+- allowIframeEmbed
+- allowSdkEmbed
+- allowReactEmbed
+- allowProgressWriteback
+- defaultCompletionThreshold
+- strictOriginCheck
+
+2) integration_client_video_access
+Purpose:
+Optional whitelist table when allowed_video_ids_mode = 'selected'
+
+Fields:
+- id: uuid primary key
+- integration_client_id: uuid references integration_clients(id) on delete cascade
+- video_id: uuid references videos(id) on delete cascade
+- created_at: timestamp default now
+
+Unique composite:
+- integration_client_id + video_id
+
+3) integration_launch_logs
+Purpose:
+Log every LMS launch/mint attempt.
+
+Fields:
+- id: uuid primary key
+- integration_client_id: uuid references integration_clients(id) on delete set null
+- video_id: uuid references videos(id) on delete set null
+- public_id: text
+- lms_user_id: text
+- lms_course_id: text nullable
+- lms_lesson_id: text nullable
+- lms_session_id: text nullable
+- student_name: text nullable
+- student_email: text nullable
+- launch_token_jti: text nullable
+- origin: text nullable
+- ip_address: text nullable
+- user_agent: text nullable
+- status: text enum('success','failed','denied') not null
+- failure_reason: text nullable
+- request_payload: jsonb default {}
+- resolved_permissions: jsonb default {}
+- created_at: timestamp default now
+
+4) integration_playback_sessions
+Purpose:
+Track LMS-side playback sessions that map to internal playback sessions.
+
+Fields:
+- id: uuid primary key
+- integration_client_id: uuid references integration_clients(id) on delete set null
+- integration_launch_log_id: uuid references integration_launch_logs(id) on delete set null
+- playback_session_id: uuid nullable references playback_sessions(id) on delete set null
+- video_id: uuid references videos(id) on delete set null
+- public_id: text not null
+- lms_user_id: text not null
+- lms_course_id: text nullable
+- lms_lesson_id: text nullable
+- lms_session_id: text nullable
+- student_name: text nullable
+- student_email: text nullable
+- started_at: timestamp default now
+- last_ping_at: timestamp default now
+- ended_at: timestamp nullable
+- completion_percent: integer default 0
+- watched_seconds: integer default 0
+- max_position_seconds: integer default 0
+- status: text enum('active','ended','expired','revoked') default 'active'
+- session_metadata: jsonb default {}
+
+5) integration_event_logs
+Purpose:
+Track SDK/player events from LMS.
+
+Fields:
+- id: uuid primary key
+- integration_playback_session_id: uuid references integration_playback_sessions(id) on delete cascade
+- event_type: text not null
+- event_time_seconds: numeric nullable
+- payload: jsonb default {}
+- created_at: timestamp default now
+
+6) integration_api_keys (optional but recommended)
+Purpose:
+Allow future support for API-key authenticated server-to-server metadata access.
+
+Fields:
+- id: uuid primary key
+- integration_client_id: uuid references integration_clients(id) on delete cascade
+- label: text not null
+- api_key_prefix: text not null
+- api_key_hash: text not null
+- status: text enum('active','revoked') default 'active'
+- last_used_at: timestamp nullable
+- created_at: timestamp default now
+
+7) sdk_build_metadata
+Purpose:
+Store SDK version metadata if needed.
+
+Fields:
+- id: uuid primary key
+- version: text unique not null
+- changelog: text nullable
+- is_active: boolean default true
+- created_at: timestamp default now
+
+Also:
+- Add indexes on integration_client_id, public_id, lms_user_id, created_at, status
+- Add migrations
+- Ensure schema exports are clean and used in repo consistently
+
+==================================================
+PHASE 2 — BACKEND DOMAIN MODULES
+==================================================
+
+Create new backend modules in a clean folder structure, for example:
+
+server/integrations/
+  types.ts
+  crypto.ts
+  validation.ts
+  service.ts
+  tokens.ts
+  permissions.ts
+  analytics.ts
+  sdk.ts
+  routes.ts
+  admin-routes.ts
+
+Also create any shared utils required.
+
+A. integration types
+Define strongly typed structures for:
+- Launch token payload
+- Mint request
+- Mint response
+- Refresh request
+- Ping request
+- Event tracking request
+- Player config response
+- Metadata response
+- Error response
+
+B. secret and token handling
+Implement secure crypto utilities:
+- generateClientKey()
+- generateClientSecret()
+- hashSecret(secret)
+- verifySecret(secret, hash)
+- verifyHmacLaunchToken(...)
+- verifyJwtLaunchToken(...) for future support
+- generateCmsEmbedToken(...)
+- verifyCmsEmbedToken(...)
+
+Use:
+- crypto.timingSafeEqual where appropriate
+- env-only master secrets
+- no insecure fallback constants
+
+C. permissions resolution
+Create a resolver that merges permissions from:
+1. integration client defaults
+2. video-level security settings
+3. player settings
+4. request-level launch payload permissions
+5. admin global security policies
+
+Resolved result example:
+- allowPlay
+- allowPause
+- allowSeek
+- allowPlaybackRate
+- allowedRates
+- allowFullscreen
+- allowPiP
+- showControls
+- autoplay
+- startAt
+- completionThreshold
+- watermarkEnabled
+- bannerEnabled
+- notesEnabled
+- chaptersEnabled
+- maxConcurrentSessions
+- strictFocusTracking
+- strictViolationRules
+
+Do not allow LMS payload to override CMS-enforced security settings that should remain server-authoritative.
+
+D. integration services
+Implement service layer functions:
+- createIntegrationClient()
+- rotateIntegrationClientSecret()
+- listIntegrationClients()
+- getIntegrationClientById()
+- getIntegrationClientByKey()
+- updateIntegrationClient()
+- disableIntegrationClient()
+- assignVideosToClient()
+- resolveAllowedVideoAccess()
+- createLaunchLog()
+- createIntegrationPlaybackSession()
+- updateIntegrationPlaybackSession()
+- logIntegrationEvent()
+- listLaunchLogs()
+- listPlaybackSessions()
+- buildResolvedPlayerConfig()
+
+==================================================
+PHASE 3 — LAUNCH TOKEN MODEL
+==================================================
+
+Implement a proper LMS → CMS launch token model.
+
+SUPPORTED MODE 1: HMAC SIGNED PAYLOAD
+The LMS backend signs a payload using the client secret.
+
+Expected launch token payload:
+- iss: integration client key or slug
+- aud: "cms-player"
+- sub: LMS user id
+- publicId: video public id
+- courseId: optional
+- lessonId: optional
+- sessionId: optional
+- name: optional
+- email: optional
+- permissions: optional object
+- startAt: optional
+- origin: optional LMS origin
+- exp: unix timestamp required
+- iat: unix timestamp required
+- jti: unique token id required
+
+Implement validation rules:
+- must not be expired
+- publicId required
+- sub required
+- jti required
+- exp required
+- iat required
+- token issuer must map to active integration client
+- optional origin must match allowed_origins if strict check enabled
+- video must be allowed for that client if selected-mode enabled
+
+IMPORTANT:
+This launch token is ONLY for minting.
+It must NOT be accepted at manifest/hls/seg/key endpoints.
+
+==================================================
+PHASE 4 — NEW INTEGRATION API ENDPOINTS
+==================================================
+
+Create these endpoints under a clear namespace:
+For example:
+- /api/integrations/...
+or
+- /api/external/...
+
+Use one consistent namespace. I prefer:
+/api/integrations
+
+Implement complete routes, validators, controllers, and services.
+
+1) POST /api/integrations/player/:publicId/mint
+Purpose:
+Main LMS entry point. Accept launch token, validate it, create launch log, create integration playback session, mint CMS embed token, return manifest URL + config.
+
+Request body:
+{
+  "launchToken": "....",
+  "context": {
+    "courseId": "...",
+    "lessonId": "...",
+    "sessionId": "...",
+    "origin": "https://lms.example.com"
+  }
+}
+
+Behavior:
+- verify :publicId matches token publicId
+- validate client
+- validate origin if required
+- validate video exists and is published/playable
+- resolve permissions and player config
+- call or reuse current internal mint/session creation logic cleanly
+- create integration_launch_logs entry
+- create integration_playback_sessions entry
+- mint short-lived CMS embed token
+- return response
+
+Response shape:
+{
+  "ok": true,
+  "integrationSessionId": "...",
+  "embedToken": "...",
+  "expiresIn": 300,
+  "manifestUrl": "https://.../api/player/:publicId/manifest?token=...",
+  "refreshUrl": "/api/integrations/player/:publicId/refresh",
+  "pingUrl": "/api/integrations/player/:publicId/ping",
+  "eventUrl": "/api/integrations/player/:publicId/events",
+  "metadata": {
+    "title": "...",
+    "durationSeconds": 1234,
+    "posterUrl": "...",
+    "publicId": "..."
+  },
+  "playerConfig": {
+    ...
+  }
+}
+
+2) POST /api/integrations/player/:publicId/refresh
+Purpose:
+Refresh short-lived embed/playback token for active integration session.
+
+Request body:
+{
+  "integrationSessionId": "...",
+  "embedToken": "..."
+}
+
+Behavior:
+- verify active session
+- verify session still valid
+- verify publicId matches
+- optionally map to internal playback session refresh logic
+- return new embed token and manifest URL
+
+3) POST /api/integrations/player/:publicId/ping
+Purpose:
+Track progress and keep integration session alive.
+
+Request body:
+{
+  "integrationSessionId": "...",
+  "currentTime": 120,
+  "duration": 900,
+  "paused": false,
+  "ended": false,
+  "playbackRate": 1.25,
+  "buffering": false
+}
+
+Behavior:
+- update last_ping_at
+- update watched_seconds
+- update completion_percent
+- sync into integration_playback_sessions
+- optionally forward to existing analytics/session ping system
+- return new status or enforcement state if needed
+
+Response can include:
+- ok
+- sessionState
+- tokenExpiresIn
+- softWarnings
+- enforcement flags
+
+4) POST /api/integrations/player/:publicId/events
+Purpose:
+Receive SDK player events.
+
+Request body:
+{
+  "integrationSessionId": "...",
+  "events": [
+    { "type": "play", "time": 0, "payload": {} },
+    { "type": "seek", "time": 250, "payload": { "from": 10, "to": 250 } }
+  ]
+}
+
+Store in integration_event_logs.
+
+5) POST /api/integrations/player/:publicId/complete
+Purpose:
+Mark completion explicitly if LMS needs it.
+
+Request body:
+{
+  "integrationSessionId": "...",
+  "completionPercent": 100
+}
+
+6) GET /api/integrations/videos/:publicId
+Purpose:
+Metadata endpoint for allowed clients.
+Can be authenticated by:
+- api key
+or
+- embed token
+or
+- integration session token
+Choose cleanest secure approach.
+
+Return:
+- publicId
+- title
+- duration
+- thumbnail/poster
+- chapters/segments if allowed
+- subtitles if allowed
+- description if allowed
+
+7) GET /api/integrations/player/:publicId/config
+Purpose:
+Return resolved config for active integration session.
+
+8) GET /api/integrations/embed/:publicId
+Purpose:
+iframe embed page entry.
+Query params:
+- launchToken=...
+or
+- token=...
+This page should:
+- if launchToken present, call integration mint flow client-side
+- then load internal player
+- support easy iframe embedding
+
+==================================================
+PHASE 5 — REUSE CURRENT SECURE PLAYER FLOW
+==================================================
+
+This is critical.
+
+Do NOT rebuild secure HLS from scratch.
+Reuse existing internal secure flow where possible:
+- existing /api/player/:publicId/mint logic
+- existing manifest endpoint
+- existing session logic
+- existing token rotation
+- existing playback session binding
+- existing /hls /seg /key secured flow
+- existing Cloudflare worker validation model
+
+What to do:
+- treat integration mint as an outer trust layer
+- once LMS launch token is validated, produce the same kind of internal embed/playback token that current player expects
+- route playback through current secure internals
+
+The result should be:
+LMS launch token -> Integration API mint -> CMS embed token -> existing secure manifest/segment/key flow
+
+==================================================
+PHASE 6 — SDK / EMBED IMPLEMENTATION
+==================================================
+
+Create a browser SDK file that can be served publicly from CMS, for example:
+- /sdk/player.js
+- /sdk/player.esm.js
+- optionally /sdk/player.css
+
+Also create TypeScript source version in client or shared build path.
+
+SDK global:
+window.SyanPlayer
+
+Main API:
+SyanPlayer.mount(options)
+
+Options:
+- element: HTMLElement | selector
+- publicId: string
+- launchToken?: string
+- embedToken?: string
+- autoplay?: boolean
+- controls?: boolean
+- muted?: boolean
+- theme?: string
+- startAt?: number
+- allowedRates?: number[]
+- allowFullscreen?: boolean
+- onReady?: function
+- onPlay?: function
+- onPause?: function
+- onTimeUpdate?: function
+- onSeek?: function
+- onEnded?: function
+- onComplete?: function
+- onError?: function
+- onViolation?: function
+- onSessionExpired?: function
+
+Returned player instance methods:
+- play()
+- pause()
+- seek(seconds)
+- setPlaybackRate(rate)
+- enterFullscreen()
+- exitFullscreen()
+- getCurrentTime()
+- getDuration()
+- getState()
+- destroy()
+
+SDK responsibilities:
+- call integration mint endpoint
+- receive embed token
+- initialize HLS player
+- load manifest
+- auto ping progress on interval
+- auto refresh embed token before expiry
+- send events
+- expose playback methods
+- clean up timers/listeners on destroy
+
+Also:
+- support native video events
+- support HLS.js attach/detach correctly
+- handle mobile fullscreen gracefully
+- support chapter/segment display if config permits
+- do not hardcode brand styles too much; keep clean
+
+==================================================
+PHASE 7 — REACT WRAPPER
+==================================================
+
+Create a reusable React wrapper component for LMS integration.
+
+Example:
+<SyanVideoPlayer
+  publicId="..."
+  launchToken="..."
+  autoplay={false}
+  controls={true}
+  onComplete={...}
+/>
+
+Place component in a clean reusable path.
+Use the browser SDK internally or implement direct React wrapper cleanly.
+
+Props:
+- all main SDK options
+- className
+- style
+- poster
+- loading UI
+- error fallback renderer optional
+
+==================================================
+PHASE 8 — IFRAME EMBED MODE
+==================================================
+
+Implement iframe mode for the easiest LMS integration.
+
+Example use:
+<iframe
+  src="https://mycmsdomain.com/api/integrations/embed/VIDEO_PUBLIC_ID?launchToken=..."
+  allow="autoplay; fullscreen"
+  allowfullscreen
+></iframe>
+
+The iframe page must:
+- validate and mint through integration flow
+- render internal player
+- optionally communicate with parent window via postMessage
+
+Implement postMessage support:
+Events from iframe to parent:
+- syan.player.ready
+- syan.player.play
+- syan.player.pause
+- syan.player.timeupdate
+- syan.player.ended
+- syan.player.complete
+- syan.player.error
+
+Commands from parent to iframe:
+- play
+- pause
+- seek
+- setRate
+- enterFullscreen
+
+Add origin checks for postMessage where possible.
+
+==================================================
+PHASE 9 — ADMIN UI
+==================================================
+
+Add admin pages inside current CMS admin panel.
+
+A) Integration Clients page
+Path example:
+- /admin/integrations
+Show:
+- name
+- slug
+- status
+- auth mode
+- client key
+- allowed origins count
+- created date
+- action buttons
+
+Actions:
+- create client
+- edit client
+- disable/enable client
+- rotate secret
+- copy client key
+- view assigned videos
+- assign selected videos if selected-mode enabled
+
+B) Create/Edit Integration Client form
+Fields:
+- name
+- slug
+- status
+- auth_mode
+- description
+- allowed_origins (tag input)
+- allowed_lms_backend_ips (optional tag input)
+- allowed_video_ids_mode
+- default config toggles
+- assigned videos selector if selected mode
+
+When creating client:
+- generate client_key
+- generate one-time visible raw secret
+- store only secret hash
+- show raw secret ONCE in success modal with copy button
+- warn admin that secret cannot be viewed again, only rotated
+
+C) Integration Logs page
+Path example:
+- /admin/integrations/logs
+Filters:
+- client
+- status
+- publicId
+- lms user id
+- date range
+- course id
+Show:
+- created_at
+- client
+- publicId
+- lms_user_id
+- status
+- failure_reason
+- origin
+- quick view details modal
+
+D) Integration Sessions page
+Path example:
+- /admin/integrations/sessions
+Show:
+- active/ended sessions
+- current watch seconds
+- completion percent
+- last ping
+- publicId
+- client
+- lms user
+- course id
+- session status
+- revoke session action
+
+E) Integration Docs / Test page
+Path example:
+- /admin/integrations/docs
+Include:
+- sample request/response
+- example HMAC signing snippet in Node.js
+- iframe integration example
+- JS SDK example
+- React example
+- a built-in “test launch token generator” for admin testing only
+
+==================================================
+PHASE 10 — VALIDATION AND ERROR HANDLING
+==================================================
+
+Implement strong validation using existing validation style in project.
+
+Return consistent JSON error structure:
+{
+  "ok": false,
+  "error": {
+    "code": "INTEGRATION_CLIENT_DISABLED",
+    "message": "Integration client is disabled"
+  }
+}
+
+Error codes to support:
+- INTEGRATION_CLIENT_NOT_FOUND
+- INTEGRATION_CLIENT_DISABLED
+- INVALID_LAUNCH_TOKEN
+- LAUNCH_TOKEN_EXPIRED
+- LAUNCH_TOKEN_VIDEO_MISMATCH
+- VIDEO_NOT_FOUND
+- VIDEO_NOT_ALLOWED
+- ORIGIN_NOT_ALLOWED
+- INTEGRATION_SESSION_NOT_FOUND
+- INTEGRATION_SESSION_EXPIRED
+- EMBED_TOKEN_INVALID
+- EMBED_TOKEN_EXPIRED
+- PLAYER_NOT_ALLOWED
+- RATE_NOT_ALLOWED
+- FORBIDDEN
+- VALIDATION_ERROR
+- INTERNAL_ERROR
+
+Also:
+- never leak secret internals in error messages
+- log sensitive failures to audit_logs
+
+==================================================
+PHASE 11 — ANALYTICS AND EXISTING SESSION INTEGRATION
+==================================================
+
+Wire the new integration sessions into existing analytics model.
+
+Requirements:
+- Integration playback should still count in video analytics if appropriate
+- Preserve distinction between:
+  - normal CMS player sessions
+  - LMS integration sessions
+- Add source field:
+  - source = 'cms_direct' | 'lms_integration' | 'iframe_embed'
+- Ensure analytics screens can optionally filter by source later
+- If needed, add source columns or metadata to existing session/analytics logic in a backward-compatible way
+
+When integration player pings:
+- update integration_playback_sessions
+- optionally mirror useful fields into existing playback_sessions
+- do not double count badly
+- keep logic clean
+
+==================================================
+PHASE 12 — SECURITY REQUIREMENTS
+==================================================
+
+Must implement these security controls:
+
+1. Launch token only for mint
+Never allow it to access manifest, hls, seg, or key endpoints directly.
+
+2. Client secret storage
+Only hashed secret in DB.
+Raw secret shown once on creation/rotation.
+
+3. Short-lived embed tokens
+Internal CMS embed tokens should remain short lived.
+
+4. Origin enforcement
+If integration client requires strict origin checking, validate request origin/referer/context origin.
+
+5. Video access control
+Respect selected-video mode.
+
+6. Active session control
+Optionally enforce per-client or per-video session limits by reusing current playback session protection if possible.
+
+7. Audit logging
+Log:
+- client create
+- client update
+- secret rotate
+- session revoke
+- repeated failed token validation
+- suspicious origins
+
+8. No raw storage exposure
+All HLS/seg/key must still remain behind existing secure architecture.
+
+==================================================
+PHASE 13 — INTERNAL TESTING PAGE
+==================================================
+
+Create a simple internal test page in admin or dev mode:
+- lets admin choose integration client
+- lets admin choose video
+- enter LMS user id / course id / lesson id
+- generate launch token using temporary test helper
+- mount SDK player live
+- display mint response
+- display session id
+- display event logs live
+
+This is only for admin/testing, not public production user flow.
+
+==================================================
+PHASE 14 — DOCUMENTATION IN CODE
+==================================================
+
+Add a markdown file in repo root or docs folder:
+docs/integration-api.md
+
+Include:
+- architecture overview
+- token flow
+- sequence diagram in plain text
+- endpoint docs
+- request/response examples
+- HMAC signing example (Node.js)
+- iframe example
+- JS SDK example
+- React example
+- security notes
+- migration notes
+- env variables required
+
+==================================================
+PHASE 15 — ENV VARIABLES
+==================================================
+
+Add and wire required env vars properly.
+
+Possible env vars:
+- INTEGRATION_MASTER_SECRET=...
+- SDK_PUBLIC_BASE_URL=...
+- CMS_PUBLIC_BASE_URL=...
+- EMBED_TOKEN_TTL_SECONDS=300
+- INTEGRATION_REFRESH_WINDOW_SECONDS=60
+
+Do not use fallback dummy values in production mode.
+If env missing in production, fail loudly and clearly.
+
+==================================================
+PHASE 16 — HMAC TOKEN FORMAT EXAMPLE
+==================================================
+
+Implement a clear HMAC token format for LMS integration.
+A simple robust format is acceptable, for example:
+base64url(payload).base64url(signature)
+
+Where:
+- payload is canonical JSON
+- signature = HMAC_SHA256(payload, clientSecret)
+
+Or a JWT-like HS256 implementation if done properly.
+Be consistent and document the exact format.
+
+Provide example helper snippet in docs and admin docs page:
+
+Node.js example:
+- take payload
+- stringify deterministically
+- sign using HMAC SHA256
+- create token
+- send to frontend
+Frontend then passes token to CMS mint endpoint
+
+==================================================
+PHASE 17 — SAMPLE LMS INTEGRATION SNIPPETS
+==================================================
+
+Add examples in docs and admin docs page:
+
+1. LMS backend Node.js signing example
+2. LMS frontend JS SDK integration
+3. LMS iframe integration
+4. LMS React integration
+
+Example desired usage style:
+
+A) JS SDK
+<div id="player"></div>
+<script src="https://cmsdomain.com/sdk/player.js"></script>
+<script>
+  SyanPlayer.mount({
+    element: "#player",
+    publicId: "abc123",
+    launchToken: "SIGNED_TOKEN",
+    autoplay: false,
+    controls: true,
+    onComplete: function(e) {
+      console.log("complete", e);
+    }
+  });
+</script>
+
+B) React
+<SyanVideoPlayer
+  publicId="abc123"
+  launchToken={token}
+  controls
+  autoplay={false}
+  onComplete={(e) => console.log(e)}
+/>
+
+C) Iframe
+<iframe
+  src="https://cmsdomain.com/api/integrations/embed/abc123?launchToken=SIGNED_TOKEN"
+  allow="autoplay; fullscreen"
+  allowfullscreen
+></iframe>
+
+==================================================
+PHASE 18 — IMPLEMENTATION DETAILS TO FOLLOW
+==================================================
+
+Please implement all of this with the following engineering standards:
+
+- Use current project conventions and existing router patterns
+- Update server/routes.ts cleanly
+- Add admin nav item for Integrations
+- Add API tests or at least route-level validation tests if project already has test setup
+- Use Zod or existing validator approach consistently
+- Reuse current auth/admin middleware for admin pages
+- Reuse existing video lookup logic by publicId where available
+- Reuse existing playback mint/session utilities instead of duplicating token/session creation
+- Add type-safe client API helpers if frontend uses them
+- Keep UI professional and consistent with current admin style
+- No unnecessary redesign of unrelated pages
+
+==================================================
+PHASE 19 — FINAL ACCEPTANCE CRITERIA
+==================================================
+
+This work is only complete if ALL of these are true:
+
+1. Admin can create an integration client
+2. Admin gets one-time client secret on create
+3. LMS backend can sign launch token with that secret
+4. LMS frontend can call CMS integration mint endpoint
+5. CMS validates launch token and client correctly
+6. CMS creates DB launch log and integration playback session
+7. CMS returns embed token + manifest URL + config
+8. SDK can mount and play secure HLS video
+9. SDK can ping and refresh token
+10. Events are logged
+11. Iframe embed mode works
+12. React wrapper works
+13. Existing CMS direct playback still works
+14. No raw storage URLs exposed
+15. Admin can view logs and sessions
+16. Video allowlist rules work
+17. Origin restriction works
+18. Secret rotation works
+19. Audit logging exists for admin-sensitive changes
+20. Docs are added and accurate
+
+==================================================
+PHASE 20 — OUTPUT FORMAT I WANT FROM YOU
+==================================================
+
+Implement the feature directly in codebase and show me:
+
+1. All files created/updated
+2. DB schema additions
+3. Migration summary
+4. Route list
+5. Admin pages added
+6. SDK files added
+7. Example LMS integration snippet
+8. Any env variables I must set
+9. Any manual steps I must do after code changes
+
+Do not stop at partial scaffolding.
+Do not create fake placeholder APIs.
+Do not leave TODOs for core pieces.
+Make it end-to-end working in my current system.

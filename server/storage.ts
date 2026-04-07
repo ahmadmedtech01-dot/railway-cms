@@ -2,11 +2,14 @@ import { db } from "./db";
 import {
   adminUsers, videos, videoPlayerSettings, videoWatermarkSettings,
   videoSecuritySettings, embedTokens, playbackSessions, auditLogs, systemSettings, storageConnections, mediaAssets, videoBanners,
+  integrationClients, integrationClientVideoAccess, integrationLaunchLogs, integrationPlaybackSessions, integrationEventLogs, integrationApiKeys,
   type AdminUser, type Video, type VideoPlayerSettings, type VideoWatermarkSettings,
   type VideoSecuritySettings, type EmbedToken, type PlaybackSession, type AuditLog,
   type SystemSetting, type StorageConnection, type MediaAsset, type VideoBanner,
+  type IntegrationClient, type IntegrationClientVideoAccess, type IntegrationLaunchLog,
+  type IntegrationPlaybackSession, type IntegrationEventLog, type IntegrationApiKey,
 } from "@shared/schema";
-import { eq, desc, and, sql, asc, like } from "drizzle-orm";
+import { eq, desc, and, sql, asc, like, inArray } from "drizzle-orm";
 
 export const storage = {
   // Admin
@@ -315,5 +318,149 @@ export const storage = {
         .set({ sortOrder: i })
         .where(and(eq(videoBanners.id, orderedIds[i]), eq(videoBanners.videoId, videoId)));
     }
+  },
+
+  // Integration Clients
+  async createIntegrationClient(data: Partial<IntegrationClient>): Promise<IntegrationClient> {
+    const [c] = await db.insert(integrationClients).values(data as any).returning();
+    return c;
+  },
+
+  async getIntegrationClients(): Promise<IntegrationClient[]> {
+    return db.select().from(integrationClients).orderBy(desc(integrationClients.createdAt));
+  },
+
+  async getIntegrationClientById(id: string): Promise<IntegrationClient | undefined> {
+    const [c] = await db.select().from(integrationClients).where(eq(integrationClients.id, id));
+    return c;
+  },
+
+  async getIntegrationClientByKey(clientKey: string): Promise<IntegrationClient | undefined> {
+    const [c] = await db.select().from(integrationClients).where(eq(integrationClients.clientKey, clientKey));
+    return c;
+  },
+
+  async getIntegrationClientBySlug(slug: string): Promise<IntegrationClient | undefined> {
+    const [c] = await db.select().from(integrationClients).where(eq(integrationClients.slug, slug));
+    return c;
+  },
+
+  async updateIntegrationClient(id: string, data: Partial<IntegrationClient>): Promise<IntegrationClient | undefined> {
+    const [c] = await db.update(integrationClients)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(integrationClients.id, id))
+      .returning();
+    return c;
+  },
+
+  async deleteIntegrationClient(id: string): Promise<void> {
+    await db.delete(integrationClients).where(eq(integrationClients.id, id));
+  },
+
+  // Integration Client Video Access
+  async getClientVideoAccess(clientId: string): Promise<IntegrationClientVideoAccess[]> {
+    return db.select().from(integrationClientVideoAccess)
+      .where(eq(integrationClientVideoAccess.integrationClientId, clientId));
+  },
+
+  async setClientVideoAccess(clientId: string, videoIds: string[]): Promise<void> {
+    await db.delete(integrationClientVideoAccess)
+      .where(eq(integrationClientVideoAccess.integrationClientId, clientId));
+    if (videoIds.length > 0) {
+      await db.insert(integrationClientVideoAccess)
+        .values(videoIds.map(videoId => ({ integrationClientId: clientId, videoId })));
+    }
+  },
+
+  async isVideoAllowedForClient(clientId: string, videoId: string, mode: string): Promise<boolean> {
+    if (mode === "all") return true;
+    const [access] = await db.select().from(integrationClientVideoAccess)
+      .where(and(
+        eq(integrationClientVideoAccess.integrationClientId, clientId),
+        eq(integrationClientVideoAccess.videoId, videoId)
+      ));
+    return !!access;
+  },
+
+  // Integration Launch Logs
+  async createLaunchLog(data: Partial<IntegrationLaunchLog>): Promise<IntegrationLaunchLog> {
+    const [l] = await db.insert(integrationLaunchLogs).values(data as any).returning();
+    return l;
+  },
+
+  async getLaunchLogs(limit = 100, offset = 0, filters?: { clientId?: string; status?: string; publicId?: string; lmsUserId?: string }): Promise<{ logs: IntegrationLaunchLog[]; total: number }> {
+    let conditions: any[] = [];
+    if (filters?.clientId) conditions.push(eq(integrationLaunchLogs.integrationClientId, filters.clientId));
+    if (filters?.status) conditions.push(eq(integrationLaunchLogs.status, filters.status));
+    if (filters?.publicId) conditions.push(eq(integrationLaunchLogs.publicId, filters.publicId));
+    if (filters?.lmsUserId) conditions.push(eq(integrationLaunchLogs.lmsUserId, filters.lmsUserId));
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(integrationLaunchLogs).where(where);
+    const logs = await db.select().from(integrationLaunchLogs)
+      .where(where)
+      .orderBy(desc(integrationLaunchLogs.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return { logs, total: Number(countResult?.count || 0) };
+  },
+
+  // Integration Playback Sessions
+  async createIntegrationPlaybackSession(data: Partial<IntegrationPlaybackSession>): Promise<IntegrationPlaybackSession> {
+    const [s] = await db.insert(integrationPlaybackSessions).values(data as any).returning();
+    return s;
+  },
+
+  async getIntegrationPlaybackSessionById(id: string): Promise<IntegrationPlaybackSession | undefined> {
+    const [s] = await db.select().from(integrationPlaybackSessions).where(eq(integrationPlaybackSessions.id, id));
+    return s;
+  },
+
+  async updateIntegrationPlaybackSession(id: string, data: Partial<IntegrationPlaybackSession>): Promise<IntegrationPlaybackSession | undefined> {
+    const [s] = await db.update(integrationPlaybackSessions)
+      .set(data as any)
+      .where(eq(integrationPlaybackSessions.id, id))
+      .returning();
+    return s;
+  },
+
+  async getIntegrationPlaybackSessions(limit = 100, offset = 0, filters?: { clientId?: string; status?: string; publicId?: string; lmsUserId?: string }): Promise<{ sessions: IntegrationPlaybackSession[]; total: number }> {
+    let conditions: any[] = [];
+    if (filters?.clientId) conditions.push(eq(integrationPlaybackSessions.integrationClientId, filters.clientId));
+    if (filters?.status) conditions.push(eq(integrationPlaybackSessions.status, filters.status));
+    if (filters?.publicId) conditions.push(eq(integrationPlaybackSessions.publicId, filters.publicId));
+    if (filters?.lmsUserId) conditions.push(eq(integrationPlaybackSessions.lmsUserId, filters.lmsUserId));
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(integrationPlaybackSessions).where(where);
+    const sessions = await db.select().from(integrationPlaybackSessions)
+      .where(where)
+      .orderBy(desc(integrationPlaybackSessions.startedAt))
+      .limit(limit)
+      .offset(offset);
+
+    return { sessions, total: Number(countResult?.count || 0) };
+  },
+
+  // Integration Event Logs
+  async createIntegrationEvents(sessionId: string, events: Array<{ eventType: string; eventTimeSeconds?: string; payload?: any }>): Promise<void> {
+    if (events.length === 0) return;
+    await db.insert(integrationEventLogs).values(
+      events.map(e => ({
+        integrationPlaybackSessionId: sessionId,
+        eventType: e.eventType,
+        eventTimeSeconds: e.eventTimeSeconds || null,
+        payload: e.payload || {},
+      }))
+    );
+  },
+
+  async getIntegrationEvents(sessionId: string): Promise<IntegrationEventLog[]> {
+    return db.select().from(integrationEventLogs)
+      .where(eq(integrationEventLogs.integrationPlaybackSessionId, sessionId))
+      .orderBy(asc(integrationEventLogs.createdAt));
   },
 };

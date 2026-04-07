@@ -116,6 +116,16 @@ Secure HLS proxy — B2/S3 origin URLs are **never** sent to the frontend:
 
 Signing secret: `SIGNING_SECRET` env var (REQUIRED in production). No fallbacks — server crashes on startup if missing in production. Generate a new one via `GET /api/admin/generate-signing-secret` (admin-only). Must set the SAME value in Railway env vars AND Cloudflare Worker env vars, then redeploy both.
 
+### Integration API Module (Gumlet-style)
+- **Admin Panel**: Integrations page with tabs — Clients, Launch Logs, Sessions, Docs & Test
+- **Integration Clients**: CRUD management with HMAC key/secret pairs, origin whitelisting, video access modes (all / selected)
+- **Launch Token Flow**: LMS backend signs `base64url(payload).hmacHex` with `INTEGRATION_MASTER_SECRET`; CMS verifies, mints embed token, starts tracked session
+- **Player SDK**: `/sdk/player.js` (vanilla JS, auto-loads HLS.js), React wrapper `SyanVideoPlayer.tsx`
+- **Embed Options**: Direct SDK mount, React component, or iframe via `/api/integrations/embed/:publicId?launchToken=`
+- **Session Tracking**: Ping every 10s, event logging (play/pause/seek/ended), completion reporting
+- **Admin Endpoints**: `/api/admin/integrations/clients`, `/api/admin/integrations/logs`, `/api/admin/integrations/sessions`, test token generator
+- **Player Endpoints**: `/api/integrations/player/:publicId/mint|refresh|ping|events|complete`, `/api/integrations/videos/:publicId`, `/api/integrations/embed/:publicId`
+
 ## Database Tables
 
 - `admin_users` — single admin account
@@ -131,6 +141,13 @@ Signing secret: `SIGNING_SECRET` env var (REQUIRED in production). No fallbacks 
 - `storage_connections` — named storage providers (Backblaze B2 / AWS S3) with config + active flag
 - `video_client_security` — per-video client-side security overrides (violations, fullscreen, etc.)
 - `user_sessions` — express session store
+- `integration_clients` — registered LMS platforms with keys, secrets, permissions
+- `integration_client_video_access` — per-client video access whitelist
+- `integration_launch_logs` — launch token verification audit trail
+- `integration_playback_sessions` — integration playback sessions with progress
+- `integration_event_logs` — player events from integration sessions
+- `integration_api_keys` — API key management
+- `sdk_build_metadata` — SDK version tracking
 
 ## Key API Routes
 
@@ -181,6 +198,9 @@ Signing secret: `SIGNING_SECRET` env var (REQUIRED in production). No fallbacks 
 - `R2_REGION` — R2 region (defaults to `auto`)
 - `LMS_HMAC_SECRET` — HMAC-SHA256 secret for verifying LMS launch tokens (required for external LMS embed flow)
 - `ALLOWED_ORIGINS` — Comma-separated list of allowed CORS origins for production (e.g. `https://yourdomain.com,https://app.yourdomain.com`)
+- `INTEGRATION_MASTER_SECRET` — Master HMAC secret for signing/verifying integration launch tokens (REQUIRED in production, auto-generated in dev)
+- `CMS_PUBLIC_BASE_URL` — Public URL of the CMS (optional, derived from request if not set)
+- `EMBED_TOKEN_TTL_SECONDS` — Integration embed token TTL in seconds (default: 300)
 
 ## Storage Configuration
 

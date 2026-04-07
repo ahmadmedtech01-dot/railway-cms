@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   LayoutDashboard, Library, Upload, Shield, Code2, Settings,
-  ScrollText, LogOut, ChevronRight, ChevronLeft, Zap,
+  ScrollText, LogOut, ChevronRight, ChevronLeft, Zap, Plug,
 } from "lucide-react";
 import { useAuth, useLogout } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ const navItems = [
   { title: "Upload", url: "/upload", icon: Upload },
   { title: "Embed Manager", url: "/embeds", icon: Code2 },
   { title: "Global Security", url: "/security", icon: Shield },
+  { title: "Integrations", url: "/integrations", icon: Plug },
   { title: "Audit Logs", url: "/audit", icon: ScrollText },
   { title: "System Settings", url: "/settings", icon: Settings },
 ];
