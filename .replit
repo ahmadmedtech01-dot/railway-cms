@@ -65,6 +65,7 @@ R2_ENDPOINT = "https://e85e4b54f24a7b76dddcc285693f42ac.r2.cloudflarestorage.com
 R2_REGION = "auto"
 ADMIN_PASSWORD = "Pak@1234"
 HLS_GATEWAY_BASE = "https://syan-video-gateway.ahmadmedtech01.workers.dev"
+INTEGRATION_MASTER_SECRET = "176753af2436a1cdbb2d10c9a81e48723f018c892c305a8dbd832f3357998583"
 
 [agent]
 expertMode = true
