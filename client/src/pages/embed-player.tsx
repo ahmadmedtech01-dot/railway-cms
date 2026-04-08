@@ -270,6 +270,7 @@ export default function EmbedPlayerPage() {
     // decoder has the right frame ready) and then use two rAF ticks to ensure
     // the compositor has rendered that frame before notifying the parent.
     let fallbackTimer: ReturnType<typeof setTimeout>;
+    const wasPlaying = !video.paused;
 
     const onSeeked = () => {
       clearTimeout(fallbackTimer);
@@ -279,27 +280,39 @@ export default function EmbedPlayerPage() {
         requestAnimationFrame(() => {
           const actual = videoRef.current?.currentTime ?? clampedTime;
           postToParent({ type: "SEEKED", time: actual });
+          // Resume playback if the video was playing before the seek
+          if (wasPlaying) videoRef.current?.play().catch(() => {});
         });
       });
     };
 
-    // Safety fallback: if seeked never fires (e.g. network stall), report anyway
+    // Safety fallback: if seeked never fires (e.g. severe network stall),
+    // report the current position and restore playback so the player isn't
+    // left frozen.
     fallbackTimer = setTimeout(() => {
       video.removeEventListener("seeked", onSeeked);
       const actual = videoRef.current?.currentTime ?? clampedTime;
       postToParent({ type: "SEEKED", time: actual });
+      if (wasPlaying) videoRef.current?.play().catch(() => {});
     }, 5000);
 
     video.addEventListener("seeked", onSeeked);
 
-    // Set the target time. For HLS.js, also explicitly restart loading from the
-    // new position — this is necessary when the player is paused or when the
-    // target segment is outside the current buffer, and prevents the seek from
-    // being silently swallowed by an in-progress fragment download.
-    video.currentTime = clampedTime;
+    // Robust HLS.js seek sequence:
+    // 1. Pause so HLS isn't mid-fragment-download when we change position
+    // 2. stopLoad() so HLS cancels any in-flight requests
+    // 3. Set currentTime to the target
+    // 4. startLoad(targetTime) so HLS fetches segments from the right place
+    // Playback is restored inside onSeeked once the frame is confirmed visible.
     const hls = hlsRef.current;
     if (hls) {
+      video.pause();
+      hls.stopLoad();
+      video.currentTime = clampedTime;
       hls.startLoad(clampedTime);
+    } else {
+      // Native HLS (Safari) — browser handles seeking on its own
+      video.currentTime = clampedTime;
     }
   };
 
