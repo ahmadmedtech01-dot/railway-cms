@@ -256,18 +256,51 @@ export default function EmbedPlayerPage() {
       : pendingMessageSeekRef.current !== null
         ? pendingMessageSeekRef.current
         : pendingInitialSeekRef.current;
-    if (seekTime <= 0) return;
+    // Allow seeking to 0 (start of video); only reject genuinely invalid times
+    if (seekTime < 0) return;
     const dur = video.duration;
     const clampedTime = isFinite(dur) && dur > 0 ? Math.min(seekTime, dur - 0.5) : seekTime;
-    video.currentTime = clampedTime;
     pendingInitialSeekRef.current = 0;
     pendingMessageSeekRef.current = null;
     if (import.meta.env.DEV) console.debug("[EmbedControl] applied seek", clampedTime);
-    // Small delay to let the seek settle before reporting back
-    setTimeout(() => {
+
+    // Fire SEEKED only after the video element has actually completed the seek
+    // AND the decoded frame at the target position has been painted to screen.
+    // We listen for the native `seeked` event (fired by the browser once the
+    // decoder has the right frame ready) and then use two rAF ticks to ensure
+    // the compositor has rendered that frame before notifying the parent.
+    let fallbackTimer: ReturnType<typeof setTimeout>;
+
+    const onSeeked = () => {
+      clearTimeout(fallbackTimer);
+      video.removeEventListener("seeked", onSeeked);
+      // Double rAF guarantees the frame is painted before we report back
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const actual = videoRef.current?.currentTime ?? clampedTime;
+          postToParent({ type: "SEEKED", time: actual });
+        });
+      });
+    };
+
+    // Safety fallback: if seeked never fires (e.g. network stall), report anyway
+    fallbackTimer = setTimeout(() => {
+      video.removeEventListener("seeked", onSeeked);
       const actual = videoRef.current?.currentTime ?? clampedTime;
       postToParent({ type: "SEEKED", time: actual });
-    }, 200);
+    }, 5000);
+
+    video.addEventListener("seeked", onSeeked);
+
+    // Set the target time. For HLS.js, also explicitly restart loading from the
+    // new position — this is necessary when the player is paused or when the
+    // target segment is outside the current buffer, and prevents the seek from
+    // being silently swallowed by an in-progress fragment download.
+    video.currentTime = clampedTime;
+    const hls = hlsRef.current;
+    if (hls) {
+      hls.startLoad(clampedTime);
+    }
   };
 
   useEffect(() => {
