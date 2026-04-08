@@ -171,6 +171,9 @@ export default function EmbedPlayerPage() {
   const pendingInitialSeekRef = useRef<number>(urlSeekTime);
   const pendingMessageSeekRef = useRef<number | null>(null);
   const parentOriginRef = useRef<string>("");
+  const seekOpIdRef = useRef(0);
+  const isSeeking = useRef(false);
+  const seekResumeRef = useRef(false);
 
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
     urlToken || isLmsHmacToken ? "loading" : "waiting"
@@ -251,6 +254,18 @@ export default function EmbedPlayerPage() {
   const applyPendingSeek = (overrideTime?: number) => {
     const video = videoRef.current;
     if (!video) return;
+
+    // During a token/session rotation the HLS source is being swapped — queue
+    // the seek so it is applied after the rotation completes instead of being
+    // overwritten by the rotation restore logic.
+    if (isRotatingRef.current) {
+      const t = overrideTime !== undefined ? overrideTime
+        : pendingMessageSeekRef.current !== null ? pendingMessageSeekRef.current
+        : pendingInitialSeekRef.current;
+      if (t >= 0) pendingMessageSeekRef.current = t;
+      return;
+    }
+
     const seekTime = overrideTime !== undefined
       ? overrideTime
       : pendingMessageSeekRef.current !== null
@@ -259,30 +274,50 @@ export default function EmbedPlayerPage() {
     // Allow seeking to 0 (start of video); only reject genuinely invalid times
     if (seekTime < 0) return;
     const dur = video.duration;
-    const clampedTime = isFinite(dur) && dur > 0 ? Math.min(seekTime, dur - 0.5) : seekTime;
+    const clampedTime = isFinite(dur) && dur > 0
+      ? Math.max(0, Math.min(seekTime, dur - 0.5))
+      : Math.max(0, seekTime);
     pendingInitialSeekRef.current = 0;
     pendingMessageSeekRef.current = null;
     if (import.meta.env.DEV) console.debug("[EmbedControl] applied seek", clampedTime);
 
+    // Each seek gets a unique operation ID so rapid sequential seeks cancel
+    // stale listeners from earlier calls instead of firing duplicate events.
+    const opId = ++seekOpIdRef.current;
+
+    // Latch the "was playing" intent from the FIRST seek in a burst.
+    // If seek #1 pauses the video and seek #2 arrives before #1 finishes,
+    // seek #2 would see video.paused=true and never resume. The latch
+    // preserves the original intent across rapid sequential seeks.
+    if (!isSeeking.current) {
+      seekResumeRef.current = !video.paused;
+    }
+
+    // Mark the seek as in-progress so internal video.pause() calls from this
+    // function do NOT trigger a spurious PAUSE postMessage to the parent.
+    isSeeking.current = true;
+
     // Fire SEEKED only after the video element has actually completed the seek
     // AND the decoded frame at the target position has been painted to screen.
-    // We listen for the native `seeked` event (fired by the browser once the
-    // decoder has the right frame ready) and then use two rAF ticks to ensure
-    // the compositor has rendered that frame before notifying the parent.
     let fallbackTimer: ReturnType<typeof setTimeout>;
-    const wasPlaying = !video.paused;
+
+    const finishSeek = () => {
+      if (opId !== seekOpIdRef.current) return;
+      isSeeking.current = false;
+      const shouldResume = seekResumeRef.current;
+      seekResumeRef.current = false;
+      const actual = videoRef.current?.currentTime ?? clampedTime;
+      postToParent({ type: "SEEKED", time: actual });
+      if (shouldResume) videoRef.current?.play().catch(() => {});
+    };
 
     const onSeeked = () => {
-      clearTimeout(fallbackTimer);
       video.removeEventListener("seeked", onSeeked);
+      clearTimeout(fallbackTimer);
+      if (opId !== seekOpIdRef.current) return;
       // Double rAF guarantees the frame is painted before we report back
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const actual = videoRef.current?.currentTime ?? clampedTime;
-          postToParent({ type: "SEEKED", time: actual });
-          // Resume playback if the video was playing before the seek
-          if (wasPlaying) videoRef.current?.play().catch(() => {});
-        });
+        requestAnimationFrame(() => finishSeek());
       });
     };
 
@@ -291,9 +326,7 @@ export default function EmbedPlayerPage() {
     // left frozen.
     fallbackTimer = setTimeout(() => {
       video.removeEventListener("seeked", onSeeked);
-      const actual = videoRef.current?.currentTime ?? clampedTime;
-      postToParent({ type: "SEEKED", time: actual });
-      if (wasPlaying) videoRef.current?.play().catch(() => {});
+      finishSeek();
     }, 5000);
 
     video.addEventListener("seeked", onSeeked);
@@ -303,7 +336,7 @@ export default function EmbedPlayerPage() {
     // 2. stopLoad() so HLS cancels any in-flight requests
     // 3. Set currentTime to the target
     // 4. startLoad(targetTime) so HLS fetches segments from the right place
-    // Playback is restored inside onSeeked once the frame is confirmed visible.
+    // Playback is restored inside finishSeek once the frame is confirmed visible.
     const hls = hlsRef.current;
     if (hls) {
       video.pause();
@@ -598,8 +631,10 @@ export default function EmbedPlayerPage() {
           hls.attachMedia(video);
 
           // Control bridge: relay native video play/pause events to parent
+          // Suppress PAUSE notifications that are caused by our internal seek
+          // sequence (applyPendingSeek pauses the video before seeking).
           const onVideoPlay = () => postToParent({ type: "PLAY", time: video.currentTime });
-          const onVideoPause = () => postToParent({ type: "PAUSE", time: video.currentTime });
+          const onVideoPause = () => { if (!isSeeking.current) postToParent({ type: "PAUSE", time: video.currentTime }); };
           video.addEventListener("play", onVideoPlay);
           video.addEventListener("pause", onVideoPause);
 
@@ -673,22 +708,28 @@ export default function EmbedPlayerPage() {
                         if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
                           isRotatingRef.current = false;
-                          if (vid) { hls.startLoad(savedTime); vid.currentTime = savedTime; vid.play().catch(() => {}); }
+                          const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                          if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
+                          if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                         }
                       }, 15000);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
                         clearTimeout(safetyTimer);
                         if (opId !== rotationOpIdRef.current) return;
                         isRotatingRef.current = false;
+                        const resumeAt = pendingMessageSeekRef.current ?? savedTime;
                         if (vid) {
-                          hls.startLoad(savedTime);
-                          vid.currentTime = savedTime;
+                          hls.startLoad(resumeAt);
+                          vid.currentTime = resumeAt;
                           vid.play().catch(() => {});
+                        }
+                        if (pendingMessageSeekRef.current !== null) {
+                          applyPendingSeek();
                         }
                         fetch(`/api/stream/${publicId}/progress`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ sid: rd.sessionId, currentTime: savedTime }),
+                          body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt }),
                         }).catch(() => {});
                       });
                     } else {
@@ -716,18 +757,22 @@ export default function EmbedPlayerPage() {
                         if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
                           isRotatingRef.current = false;
-                          if (vid) { hls.startLoad(savedTime); vid.currentTime = savedTime; vid.play().catch(() => {}); }
+                          const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                          if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
+                          if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                         }
                       }, 15000);
                       hls.once(Hls.Events.MANIFEST_PARSED, () => {
                         clearTimeout(refreshSafetyTimer);
                         if (opId !== rotationOpIdRef.current) return;
                         isRotatingRef.current = false;
+                        const resumeAt = pendingMessageSeekRef.current ?? savedTime;
                         if (vid) {
-                          hls.startLoad(savedTime);
-                          vid.currentTime = savedTime;
+                          hls.startLoad(resumeAt);
+                          vid.currentTime = resumeAt;
                           vid.play().catch(() => {});
                         }
+                        if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                       });
                     } else {
                       triggerDenial(signal || "rate_limit");
@@ -768,7 +813,7 @@ export default function EmbedPlayerPage() {
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
           video.src = manifestUrl;
           video.addEventListener("play", () => postToParent({ type: "PLAY", time: video.currentTime }));
-          video.addEventListener("pause", () => postToParent({ type: "PAUSE", time: video.currentTime }));
+          video.addEventListener("pause", () => { if (!isSeeking.current) postToParent({ type: "PAUSE", time: video.currentTime }); });
           video.addEventListener("loadedmetadata", () => {
             setStatus("ready");
             playerReadyRef.current = true;
@@ -1078,22 +1123,26 @@ export default function EmbedPlayerPage() {
                     if (opId !== rotationOpIdRef.current) return;
                     if (isRotatingRef.current) {
                       isRotatingRef.current = false;
-                      hls.startLoad(savedTime);
-                      v.currentTime = savedTime;
+                      const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                      hls.startLoad(resumeAt);
+                      v.currentTime = resumeAt;
                       v.play().catch(() => {});
+                      if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                     }
                   }, 15000);
                   hls.once(Hls.Events.MANIFEST_PARSED, () => {
                     clearTimeout(pauseSafetyTimer);
                     if (opId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
-                    hls.startLoad(savedTime);
-                    v.currentTime = savedTime;
+                    const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                    hls.startLoad(resumeAt);
+                    v.currentTime = resumeAt;
                     v.play().catch(() => {});
+                    if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                     fetch(`/api/stream/${publicId}/progress`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ sid: data.sessionId, currentTime: savedTime }),
+                      body: JSON.stringify({ sid: data.sessionId, currentTime: resumeAt }),
                     }).catch(() => {});
                   });
                 } else {
