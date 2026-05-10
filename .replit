@@ -65,3 +65,4 @@ INTEGRATION_MASTER_SECRET = "176753af2436a1cdbb2d10c9a81e48723f018c892c305a8dbd8
 
 [agent]
 expertMode = true
+stack = "FULLSTACK_JS"
