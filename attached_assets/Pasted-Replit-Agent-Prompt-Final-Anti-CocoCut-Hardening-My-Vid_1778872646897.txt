@@ -1,0 +1,104 @@
+Replit Agent Prompt — Final Anti-CocoCut Hardening
+
+My Video CMS is improved: token is removed from URL and obvious HLS names like master.m3u8, index.m3u8, seg_000.ts are mostly hidden. But CocoCut still detects the video because repeated large XHR chunk requests are visible and hls.js/MediaSource buffers may still be capturable.
+
+Do NOT disturb existing security:
+- short share links
+- server-side bootstrap
+- /hls /seg /key protection
+- stealth mode
+- HMAC tokens
+- AES-HLS
+- watermark
+- heartbeat
+- LMS iframe
+- admin preview
+- storage/Cloudflare Worker flow
+
+Fix the remaining gap:
+
+1. Enforce strict server-gated chunk window
+- Chunks must not become available just because previous chunks were fetched.
+- Chunk/window access must advance only from verified heartbeat currentTime.
+- Track watchedSeconds, verifiedCurrentTime, downloadedMediaSeconds, downloadAheadSeconds.
+- Reject any chunk if it is ahead of watched time + allowed buffer.
+- Default allowed buffer: 20–30 seconds.
+- If downloadAheadSeconds exceeds limit, revoke session.
+
+2. Hide chunk pattern better
+- Keep opaque chunk IDs.
+- Do not use predictable sequential chunk IDs.
+- Do not expose real segment index in URL.
+- Rotate opaque chunk IDs per session and per window.
+- Same chunk must have a different opaque ID in different sessions.
+- Expired chunk IDs must return 403.
+- After a window moves, old chunk IDs should stop working after TTL.
+
+3. Reduce chunk/key TTL
+- Chunk token TTL: 8–12 seconds.
+- Key/secret token TTL: 8–12 seconds.
+- Window token TTL: 20 seconds.
+- Keep 3 sec clock skew.
+- Make configurable per video.
+
+4. Stronger MediaSource/appendBuffer guard
+Create/verify client/src/lib/security/mediaSourceGuard.ts.
+Detect modified/proxied:
+- MediaSource.prototype.addSourceBuffer
+- SourceBuffer.prototype.appendBuffer
+- MediaSource.prototype.endOfStream
+- URL.createObjectURL
+- URL.revokeObjectURL
+
+Capture native references before hls.js initializes.
+Recheck every 10 seconds.
+If tamper detected:
+- pause video immediately
+- send APPEND_BUFFER_HOOK_DETECTED or MEDIA_SOURCE_HOOK_DETECTED
+- revoke session after first critical detection for protected videos
+- all chunk/key/window routes return 403 after revoke
+
+5. Add backend evidence-based abuse scoring
+Do not rely only on frontend events.
+Backend must score:
+- too many chunks fetched in short time
+- chunks fetched ahead of heartbeat time
+- too many window refreshes
+- too many key/secret requests
+- duplicate chunk harvesting
+- stale heartbeat with active chunk requests
+
+If score crosses threshold:
+- revoke session
+- return 403/429 for all media routes
+- log SESSION_REVOKED
+
+6. Cloudflare edge hardening
+Prepare final production gateway:
+- route video media through video.yourdomain.com behind Cloudflare Worker
+- Worker validates signature, expiry, session, opaque chunk ID, and path scope
+- Railway should not directly expose chunk URLs in production
+- no raw B2/R2/S3 URLs
+- no broad wildcard CORS
+- invalid/revoked requests return minimal 403
+
+7. Optional advanced mode
+Add an admin setting:
+“Ultra Protected Transport Mode”
+This mode should avoid normal hls.js-visible playlist/chunk behavior where possible.
+Use stream/window/chunk bootstrap and in-memory blob playlist only.
+Goal: Network should show only opaque stream/window/chunk/secret routes and no obvious HLS structure.
+
+Acceptance:
+- Normal playback works.
+- LMS iframe works.
+- Admin preview works.
+- Short links work.
+- CocoCut cannot fetch full video by walking chunks.
+- Repeated large XHR chunk fetching faster than real playback revokes session.
+- appendBuffer hook is detected and session is revoked.
+- Copied chunk/key URLs expire within 8–12 seconds.
+- Revoked session makes all media routes return 403.
+- Cloudflare Worker gateway remains compatible.
+- No upload/transcode/storage flow breaks.
+- No TypeScript errors.

@@ -66,14 +66,14 @@ export const defaultHardening: SessionHardeningConfig = {
   velocityScoringEnabled: true,
   keyBindingEnabled: true,
   heartbeatV2Enabled: true,
-  serverGatedWindowEnabled: false,
-  shortTokenTtlEnabled: false,
-  tokenTtlPlaylistSec: 25,
-  tokenTtlSegmentSec: 12,
-  tokenTtlKeySec: 12,
+  serverGatedWindowEnabled: true,
+  shortTokenTtlEnabled: true,
+  tokenTtlPlaylistSec: 22,
+  tokenTtlSegmentSec: 10,
+  tokenTtlKeySec: 10,
   heartbeatIntervalSec: 12,
-  downloadAheadLimit: 25,
-  stealthModeEnabled: false,
+  downloadAheadLimit: 18,
+  stealthModeEnabled: true,
 };
 
 // ── Stealth Mode opaque ID encoding ──────────────────────────────────────────
@@ -483,6 +483,23 @@ export function acquireSegment(sid: string, ip?: string): { abused: boolean; rea
   }
 
   const now = Date.now();
+
+  // Stale heartbeat with active chunk requests — CocoCut/scraper defense.
+  // If server-gated window is on and the client hasn't sent a heartbeat within
+  // 2× the configured interval, it's fetching chunks without a live player.
+  if (s.hardening.serverGatedWindowEnabled && s.hardening.heartbeatV2Enabled) {
+    const staleMs = s.hardening.heartbeatIntervalSec * 2 * 1000;
+    if (now - s.lastHeartbeatAt > staleMs) {
+      const reason: AbuseReason = {
+        signal: "heartbeat_invalid",
+        detail: `segment fetch with stale heartbeat (${Math.round((now - s.lastHeartbeatAt) / 1000)}s since last hb, limit=${s.hardening.heartbeatIntervalSec * 2}s) | publicId=${s.publicId}`,
+      };
+      console.log(`[video-session] STALE_HEARTBEAT_CHUNK: sid=${sid} stale=${Math.round((now - s.lastHeartbeatAt) / 1000)}s publicId=${s.publicId}`);
+      const result = addAbuse(s, 3, reason);
+      if (result.abused) return result;
+    }
+  }
+
   // Keep segment fetches in a 3-second window for rate spike detection
   s.segmentFetchLog = s.segmentFetchLog.filter(t => t > now - 3000);
   s.segmentFetchLog.push(now);

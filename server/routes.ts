@@ -2166,9 +2166,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         b2Url = await getSignedUrl(client, cmd, { expiresIn: 20 });
       }
 
-      log(`SEGMENT_B2_DIRECT: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
-      releaseSegment(sid);
-      return res.redirect(302, b2Url);
+      // Never redirect to origin — proxy bytes so B2/R2/S3 URLs stay server-side.
+      log(`SEGMENT_PROXY: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
+      try {
+        const range = req.headers["range"];
+        const upstream = await fetch(b2Url, { headers: range ? { Range: String(range) } : undefined });
+        if (!upstream.ok && upstream.status !== 206) {
+          releaseSegment(sid);
+          return res.status(502).json({ message: "Segment upstream failed" });
+        }
+        res.status(upstream.status);
+        const passHeaders = ["content-type", "content-length", "content-range", "accept-ranges", "etag"];
+        for (const h of passHeaders) {
+          const v = upstream.headers.get(h);
+          if (v) res.setHeader(h, v);
+        }
+        if (!upstream.headers.get("content-type")) res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("Cache-Control", "private, no-store, no-cache, max-age=0");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        const body = upstream.body as any;
+        if (body && typeof body.getReader === "function") {
+          const { Readable } = await import("stream");
+          const nodeStream = Readable.fromWeb(body);
+          nodeStream.on("close", () => releaseSegment(sid));
+          nodeStream.on("error", () => releaseSegment(sid));
+          nodeStream.pipe(res);
+        } else {
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          releaseSegment(sid);
+          res.end(buf);
+        }
+      } catch (proxyErr: any) {
+        releaseSegment(sid);
+        log(`Segment proxy upstream error for ${req.params.publicId}${segSubPath}: ${proxyErr.message}`);
+        return res.status(502).json({ message: "Segment proxy error" });
+      }
     } catch (e: any) {
       releaseSegment(sid);
       log(`Segment proxy error for ${req.params.publicId}${req.path}: ${e.message}`);

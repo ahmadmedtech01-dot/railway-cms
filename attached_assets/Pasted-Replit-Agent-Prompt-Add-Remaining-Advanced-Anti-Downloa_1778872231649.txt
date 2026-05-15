@@ -1,0 +1,303 @@
+Replit Agent Prompt — Add Remaining Advanced Anti-Download Security Features
+
+You are working on my existing Video CMS.
+
+Already implemented and must NOT be disturbed:
+- Short clean share links
+- No JWT/token in URL
+- Server-side bootstrap
+- Password-protected share links
+- Domain allowlist
+- Server-side iframe-only checks
+- Instant revocation of live sessions
+- /hls, /seg, /key protected pipeline
+- Raw B2/R2/S3 URLs hidden
+- HMAC signed playback URLs
+- AES-HLS encryption
+- Session binding
+- LMS postMessage flow
+- Admin preview
+- Watermark system
+- Abuse detection
+- Cloudflare Worker gateway
+- Upload/transcode/storage flows
+
+Now add the remaining advanced anti-download protections only.
+Do not rewrite the whole system. Add these features cleanly on top.
+
+Main goal:
+Prevent downloader tools and browser extensions from detecting, walking, or capturing the HLS stream through visible HLS URLs, playlist walking, or MediaSource/appendBuffer hooks.
+
+Required features:
+
+1. Stealth Protected Playback Mode
+
+Add/complete a mode that hides obvious HLS names from browser Network.
+
+In this mode, Network should NOT show:
+- master.m3u8
+- index.m3u8
+- .m3u8
+- .ts
+- .m4s
+- seg_000.ts
+- seg_001.ts
+- /key
+
+Use opaque player routes instead:
+- /api/player/:publicId/stream/bootstrap
+- /api/player/:publicId/stream/window
+- /api/player/:publicId/stream/chunk/:opaqueChunkId
+- /api/player/:publicId/stream/secret/:opaqueKeyId
+
+Internally map opaque chunk IDs to real HLS segments.
+Do not expose real storage URLs or real segment filenames.
+
+If hls.js still needs a playlist:
+- generate the playlist in memory as a Blob URL
+- segment URLs inside it must be opaque signed chunk URLs
+- visible Network must only show opaque stream/chunk/secret routes
+
+2. MediaSource / AppendBuffer Guard
+
+Create or complete:
+
+client/src/lib/security/mediaSourceGuard.ts
+
+Detect tampering/proxying of:
+- window.MediaSource
+- MediaSource.prototype.addSourceBuffer
+- MediaSource.prototype.endOfStream
+- SourceBuffer.prototype.appendBuffer
+- SourceBuffer.prototype.remove
+- URL.createObjectURL
+- URL.revokeObjectURL
+
+Capture native references before hls.js starts.
+Recheck:
+- before HLS attach
+- after manifest parsed
+- after first segment append
+- every 10–15 seconds during playback
+
+If tamper is detected:
+- pause video immediately
+- show “Security Risk Detected”
+- send security event to backend
+- increase abuse score
+- revoke session after repeated/critical detection
+- all stream/chunk/secret routes and legacy /hls /seg /key routes must return 403 after revocation
+
+Events:
+- MEDIA_SOURCE_HOOK_DETECTED
+- APPEND_BUFFER_HOOK_DETECTED
+- HLS_BUFFER_CAPTURE_SUSPECTED
+
+Do not break normal hls.js playback.
+
+3. Server-Gated Playlist Window
+
+Fix playlist walking.
+
+Playlist/window must NOT advance because segments are fetched.
+It must advance only from backend-verified heartbeat currentTime.
+
+Backend session should track:
+- verifiedCurrentTime
+- watchedSeconds
+- lastHeartbeatAt
+- maxAllowedSegmentIndex
+- downloadedSegmentDuration
+- downloadAheadSeconds
+- lastAllowedWindowStart
+- lastAllowedWindowEnd
+
+Rules:
+- only expose current small segment window
+- default window size: 6 segments
+- default max prebuffer: 30 seconds
+- reject segment/chunk if ahead of verified playback window
+- reject if heartbeat is stale
+- reject if session is revoked or suspicious
+
+Events:
+- OUT_OF_WINDOW_SEGMENT_REQUEST
+- OUT_OF_WINDOW_CHUNK_REQUEST
+- SEGMENT_REJECTED
+- CHUNK_REJECTED
+
+4. Download Velocity Scoring
+
+Add strict server-side scoring.
+
+Track per session:
+- playlist/window fetch rate
+- segment/chunk fetch rate
+- key/secret fetch rate
+- downloadedMediaSeconds
+- verifiedWatchedSeconds
+- downloadAheadSeconds
+- duplicate segment/chunk requests
+- out-of-window requests
+
+Default:
+- maxDownloadAheadSeconds: 30–45 seconds
+- heartbeat interval: 10–15 seconds
+- suspicious threshold revokes session
+
+If user downloads faster than real playback:
+- add abuse score
+- log DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+- revoke session when threshold is crossed
+- return 403/429 from media routes
+
+5. Short Token TTLs
+
+Enable strict TTL mode for protected videos.
+
+Defaults:
+- playlist/window token TTL: 20–30 sec
+- segment/chunk token TTL: 10–15 sec
+- key/secret token TTL: 10–15 sec
+- clock skew tolerance: 3 sec
+
+Tokens must be:
+- session-bound
+- video-bound
+- path-bound
+- segment/chunk-index-bound
+- quality-bound if applicable
+- expiry-bound
+
+Make TTLs configurable globally and per video.
+
+6. Stronger Key/Secret Binding
+
+/key or /stream/secret must validate:
+- active session
+- non-revoked token
+- heartbeat freshness
+- current verified playback window
+- download-ahead score
+- user-agent/device hash
+- expiry
+
+If possible, rotate ephemeral AES key per small segment group/window.
+If that is too large for now, at least make key access window-bound and rate-limited.
+
+Events:
+- KEY_REJECTED
+- SECRET_REJECTED
+
+Never cache keys publicly.
+
+7. Strong Heartbeat v2
+
+For protected videos, heartbeat every 10–15 sec.
+
+Payload:
+- sessionId
+- publicId
+- currentTime
+- duration
+- playing/paused
+- playbackRate
+- sequence number
+- nonce
+- client integrity status
+- mediaSourceGuard status
+- watermark status
+
+Backend must reject:
+- stale sequence
+- replayed nonce
+- wrong session
+- wrong video
+- impossible time jump
+- revoked session
+- stale heartbeat
+
+If heartbeat is stale:
+- stop advancing playlist/window
+- reject future chunk/key requests after grace period
+- log HEARTBEAT_MISSING
+
+8. Backend Security Event Enforcement
+
+Create or extend:
+
+POST /api/player/:publicId/security-event
+
+Backend must:
+- validate playback session/token
+- store event in audit log
+- update abuse score
+- revoke session when threshold is reached
+- ensure revoked sessions fail on every media route
+
+Events:
+- MEDIA_SOURCE_HOOK_DETECTED
+- APPEND_BUFFER_HOOK_DETECTED
+- HLS_BUFFER_CAPTURE_SUSPECTED
+- OUT_OF_WINDOW_SEGMENT_REQUEST
+- OUT_OF_WINDOW_CHUNK_REQUEST
+- DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+- KEY_REJECTED
+- SECRET_REJECTED
+- SEGMENT_REJECTED
+- CHUNK_REJECTED
+- HEARTBEAT_MISSING
+- SESSION_REVOKED
+
+Do not trust frontend events alone. Combine frontend signal with backend request evidence.
+
+9. Admin Settings
+
+Add or finish these settings without removing old settings:
+- Enable Stealth Protected Playback Mode
+- Hide HLS Filenames in Network
+- Use Opaque Chunk Routes
+- Enable MediaSource Guard
+- Enable AppendBuffer Guard
+- Enable Server-Gated Playlist Window
+- Max Prebuffer Seconds
+- Max Download Ahead Seconds
+- Playlist/Window Token TTL
+- Segment/Chunk Token TTL
+- Key/Secret Token TTL
+- Strong Heartbeat v2
+- Heartbeat Interval Seconds
+- Revoke Session on Critical Tamper
+- Cooldown Duration
+
+Allow global defaults and per-video override.
+
+10. Acceptance Tests
+
+Must pass:
+- normal playback works
+- admin preview works
+- LMS iframe playback works
+- short share links still work
+- password/domain/iframe share settings still work
+- raw B2/R2/S3 URLs remain hidden
+- in Stealth Mode, Network no longer shows master.m3u8, index.m3u8, seg_000.ts, .ts, .m4s, or obvious /key names
+- browser sees only opaque stream/window/chunk/secret routes
+- copied chunk/segment URL expires quickly
+- copied key/secret URL expires quickly
+- playlist/window cannot be walked faster than playback
+- segment/chunk ahead of verified playback returns 403
+- download-ahead abuse revokes session
+- MediaSource hook is detected
+- appendBuffer hook is detected
+- after revoke, all media routes return 403
+- no upload/transcode/storage flow broken
+- no TypeScript errors
+
+Important:
+Do not claim Widevine/FairPlay DRM unless real DRM is implemented.
+This is AES-HLS Stealth Protected Playback, not true DRM.
+Do not add downloader or extraction code.
+Only defensive security hardening.
+Keep code modular.
+Do not rewrite the whole player.
