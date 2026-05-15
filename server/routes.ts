@@ -20,7 +20,7 @@ import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } fro
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings
 function buildHardening(s: any): SessionHardeningConfig {
@@ -983,6 +983,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerIntegrationRoutes(app);
   registerIntegrationAdminRoutes(app);
 
+  // Wire abuse-revoke → integration session DB update (LMS flow).
+  setIntegrationRevokeNotifier((integrationSessionId, reason) => {
+    // Best-effort async update; don't block the revoke path.
+    (async () => {
+      try {
+        await storage.updateIntegrationPlaybackSession(integrationSessionId, {
+          status: "revoked",
+          endedAt: new Date(),
+          sessionMetadata: { revokedReason: reason, revokedAt: new Date().toISOString() } as any,
+        } as any);
+        console.log(`[integrations] AUTO_REVOKED integration session ${integrationSessionId} reason=${reason}`);
+      } catch (e: any) {
+        console.error(`[integrations] failed to auto-revoke session ${integrationSessionId}:`, e?.message);
+      }
+    })();
+  });
+
   // Serve SDK files at /sdk/*
   const sdkCandidates = [
     typeof __dirname !== "undefined" ? path.resolve(__dirname, "public", "sdk") : "",
@@ -1854,10 +1871,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return null;
       }
 
+      // Extract integration session linkage from JWT (LMS API flow) so abuse-revoke
+      // and admin-revoke can kill the in-memory video session.
+      let linkIntegrationSessionId: string | null = null;
+      if (token) {
+        try {
+          const dec: any = verifyToken(token);
+          if (dec?.integrationSessionId && typeof dec.integrationSessionId === "string") {
+            linkIntegrationSessionId = dec.integrationSessionId;
+          }
+        } catch {}
+      }
+
       if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
         const sid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        if (linkIntegrationSessionId) setIntegrationSessionId(sid, linkIntegrationSessionId);
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
@@ -1873,6 +1903,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       if (client && s3cfg.bucket) {
         const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        if (linkIntegrationSessionId) setIntegrationSessionId(sid, linkIntegrationSessionId);
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);

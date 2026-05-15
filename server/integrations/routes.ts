@@ -184,21 +184,7 @@ export function registerIntegrationRoutes(app: Express) {
       const expiresAt = new Date(Date.now() + ttlMs);
       const userId = `integration:${client.slug}:${parsed.sub}`;
 
-      const tokenValue = generateToken(
-        { videoId: video.id, publicId: video.publicId, userId, integrationClientId: client.id },
-        EMBED_TOKEN_TTL
-      );
-
-      const dbToken = await storage.createEmbedToken({
-        videoId: video.id,
-        token: tokenValue,
-        label: `integration:${client.slug}:${parsed.sub}:${parsed.jti}`,
-        allowedDomain: null,
-        expiresAt,
-        revoked: false,
-        userId,
-      } as any);
-
+      // Create the launch log first so we have an ID for the playback session.
       const launchLog = await storage.createLaunchLog({
         integrationClientId: client.id,
         videoId: video.id,
@@ -230,7 +216,29 @@ export function registerIntegrationRoutes(app: Express) {
         studentName: parsed.name || null,
         studentEmail: parsed.email || null,
         status: "active",
-        sessionMetadata: { clientKey: client.clientKey, launchJti: parsed.jti },
+        sessionMetadata: { clientKey: client.clientKey, launchJti: parsed.jti, authMode: "lms_integration" },
+      } as any);
+
+      // Generate JWT AFTER integration session exists so we can bind them.
+      const tokenValue = generateToken(
+        {
+          videoId: video.id,
+          publicId: video.publicId,
+          userId,
+          integrationClientId: client.id,
+          integrationSessionId: integrationSession.id,
+        },
+        EMBED_TOKEN_TTL
+      );
+
+      await storage.createEmbedToken({
+        videoId: video.id,
+        token: tokenValue,
+        label: `integration:${client.slug}:${parsed.sub}:${parsed.jti}:isid:${integrationSession.id}`,
+        allowedDomain: null,
+        expiresAt,
+        revoked: false,
+        userId,
       } as any);
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || "";
@@ -294,7 +302,13 @@ export function registerIntegrationRoutes(app: Express) {
 
       const expiresAt = new Date(Date.now() + EMBED_TOKEN_TTL * 1000);
       const newTokenValue = generateToken(
-        { videoId: video.id, publicId: video.publicId, userId: session.lmsUserId, integrationClientId: session.integrationClientId },
+        {
+          videoId: video.id,
+          publicId: video.publicId,
+          userId: session.lmsUserId,
+          integrationClientId: session.integrationClientId,
+          integrationSessionId: session.id,
+        },
         EMBED_TOKEN_TTL
       );
 

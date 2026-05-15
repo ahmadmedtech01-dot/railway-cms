@@ -295,6 +295,8 @@ function SessionsTab() {
             <tr>
               <th className="text-left p-2">Started</th>
               <th className="text-left p-2">Status</th>
+              <th className="text-left p-2">Auth Mode</th>
+              <th className="text-left p-2">Security</th>
               <th className="text-left p-2">Video</th>
               <th className="text-left p-2">LMS User</th>
               <th className="text-left p-2">Watch</th>
@@ -304,22 +306,41 @@ function SessionsTab() {
             </tr>
           </thead>
           <tbody>
-            {(data?.sessions || []).map((s: any) => (
+            {(data?.sessions || []).map((s: any) => {
+              const meta = s.sessionMetadata || {};
+              const authMode = meta.authMode === "lms_integration" ? "LMS" : (meta.authMode || "LMS");
+              return (
               <tr key={s.id} className="border-t" data-testid={`row-session-${s.id}`}>
                 <td className="p-2 whitespace-nowrap text-xs">{new Date(s.startedAt).toLocaleString()}</td>
-                <td className="p-2"><Badge variant={s.status === "active" ? "default" : s.status === "revoked" ? "destructive" : "secondary"}>{s.status}</Badge></td>
+                <td className="p-2">
+                  <div className="flex flex-col gap-1">
+                    <Badge variant={s.status === "active" ? "default" : s.status === "revoked" ? "destructive" : "secondary"} data-testid={`badge-status-${s.id}`}>{s.status}</Badge>
+                    {s.status === "revoked" && meta.revokedReason && (
+                      <span className="text-[10px] text-muted-foreground" title={meta.revokedReason}>{meta.revokedReason}</span>
+                    )}
+                  </div>
+                </td>
+                <td className="p-2"><Badge variant="outline" data-testid={`badge-auth-${s.id}`}>{authMode}</Badge></td>
+                <td className="p-2">
+                  <div className="flex flex-wrap gap-1">
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0" data-testid={`badge-sec-mode-${s.id}`}>Advanced</Badge>
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0" title="Stealth Mode + opaque streaming">Stealth</Badge>
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0" title="Heartbeat v2 + Server-Gated Window">HBv2</Badge>
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0" title="MediaSource & appendBuffer guard">MSG</Badge>
+                  </div>
+                </td>
                 <td className="p-2 font-mono text-xs">{s.publicId}</td>
                 <td className="p-2 text-xs">{s.lmsUserId}</td>
                 <td className="p-2 text-xs">{s.watchedSeconds}s</td>
                 <td className="p-2 text-xs">{s.completionPercent}%</td>
-                <td className="p-2 whitespace-nowrap text-xs">{new Date(s.lastPingAt).toLocaleString()}</td>
+                <td className="p-2 whitespace-nowrap text-xs">{s.lastPingAt ? new Date(s.lastPingAt).toLocaleString() : "-"}</td>
                 <td className="p-2">
                   {s.status === "active" && (
                     <Button size="sm" variant="destructive" onClick={() => revokeMutation.mutate(s.id)} data-testid={`button-revoke-${s.id}`}>Revoke</Button>
                   )}
                 </td>
               </tr>
-            ))}
+            );})}
           </tbody>
         </table>
         {!isLoading && (!data?.sessions || data.sessions.length === 0) && (

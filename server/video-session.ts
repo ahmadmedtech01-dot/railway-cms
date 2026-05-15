@@ -193,6 +193,16 @@ export interface VideoSession {
   velocityLog: number[];
   // Client-reported security events (counter for revocation thresholds)
   clientSecurityEvents: number;
+  // Optional linkage to an Integration playback session row (LMS API flow)
+  integrationSessionId?: string;
+}
+
+// ── Integration session revoke notifier ────────────────────────────────────
+// Registered at startup by routes.ts to avoid circular imports with storage.
+type IntegrationRevokeNotifier = (integrationSessionId: string, reason: string) => void;
+let integrationRevokeNotifier: IntegrationRevokeNotifier | null = null;
+export function setIntegrationRevokeNotifier(fn: IntegrationRevokeNotifier) {
+  integrationRevokeNotifier = fn;
 }
 
 const sessions = new Map<string, VideoSession>();
@@ -266,8 +276,28 @@ export function createSession(
     windowLastAdvancedAt: Date.now(),
     velocityLog: [],
     clientSecurityEvents: 0,
+    integrationSessionId: undefined,
   });
   return sid;
+}
+
+export function setIntegrationSessionId(sid: string, integrationSessionId: string): boolean {
+  const s = sessions.get(sid);
+  if (!s) return false;
+  s.integrationSessionId = integrationSessionId;
+  return true;
+}
+
+export function revokeSessionsByIntegrationId(integrationSessionId: string, reason?: AbuseReason): number {
+  let count = 0;
+  for (const s of sessions.values()) {
+    if (s.integrationSessionId === integrationSessionId && !s.revoked) {
+      s.revoked = true;
+      if (reason) s.revokeReason = reason;
+      count++;
+    }
+  }
+  return count;
 }
 
 export function rotateSession(oldSid: string): string | null {
@@ -347,6 +377,14 @@ export function revokeSession(sid: string, reason?: AbuseReason): void {
   if (s) {
     s.revoked = true;
     if (reason) s.revokeReason = reason;
+    // Propagate to integration session row (LMS API flow)
+    if (s.integrationSessionId && integrationRevokeNotifier) {
+      try {
+        integrationRevokeNotifier(s.integrationSessionId, reason?.detail || reason?.signal || "abuse_revoked");
+      } catch (e) {
+        console.error("[video-session] integration revoke notifier failed:", e);
+      }
+    }
   }
 }
 

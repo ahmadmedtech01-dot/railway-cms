@@ -199,13 +199,39 @@ export function registerIntegrationAdminRoutes(app: Express) {
 
       if (!session) return res.status(404).json({ message: "Session not found" });
 
+      // 1) Kill the in-memory VideoSession(s) linked to this integration session
+      //    so /hls /seg /key /stream/window/chunk routes immediately return 403.
+      let killedCount = 0;
+      try {
+        const { revokeSessionsByIntegrationId } = await import("../video-session");
+        killedCount = revokeSessionsByIntegrationId(req.params.id, { signal: "rate_limit", detail: "admin_revoked" });
+      } catch (e: any) {
+        console.error("[integrations] failed to revoke in-memory video sessions:", e?.message);
+      }
+
+      // 2) Revoke all embed tokens labelled with this integration session id
+      //    so token refresh + new manifest fetches are rejected.
+      let revokedTokens = 0;
+      try {
+        const tokens = session.videoId ? await storage.getEmbedTokensByVideo(session.videoId) : [];
+        for (const t of tokens) {
+          if (!t.revoked && t.label && t.label.includes(`isid:${req.params.id}`)) {
+            await storage.revokeToken(t.id);
+            revokedTokens++;
+          }
+        }
+      } catch (e: any) {
+        console.error("[integrations] failed to revoke embed tokens:", e?.message);
+      }
+
       await storage.createAuditLog({
         action: "integration_session_revoked",
-        meta: { sessionId: req.params.id },
+        meta: { sessionId: req.params.id, killedVideoSessions: killedCount, revokedTokens },
         ip: req.ip,
       });
 
-      return res.json({ ok: true });
+      console.log(`[integrations] ADMIN_REVOKED integration session ${req.params.id} killed=${killedCount} tokens=${revokedTokens}`);
+      return res.json({ ok: true, killedVideoSessions: killedCount, revokedTokens });
     } catch (e: any) {
       return res.status(500).json({ message: e.message });
     }

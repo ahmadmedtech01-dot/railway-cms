@@ -1,0 +1,261 @@
+Replit Agent Prompt — Apply Same Advanced Security to LMS Playback Flow
+
+Problem:
+Advanced video security is working on public/shareable links, but when the same video plays inside my LMS iframe via postMessage LMS_LAUNCH_TOKEN, the same security layers are not applied.
+
+Current LMS flow:
+- Admin Embed & Share tab gives iframe code without token in URL
+- LMS generates/fetches HMAC launch token server-side
+- LMS sends token to iframe using postMessage type: LMS_LAUNCH_TOKEN
+- CMS creates playback session
+- Video plays inside LMS
+
+But security settings like stealth protected mode, MediaSource/appendBuffer guard, server-gated playlist, short TTLs, download velocity scoring, strong heartbeat, key binding, watermark anti-tamper, and session revocation must apply here too.
+
+Important:
+Do NOT break:
+- shareable links
+- /v/:publicId
+- /watch/:shareCode
+- /s/:shareCode
+- admin preview
+- LMS postMessage launch flow
+- existing embed tokens
+- existing LMS integration clients
+- upload/transcode/storage
+- B2/R2/S3 hiding
+- /hls /seg /key or stream/chunk/secret pipeline
+
+Goal:
+Create ONE unified playback bootstrap/session pipeline used by all entry points:
+1. share link
+2. public /v link
+3. LMS iframe postMessage
+4. admin preview
+
+All flows must receive and enforce the same security settings.
+
+Required changes:
+
+1. Unify playback bootstrap logic
+
+Find all places that create playback sessions/tokens:
+- share link bootstrap
+- /v/:publicId bootstrap
+- /watch/:shareCode bootstrap
+- LMS postMessage token validation
+- admin preview token bootstrap
+
+Refactor to use one shared server function, for example:
+
+createSecurePlaybackSession({
+  publicId,
+  authMode: "share" | "public" | "lms" | "adminPreview",
+  userId,
+  lmsClientId,
+  lmsUserId,
+  origin,
+  referer,
+  deviceHash,
+  userAgent,
+  adminPreview,
+  shareCode
+})
+
+This function must always load:
+- global security settings
+- per-video security override
+- watermark settings
+- player settings
+- advanced hardening settings
+
+And return the same secure playback config to frontend:
+- playbackSessionId
+- short-lived player token
+- stream mode
+- stealthProtectedPlaybackMode
+- mediaSourceGuardEnabled
+- appendBufferGuardEnabled
+- serverGatedPlaylistWindowEnabled
+- shortTokenTtlsEnabled
+- strongHeartbeatV2Enabled
+- downloadVelocityScoringEnabled
+- strongerKeyBindingEnabled
+- watermarkAntiTamperEnabled
+- security event endpoint
+- heartbeat endpoint
+- stream/window/chunk/secret routes or /hls /seg /key routes
+- TTL values
+- violation thresholds
+
+2. Apply advanced security to LMS sessions
+
+When LMS sends LMS_LAUNCH_TOKEN via postMessage:
+- validate token signature
+- validate nonce + exp replay protection
+- validate allowed LMS origin/client
+- validate video access
+- then call the same createSecurePlaybackSession function used by share links
+
+The LMS flow must NOT use a legacy/light session path.
+
+The LMS session must enforce:
+- stealth protected playback mode
+- opaque chunk routes if enabled
+- MediaSource/appendBuffer guard
+- strong heartbeat v2
+- server-gated playlist window
+- download velocity scoring
+- stronger key binding
+- short token TTLs
+- watermark anti-tamper
+- session revocation
+
+3. Ensure frontend applies config from LMS bootstrap
+
+In embed-player.tsx or LMS player init logic:
+- after receiving valid LMS_LAUNCH_TOKEN, call the backend bootstrap/launch endpoint
+- use returned security config to initialize player
+- do not fallback to insecure/default HLS mode if advanced settings are enabled
+- start MediaSource guard before hls.js initializes
+- start strong heartbeat v2 if enabled
+- use opaque stream/chunk/secret routes if stealth mode is enabled
+- apply watermark anti-tamper
+- send security events to returned endpoint
+
+Important:
+If security config is missing, fail closed for protected videos. Do not silently fallback to insecure mode.
+
+4. Fix media routes to enforce session type equally
+
+All media routes must validate LMS sessions exactly like share sessions:
+
+Routes:
+- /hls
+- /seg
+- /key
+- /api/player/:publicId/stream/window
+- /api/player/:publicId/stream/chunk/:opaqueChunkId
+- /api/player/:publicId/stream/secret/:opaqueKeyId
+
+For every request, validate:
+- playbackSessionId
+- active token
+- not revoked
+- session type allowed
+- publicId/video match
+- user-agent/device hash
+- heartbeat freshness when strict mode is enabled
+- server-gated playback window
+- download-ahead limit
+- key/secret window binding
+- short TTL expiry
+
+Do not allow LMS sessions to bypass these checks.
+
+5. Fix sessions/admin page data
+
+Your Integrations > Sessions page currently shows LMS sessions with:
+- Watch: 0s
+- Complete: 0%
+even when playback exists.
+
+Fix session tracking:
+- LMS sessions should update watch time from heartbeat/progress
+- Last Ping should update
+- Complete % should update
+- Revoking LMS session should immediately block /hls /seg /key or stream/chunk/secret routes
+- Status should become revoked/blocked when security blocks it
+
+6. Add LMS-specific security events
+
+Log these events for LMS sessions:
+- LMS_LAUNCH_TOKEN_RECEIVED
+- LMS_LAUNCH_TOKEN_VALIDATED
+- LMS_ORIGIN_VALIDATED
+- LMS_SESSION_CREATED
+- LMS_SECURITY_CONFIG_APPLIED
+- LMS_SECURITY_CONFIG_MISSING
+- LMS_MEDIA_ROUTE_REJECTED
+- LMS_SESSION_REVOKED
+- MEDIA_SOURCE_HOOK_DETECTED
+- APPEND_BUFFER_HOOK_DETECTED
+- DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+- OUT_OF_WINDOW_CHUNK_REQUEST
+- KEY_REJECTED
+- HEARTBEAT_MISSING
+
+Show these in Launch Logs / Sessions / Audit.
+
+7. Admin UI indication
+
+In Integrations > Sessions, add columns or badges:
+- Auth Mode: LMS / Share / Public / Admin Preview
+- Security Mode: Advanced / Standard
+- Stealth: ON/OFF
+- Heartbeat v2: ON/OFF
+- MediaSource Guard: ON/OFF
+- Revoked: yes/no
+
+This will confirm LMS playback is using advanced security.
+
+8. Important iframe origin behavior
+
+For LMS iframe:
+- do not require share-link password/max views rules
+- do require LMS origin/client validation
+- do require postMessage token
+- do require allowed LMS origin
+- do require session security config
+- do not put token in URL
+
+Allowed origins should come from Integration Clients and/or video LMS origins settings.
+
+9. Acceptance tests
+
+Must pass:
+
+A. Share link flow
+- /watch/:shareCode still works
+- clean URL still works
+- security still applies
+
+B. LMS flow
+- iframe loads without token in URL
+- LMS sends LMS_LAUNCH_TOKEN
+- backend validates LMS client/origin/token
+- session is created using same secure bootstrap
+- advanced security settings are returned to player
+- Network uses stealth/opaque routes if enabled
+- MediaSource/appendBuffer guard starts before hls.js
+- heartbeat v2 starts
+- watermark/security settings apply
+- download velocity scoring applies
+- server-gated playlist applies
+- short TTLs apply
+- revoke LMS session blocks playback immediately
+
+C. Media route enforcement
+- LMS session cannot access chunks outside playback window
+- copied LMS chunk URL expires quickly
+- copied LMS key/secret URL expires quickly
+- revoked LMS session returns 403 on all media routes
+
+D. Admin/integration UI
+- LMS session watch time updates
+- Last Ping updates
+- Complete % updates
+- security mode badges show ON
+- revoke button kills active LMS playback
+
+E. Regression
+- admin preview still works
+- upload/transcode/storage works
+- Cloudflare Worker compatible
+- no TypeScript errors
+- no database migration errors
+
+Important:
+Do not create separate weaker security logic for LMS.
+LMS playback must use the same advanced security enforcement as share links.
+If advanced security is enabled globally or per-video, it must apply to LMS playback too.
