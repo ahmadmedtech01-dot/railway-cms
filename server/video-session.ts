@@ -427,7 +427,7 @@ export function verifySignedPath(sid: string, resourcePath: string, exp: number,
   }
 }
 
-const DEFAULT_VIOLATION_LIMIT = 6;
+const DEFAULT_VIOLATION_LIMIT = 10;
 const BLOCK_DURATION_MS = 10 * 60 * 1000;
 
 function addAbuse(s: VideoSession, delta: number, reason: AbuseReason): { abused: boolean } {
@@ -534,21 +534,15 @@ export function acquireSegment(sid: string, ip?: string): { abused: boolean; rea
 
   const now = Date.now();
 
-  // Stale heartbeat with active chunk requests — CocoCut/scraper defense.
-  // If server-gated window is on and the client hasn't sent a heartbeat within
-  // 2× the configured interval, it's fetching chunks without a live player.
-  if (s.hardening.serverGatedWindowEnabled && s.hardening.heartbeatV2Enabled) {
-    const staleMs = s.hardening.heartbeatIntervalSec * 2 * 1000;
-    if (now - s.lastHeartbeatAt > staleMs) {
-      const reason: AbuseReason = {
-        signal: "heartbeat_invalid",
-        detail: `segment fetch with stale heartbeat (${Math.round((now - s.lastHeartbeatAt) / 1000)}s since last hb, limit=${s.hardening.heartbeatIntervalSec * 2}s) | publicId=${s.publicId}`,
-      };
-      console.log(`[video-session] STALE_HEARTBEAT_CHUNK: sid=${sid} stale=${Math.round((now - s.lastHeartbeatAt) / 1000)}s publicId=${s.publicId}`);
-      const result = addAbuse(s, 3, reason);
-      if (result.abused) return result;
-    }
-  }
+  // NOTE: stale-heartbeat abuse scoring was removed from here.
+  // Background tabs (mobile, minimized browser) get their JS timers throttled
+  // by the browser — heartbeats arrive late even for 100% legitimate users.
+  // When they return and hls.js fires 3+ parallel segment requests, every one
+  // would have scored +3 abuse, revoking the session after 10 returns-from-bg.
+  // The session TTL already handles truly abandoned sessions (they expire after
+  // 60 min without a heartbeat). Real headless scrapers are caught by the
+  // concurrent / velocity / rate-spike checks below.
+
 
   // Keep segment fetches in a 3-second window for rate spike detection
   s.segmentFetchLog = s.segmentFetchLog.filter(t => t > now - 3000);
@@ -914,7 +908,10 @@ export function getSessionAbuseSummary(sid: string) {
 
 export function getBreachInfo(sid: string): { breachCount: number; violationLimit: number; blocked: boolean; blockSecondsRemaining: number } {
   const s = sessions.get(sid);
-  if (!s) return { breachCount: 0, violationLimit: DEFAULT_VIOLATION_LIMIT, blocked: true, blockSecondsRemaining: 0 };
+  // Unknown SID means the session was never created, already GC'd, or is from a
+  // server restart. This is NOT a suspicious-activity block — the client should get
+  // a recoverable "session not found" and retry, not see the abuse overlay.
+  if (!s) return { breachCount: 0, violationLimit: DEFAULT_VIOLATION_LIMIT, blocked: false, blockSecondsRemaining: 0 };
   const remaining = s.blockedUntil ? Math.max(0, Math.ceil((s.blockedUntil - Date.now()) / 1000)) : 0;
   return { breachCount: s.breachEvents, violationLimit: s.violationLimit, blocked: s.revoked, blockSecondsRemaining: remaining };
 }

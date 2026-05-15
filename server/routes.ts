@@ -2303,7 +2303,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (velocity.abused) {
       releaseSegment(sid);
       const bi = getBreachInfo(sid);
-      return res.status(403).json({ code: "PLAYBACK_DENIED", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Download velocity exceeded", signal: velocity.reason?.signal });
+      return res.status(403).json({ code: "BLOCKED_SUSPICIOUS_ACTIVITY", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Download velocity exceeded", signal: velocity.reason?.signal });
     }
 
     try {
@@ -2329,7 +2329,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       log(`SEGMENT_PROXY: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
       try {
         const range = req.headers["range"];
-        const upstream = await fetch(b2Url, { headers: range ? { Range: String(range) } : undefined });
+        // AbortController tied to client disconnect — cancels the upstream B2/R2/S3
+        // fetch immediately when the browser seeks or closes the tab, so concurrentSegments
+        // is decremented right away instead of waiting for the full segment to arrive.
+        const abortCtrl = new AbortController();
+        req.on("close", () => abortCtrl.abort());
+        const upstream = await fetch(b2Url, {
+          headers: range ? { Range: String(range) } : undefined,
+          signal: abortCtrl.signal,
+        }).catch((err: any) => {
+          if (err?.name === "AbortError") return null;
+          throw err;
+        });
+        if (!upstream) {
+          releaseSegment(sid);
+          return;
+        }
         if (!upstream.ok && upstream.status !== 206) {
           releaseSegment(sid);
           return res.status(502).json({ message: "Segment upstream failed" });
@@ -2567,7 +2582,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // through our server so the only network entry visible to the client is
       // the opaque /stream/chunk/:opaqueId URL.
       const range = req.headers["range"];
-      const upstream = await fetch(originUrl, { headers: range ? { Range: String(range) } : undefined });
+      const abortCtrl = new AbortController();
+      req.on("close", () => abortCtrl.abort());
+      const upstream = await fetch(originUrl, {
+        headers: range ? { Range: String(range) } : undefined,
+        signal: abortCtrl.signal,
+      }).catch((err: any) => {
+        if (err?.name === "AbortError") return null;
+        throw err;
+      });
+      if (!upstream) { releaseSegment(sid); return; }
       if (!upstream.ok && upstream.status !== 206) {
         releaseSegment(sid);
         log(`stream/chunk upstream failed status=${upstream.status} key=${fileKey}`);
