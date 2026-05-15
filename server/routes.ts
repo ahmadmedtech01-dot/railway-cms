@@ -1924,7 +1924,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? globalSec
         : ((await secRepo.getVideo(video.id)) ?? globalSec);
       const suspiciousEnabled = isAdminPreview ? false : (effectiveClientSec.suspiciousDetectionEnabled !== false);
-      const effectiveViolationLimit = effectiveClientSec.violationLimit ?? 3;
+      const effectiveViolationLimit = effectiveClientSec.violationLimit ?? 10;
       // Admin preview disables behavior-changing hardening so authors can scrub freely
       const hardening = isAdminPreview
         ? { ...buildHardening(effectiveClientSec), serverGatedWindowEnabled: false, shortTokenTtlEnabled: false, velocityScoringEnabled: false }
@@ -2276,7 +2276,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const windowCheck = validateSegmentWindow(sid, segIdx);
       if (!windowCheck.allowed) {
         const bi = getBreachInfo(sid);
-        return res.status(403).json({ code: "PLAYBACK_DENIED", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Segment outside allowed window", signal: windowCheck.reason?.signal || "out_of_window" });
+        // Out-of-window is treated as a recoverable signal (hls.js prefetch / seek
+        // overshoot) — NOT abuse. Only mark BREACHED when the session itself was
+        // actually revoked due to sustained out-of-window scraping.
+        const trueBreach = bi.blocked;
+        return res.status(403).json({
+          code: trueBreach ? "BLOCKED_SUSPICIOUS_ACTIVITY" : "SEGMENT_WINDOW_VIOLATION",
+          error: trueBreach ? "VIDEO_BLOCKED" : "OUT_OF_WINDOW",
+          breach: `${bi.breachCount}/${bi.violationLimit}`,
+          blockSecondsRemaining: bi.blockSecondsRemaining,
+          message: trueBreach ? "Video playback denied due to suspicious activity" : "Segment outside allowed window",
+          signal: windowCheck.reason?.signal || "out_of_window",
+        });
       }
     }
 
@@ -2284,7 +2295,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const acquire = acquireSegment(sid, segIp);
     if (acquire.abused) {
       const bi = getBreachInfo(sid);
-      return res.status(403).json({ code: "PLAYBACK_DENIED", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Video playback denied due to suspicious activity", signal: acquire.reason?.signal });
+      return res.status(403).json({ code: "BLOCKED_SUSPICIOUS_ACTIVITY", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Video playback denied due to suspicious activity", signal: acquire.reason?.signal });
     }
 
     // Velocity scoring — bulk download / "download ahead" defense
@@ -2372,7 +2383,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   function stealthDeny(res: any, sid: string, message: string, signal?: string, status = 403) {
     const bi = getBreachInfo(sid);
-    return res.status(status).json({ code: "PLAYBACK_DENIED", error: bi.blocked ? "VIDEO_BLOCKED" : (signal === "token_expired" ? "PLAYBACK_DENIED" : "SECURITY_BREACH"), breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message, signal });
+    // Recoverable signals — silent retry on client. NOT marked as abuse breach.
+    const recoverable = new Set(["token_expired", "signed_url_expired", "out_of_window", "heartbeat_invalid"]);
+    const isRecoverable = signal ? recoverable.has(signal) : false;
+    let code = "PLAYBACK_DENIED";
+    let error: string;
+    if (bi.blocked) {
+      code = "BLOCKED_SUSPICIOUS_ACTIVITY";
+      error = "VIDEO_BLOCKED";
+    } else if (isRecoverable) {
+      code = signal === "out_of_window" ? "SEGMENT_WINDOW_VIOLATION" :
+             signal === "heartbeat_invalid" ? "SESSION_EXPIRED" : "TOKEN_EXPIRED";
+      error = signal === "out_of_window" ? "OUT_OF_WINDOW" : "TOKEN_EXPIRED";
+    } else {
+      code = "BLOCKED_SUSPICIOUS_ACTIVITY";
+      error = "SECURITY_BREACH";
+    }
+    return res.status(status).json({ code, error, breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message, signal });
   }
 
   // GET /api/player/:publicId/stream/window/:opaqueId
@@ -3236,7 +3263,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? globalSec
         : ((await secRepo.getVideo(video.id)) ?? globalSec);
       const suspiciousEnabled = effectiveClientSec2.suspiciousDetectionEnabled !== false;
-      const effectiveViolationLimit2 = effectiveClientSec2.violationLimit ?? 3;
+      const effectiveViolationLimit2 = effectiveClientSec2.violationLimit ?? 10;
       const hardening2 = buildHardening(effectiveClientSec2);
       let manifestUrl: string | null = null;
       let stealth: { enabled: boolean; streamUrl?: string } = { enabled: false };
@@ -3430,7 +3457,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? altGlobalSec
         : ((await secRepo.getVideo(video.id)) ?? altGlobalSec);
       const altSuspiciousEnabled = altEffectiveSec.suspiciousDetectionEnabled !== false;
-      const altViolationLimit = altEffectiveSec.violationLimit ?? 3;
+      const altViolationLimit = altEffectiveSec.violationLimit ?? 10;
       const altHardening = buildHardening(altEffectiveSec);
       const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled, altViolationLimit, altHardening);
       const altTtls = getSessionTokenTTL(sid);

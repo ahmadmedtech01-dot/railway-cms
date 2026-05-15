@@ -741,8 +741,31 @@ export default function EmbedPlayerPage(props: any = {}) {
                   if (parsed?.code) errorCode = parsed.code;
                 } catch {}
 
-                const isExpiry = errorCode === "TOKEN_EXPIRED" || errorCode === "SIGNED_URL_EXPIRED" || signal === "token_expired" || signal === "signed_url_expired";
-                const isTrueAbuse = errorCode === "SECURITY_BULK_DOWNLOAD" || signal === "bulk_download" || signal === "key_abuse";
+                // Recoverable (silent retry): token expiry, sliding-window prefetch overshoot,
+                // session expired, transient rate spikes. These happen during normal HLS
+                // playback (seeks, quality switches, hls.js retries) and must NOT show the
+                // suspicious-activity overlay.
+                const isExpiry =
+                  errorCode === "TOKEN_EXPIRED" ||
+                  errorCode === "SIGNED_URL_EXPIRED" ||
+                  errorCode === "SEGMENT_WINDOW_VIOLATION" ||
+                  errorCode === "SESSION_EXPIRED" ||
+                  signal === "token_expired" ||
+                  signal === "signed_url_expired" ||
+                  signal === "out_of_window" ||
+                  signal === "heartbeat_invalid" ||
+                  signal === "rate_limit";
+                // True abuse: only show the denial overlay for these signals/codes.
+                const isTrueAbuse =
+                  errorCode === "BLOCKED_SUSPICIOUS_ACTIVITY" ||
+                  errorCode === "VIDEO_BLOCKED" ||
+                  errorCode === "SECURITY_BULK_DOWNLOAD" ||
+                  signal === "bulk_download" ||
+                  signal === "velocity_abuse" ||
+                  signal === "key_abuse" ||
+                  signal === "hook_detected" ||
+                  signal === "concurrent" ||
+                  signal === "playlist_abuse";
                 const canRefresh = activeTokenRef.current && isExpiry && !isTrueAbuse;
 
                 const tryRotationRecovery = () => {
@@ -966,7 +989,11 @@ export default function EmbedPlayerPage(props: any = {}) {
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          if (res.status === 403 && data.code === "PLAYBACK_DENIED") {
+          // Only show the denial overlay when the server explicitly signals a
+          // true block. Token expiry / session expiry / out-of-window are
+          // recoverable — they are handled by the HLS ERROR path which silently
+          // refreshes or rotates the session.
+          if (res.status === 403 && (data.code === "BLOCKED_SUSPICIOUS_ACTIVITY" || data.error === "VIDEO_BLOCKED")) {
             triggerDenial(data.signal || "rate_limit");
           }
         }

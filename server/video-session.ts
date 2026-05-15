@@ -19,16 +19,21 @@ export const SESSION_ROTATION_MS = 3 * 60 * 1000;
 
 const ABUSE_THRESHOLDS = {
   // Only used when suspiciousDetectionEnabled=true
-  concurrentSegments: 10,          // max parallel segment downloads (raised for quality-switch prefetch at scale)
-  segmentsPerSec: 30,              // segment requests/sec that triggers rate spike signal
-  segmentRateSpikeWindowMs: 5000,  // must sustain above segmentsPerSec for this long
-  playlistPerSec: 2,               // playlist fetches/sec that triggers scraper signal
-  playlistSpikeWindowMs: 8000,     // must sustain above playlistPerSec for this long
-  keyHitsPerMin: 60,               // raised: VOD seeking re-fetches key; 60 covers heavy seek usage
-  keyHitsTotal: 200,               // raised: 60-min sessions with frequent seeking
-  scoreToRevoke: 20,               // score needed to revoke session
-  windowSize: 20,                  // segment window size (must cover hls.js maxBufferLength=30s ahead)
-  outOfWindowPenalty: 2,           // penalty for out-of-window requests
+  // Tuned to NEVER trigger on normal HLS playback (incl. seeks, quality switches,
+  // reloads, hls.js cancel/retry bursts). Only sustained abuse should score.
+  concurrentSegments: 24,          // hls.js may parallel-fetch on quality switch/seek (raised 10→24)
+  segmentsPerSec: 50,              // raised 30→50 (per-sec rate; sustained 5s window still required)
+  segmentRateSpikeWindowMs: 5000,
+  playlistPerSec: 2,
+  playlistSpikeWindowMs: 8000,
+  keyHitsPerMin: 120,              // VOD seeking re-fetches key heavily (raised 60→120)
+  keyHitsTotal: 400,               // raised for long lectures with many seeks (200→400)
+  scoreToRevoke: 30,               // raised 20→30 — only real abuse stacks this high
+  windowSize: 60,                  // ±60 segments ≈ ±2 min @ 2s/seg (raised 20→60)
+  outOfWindowPenalty: 0,           // single OOW no longer scores abuse — only sustained pattern does
+  outOfWindowGrace: 12,            // first N out-of-window denials are silent (no abuse score)
+  outOfWindowSustainedWindowMs: 60_000,
+  outOfWindowSustainedCount: 30,   // only score if >30 OOW in 60s (clear scraper pattern)
 };
 
 const TOKEN_TTL = {
@@ -72,7 +77,10 @@ export const defaultHardening: SessionHardeningConfig = {
   tokenTtlSegmentSec: 10,
   tokenTtlKeySec: 10,
   heartbeatIntervalSec: 12,
-  downloadAheadLimit: 18,
+  // Allow hls.js to prefetch ~2 min ahead (60 segs @ 2s) without false abuse.
+  // Real bulk-download scrapers request hundreds in seconds and still get caught
+  // by velocity/segments-per-sec checks.
+  downloadAheadLimit: 60,
   stealthModeEnabled: true,
 };
 
@@ -210,7 +218,11 @@ const sessions = new Map<string, VideoSession>();
 setInterval(() => {
   const now = Date.now();
   for (const [id, s] of sessions) {
-    if (now > s.expiresAt || s.createdAt < now - 30 * 60 * 1000) sessions.delete(id);
+    // Only delete if the session is truly expired. Removed the 30-min hard cap
+    // on createdAt: heartbeat/extend bumps expiresAt up to SESSION_MAX_AGE_MS
+    // (60 min) from each ping, so long lectures stayed alive but the GC was
+    // killing them after 30 min anyway, causing forced re-auth + denial loops.
+    if (now > s.expiresAt) sessions.delete(id);
   }
 }, 60 * 1000).unref();
 
@@ -663,19 +675,41 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
 
   // SERVER-GATED MODE: only the heartbeat endpoint advances currentSegmentIndex.
   // Reject any segment outside [start, end] window so playlist walking is blocked.
+  // Lenient mode: deny out-of-window requests but DO NOT score abuse for normal
+  // hls.js prefetch / seek / quality-switch bursts. Only sustained out-of-window
+  // patterns (clear scraper behaviour) score abuse points.
   if (s.hardening.serverGatedWindowEnabled) {
-    const start = Math.max(0, s.currentSegmentIndex - 2);
+    // Widen the upstream window so seeks + buffer prefetch don't constantly trip it.
+    const start = Math.max(0, s.currentSegmentIndex - 5);
     const end = s.currentSegmentIndex + Math.max(2, s.hardening.downloadAheadLimit);
     if (segIndex < start || segIndex > end) {
       s.outOfWindowCount += 1;
+
+      // Track timing for sustained-pattern detection.
+      const now = Date.now();
+      (s as any)._oowLog = ((s as any)._oowLog || []).filter((t: number) => t > now - ABUSE_THRESHOLDS.outOfWindowSustainedWindowMs);
+      (s as any)._oowLog.push(now);
+      const oowInWindow: number = (s as any)._oowLog.length;
+
       const reason: AbuseReason = {
         signal: "out_of_window",
-        detail: `seg=${segIndex} outside gated window [${start},${end}] | publicId=${s.publicId}`,
+        detail: `seg=${segIndex} outside gated window [${start},${end}] (recent=${oowInWindow})`,
       };
-      console.log(`[video-session] SECURITY_OUT_OF_WINDOW: sid=${sid} seg=${segIndex} window=[${start},${end}]`);
-      return addAbuse(s, ABUSE_THRESHOLDS.outOfWindowPenalty, reason).abused
-        ? { allowed: false, reason }
-        : { allowed: false, reason };
+
+      // Grace: first N out-of-window denials per session score 0 abuse points.
+      if (s.outOfWindowCount <= ABUSE_THRESHOLDS.outOfWindowGrace) {
+        return { allowed: false, reason };
+      }
+
+      // Sustained scraper pattern: only score if >outOfWindowSustainedCount in 60s
+      if (oowInWindow >= ABUSE_THRESHOLDS.outOfWindowSustainedCount) {
+        console.log(`[video-session] SECURITY_OUT_OF_WINDOW_SUSTAINED: sid=${sid} oowInWindow=${oowInWindow}`);
+        addAbuse(s, 5, reason);
+        return { allowed: false, reason };
+      }
+
+      // Soft deny — normal hls.js prefetch overshoot. No abuse score.
+      return { allowed: false, reason };
     }
     return { allowed: true };
   }
@@ -695,7 +729,9 @@ export function trackSegmentVelocity(sid: string): { abused: boolean; reason?: A
   const now = Date.now();
   s.velocityLog = s.velocityLog.filter(t => t > now - 5000);
   s.velocityLog.push(now);
-  // > downloadAheadLimit segments in 5 seconds = bulk download
+  // > downloadAheadLimit segments in 5 seconds = bulk download.
+  // Now that downloadAheadLimit=60, this catches real scrapers (100+ segs in 5s)
+  // without firing on quality-switch / seek bursts.
   if (s.velocityLog.length > s.hardening.downloadAheadLimit) {
     const reason: AbuseReason = {
       signal: "velocity_abuse",

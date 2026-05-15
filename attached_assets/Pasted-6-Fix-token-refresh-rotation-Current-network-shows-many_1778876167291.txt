@@ -1,0 +1,134 @@
+6. Fix token refresh/rotation:
+Current network shows many 403 errors.
+Do not immediately lock user after one 403.
+If token expired:
+- frontend should call refresh/rotate token
+- retry the failed segment once with new token
+- only count suspicious if repeated invalid token reuse continues
+
+7. Frontend player fix:
+In embed-player.tsx or secure player component:
+- Do not show suspicious activity overlay for normal HLS MEDIA_ERROR or canceled requests
+- On 401/403 segment error:
+  a. pause HLS loading
+  b. call refresh/rotate token
+  c. update secure URL/token
+  d. retry playback once
+  e. only show blocked overlay if backend response explicitly says BLOCKED_SUSPICIOUS_ACTIVITY
+
+8. Backend response fix:
+For /stream/chunk, /seg, /hls, /key routes:
+Return clear error codes:
+
+TOKEN_EXPIRED
+TOKEN_INVALID
+SESSION_EXPIRED
+SESSION_ROTATION_REQUIRED
+SEGMENT_WINDOW_VIOLATION
+DIRECT_ACCESS_DENIED
+BLOCKED_SUSPICIOUS_ACTIVITY
+VIDEO_NOT_FOUND
+STORAGE_OBJECT_NOT_FOUND
+
+Frontend should only show:
+"Video playback denied due to suspicious activity"
+when errorCode === BLOCKED_SUSPICIOUS_ACTIVITY.
+
+For token/session expiry, show:
+"Refreshing secure playback..."
+and retry silently.
+
+9. Do not count canceled requests:
+Browser canceled XHR requests must be ignored.
+If possible, ignore client-side aborted requests.
+Do not treat status canceled / 0 KB as suspicious.
+
+10. Improve suspicious detection threshold:
+Replace aggressive "too many requests" lock with weighted scoring.
+
+Suggested score:
+- valid segment request: 0 points
+- valid playlist request: 0 points
+- valid key request: 0 points
+- heartbeat: 0 points
+- expired token first few times: 0 or 1 point
+- invalid signature: 5 points
+- direct segment access without session: 8 points
+- different user-agent/device token reuse: 10 points
+- many far-out-of-window segments: 5 points
+- many videos with same token/session: 10 points
+
+Block only when abuseScore >= configured threshold.
+
+11. Add cooldown but only for real abuse:
+The cooldown/lockout should trigger only after confirmed suspicious behavior.
+Do not trigger cooldown for:
+- weak internet
+- buffering
+- seek
+- reload
+- HLS retry
+- token refresh
+- LMS iframe load
+- admin preview
+- shareable link normal playback
+
+12. Add debug logging:
+Add safe logs without secrets:
+
+videoId
+publicId
+sessionId
+userId if available
+route
+errorCode
+reason
+segmentIndex if available
+currentPlaybackTime if available
+abuseScore
+threshold
+action: allow / refresh_required / deny_once / blocked
+
+Never log token, signing secret, Bunny/B2/R2 keys, or full signed URLs.
+
+13. Add admin setting:
+In Security Settings add advanced toggle:
+
+"Strict HLS Anti-Download Detection"
+
+Default: OFF
+
+When OFF:
+- allow normal HLS bursts generously
+- block only invalid token/session/direct access/device mismatch
+
+When ON:
+- enable stricter segment-window scoring
+
+14. Fix LMS side:
+Security must apply on LMS embed, but not falsely block.
+LMS playback should use same secure flow:
+- mint session
+- load manifest
+- refresh/rotate token
+- heartbeat
+- enforce iframe/domain security
+But normal HLS segment requests must be treated as normal playback.
+
+15. Acceptance Criteria:
+- A normal user can watch a full 20–60 minute lecture without suspicious lockout.
+- Seeking video segments does not trigger suspicious lockout.
+- Reloading page does not immediately trigger lockout.
+- hls.js canceled requests do not trigger lockout.
+- Token expiry refreshes silently.
+- Only real invalid/direct/tampered access is blocked.
+- Shareable link security still works.
+- LMS embed security still works.
+- Admin preview still works.
+- Existing B2/R2 storage playback still works.
+- Future Bunny storage/CDN playback should also use this same safe logic.
+
+Important:
+Do not weaken real security.
+Only fix false positives.
+Normal valid HLS requests should not be treated as download attempts.
