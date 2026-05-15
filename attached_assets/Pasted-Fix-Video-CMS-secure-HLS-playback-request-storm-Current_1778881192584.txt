@@ -1,0 +1,421 @@
+Fix Video CMS secure HLS playback request storm.
+
+Current problem:
+The video starts normally but stops after around 10 seconds.
+Chrome Network tab shows 1000+ requests in a very short time.
+Many segment/chunk requests are red, canceled, pending, or 403.
+The player sometimes shows:
+"Video playback denied due to suspicious activity"
+even though the user is only watching normally.
+
+Important:
+Do NOT remove or weaken security layers.
+Do NOT expose direct storage/CDN URLs.
+Do NOT remove token/session protection.
+Fix the retry loop, token refresh logic, HLS lifecycle, and false-positive blocking.
+
+Main goal:
+Normal HLS playback should create controlled requests only.
+No infinite retry loops.
+No repeated old-token segment requests.
+No suspicious lockout for normal playback.
+
+Files to inspect:
+- client/src/pages/embed-player.tsx
+- any secure player component used by /v/:publicId or /embed/:publicId
+- server/video-session.ts
+- server/routes.ts
+- secure playback routes:
+  /api/player/:publicId/mint
+  /api/player/:publicId/hls
+  /api/player/:publicId/seg
+  /api/player/:publicId/key
+  /api/player/:publicId/stream
+  /api/player/:publicId/stream/chunk
+  /api/player/:publicId/heartbeat
+  /api/player/:publicId/rotate
+  /api/player/:publicId/refresh
+
+Part 1 — Stop duplicate HLS instances
+
+In the frontend player:
+1. Ensure only ONE Hls instance exists per mounted player.
+2. Before creating a new Hls instance:
+   - call hls.stopLoad()
+   - call hls.detachMedia()
+   - call hls.destroy()
+   - set ref to null
+3. Do not recreate Hls instance on every token refresh, heartbeat, progress update, violation update, or state update.
+4. Hls should initialize only when:
+   - publicId changes
+   - source manifest URL changes intentionally
+   - player session is newly minted
+5. Add guard:
+   if hlsRef.current already exists and current manifest URL is same, do not create another instance.
+
+Acceptance:
+Opening one video must not create multiple parallel HLS loaders.
+
+Part 2 — Fix useEffect dependency loops
+
+Inspect all useEffect hooks in embed-player.tsx.
+Fix dependency arrays so these do not trigger repeatedly:
+- mint playback session
+- initialize HLS
+- start heartbeat interval
+- start token refresh interval
+- start progress interval
+- violation polling
+- global-lock polling
+
+Rules:
+1. Mint session once per publicId/load context.
+2. Heartbeat interval must be created once and cleared on unmount.
+3. Progress interval must be created once and cleared on unmount.
+4. Token refresh interval must be created once and cleared on unmount.
+5. Do not include rapidly changing state in dependency arrays unless absolutely required.
+6. Use refs for latest token/session values instead of recreating effects.
+
+Common bad dependency examples to remove:
+- currentTime
+- progress
+- isPlaying
+- securityState
+- violationCount
+- token
+- hlsUrl
+- retryCount
+from effects that initialize HLS or start intervals.
+
+Acceptance:
+No duplicated heartbeat/progress/refresh calls.
+No repeated player reinitialization.
+
+Part 3 — Fix segment retry storm
+
+In HLS error handler:
+1. Do not blindly retry every 403 forever.
+2. Add a strict retry limit:
+   - max 1 token refresh retry per failed segment
+   - max 3 media recoveries per 60 seconds
+   - max 2 manifest reloads per 60 seconds
+3. If the same segment URL fails repeatedly:
+   - stop retrying that exact URL
+   - refresh token once
+   - rebuild manifest/segment URL
+   - retry once
+   - if still failing, show playback error, not suspicious lockout unless backend says blocked.
+
+4. For hls.js events:
+   - ignore non-fatal errors
+   - ignore canceled/aborted requests
+   - do not call startLoad() repeatedly in a tight loop
+   - debounce recovery calls by at least 1500ms
+
+5. Add a request storm circuit breaker:
+   In frontend, track failed secure playback requests in a rolling 10-second window.
+   If more than 25 failed segment/key/manifest requests occur in 10 seconds:
+   - call hls.stopLoad()
+   - pause video
+   - show "Refreshing secure playback..."
+   - call mint/refresh once
+   - rebuild source once
+   - resume playback
+   - if it happens again, show "Playback connection error. Please retry."
+   Do not show suspicious activity unless backend returns BLOCKED_SUSPICIOUS_ACTIVITY.
+
+Acceptance:
+No more 1000+ requests in 10 seconds.
+
+Part 4 — Backend must return clear error codes, not generic 403
+
+For secure routes:
+- /hls
+- /seg
+- /key
+- /stream
+- /stream/chunk
+
+Return JSON error body for denied requests where possible:
+
+{
+  "ok": false,
+  "errorCode": "TOKEN_EXPIRED",
+  "message": "Secure playback token expired"
+}
+
+Required error codes:
+- TOKEN_EXPIRED
+- TOKEN_INVALID
+- SESSION_EXPIRED
+- SESSION_ROTATION_REQUIRED
+- SEGMENT_WINDOW_VIOLATION
+- DIRECT_ACCESS_DENIED
+- BLOCKED_SUSPICIOUS_ACTIVITY
+- STORAGE_OBJECT_NOT_FOUND
+- PROVIDER_FETCH_FAILED
+
+Frontend behavior:
+Only show suspicious activity overlay when:
+errorCode === "BLOCKED_SUSPICIOUS_ACTIVITY"
+
+For:
+TOKEN_EXPIRED
+SESSION_EXPIRED
+SESSION_ROTATION_REQUIRED
+
+Frontend should silently refresh/remint once.
+
+For:
+STORAGE_OBJECT_NOT_FOUND
+PROVIDER_FETCH_FAILED
+
+Frontend should show normal playback error, not suspicious activity.
+
+Acceptance:
+403 alone should not automatically mean suspicious user.
+
+Part 5 — Fix token refresh and old URL reuse
+
+Current behavior suggests old signed chunk URLs continue firing after token expires.
+
+Implement:
+1. Store latest playback token/session in refs.
+2. When token refresh succeeds:
+   - update tokenRef immediately
+   - update sessionRef immediately
+   - stop old HLS loading
+   - reload manifest with fresh token/version
+   - do not let old pending requests trigger another refresh storm
+3. Add a token version number:
+   - tokenGenerationRef increments after every refresh/mint
+   - ignore HLS errors from older tokenGeneration
+4. If a request fails from an old token generation, ignore it.
+
+Acceptance:
+After refresh, old token requests should not keep causing lockouts.
+
+Part 6 — Backend suspicious scoring must ignore valid HLS requests
+
+In server/video-session.ts:
+Do not increase abuse/suspicious score for:
+- valid segment request
+- valid manifest request
+- valid key request
+- valid heartbeat
+- valid token refresh
+- valid progress ping
+- browser canceled request
+- hls.js retry
+- normal sequential segment burst
+- seek-related segment burst
+
+Only increase score for:
+- invalid signature
+- missing token
+- token used for wrong video
+- token used for wrong session
+- direct segment access without session
+- different device/user-agent token reuse
+- many far out-of-window segments
+- path tampering
+- many videos accessed with same session/token
+
+Important:
+Do not use total request count alone as suspicious.
+Total request count is not reliable for HLS.
+
+Acceptance:
+Normal viewing for 60 minutes should not trigger suspicious lockout.
+
+Part 7 — Segment window logic should not break normal playback
+
+If strict segment window exists:
+1. Disable it by default unless "Strict HLS Anti-Download Detection" is ON.
+2. When OFF:
+   - validate token/session only
+   - allow normal sequential segment access
+3. When ON:
+   - allow current segment window ± 90 seconds
+   - when seeking, allow expanded window ± 5 minutes for 10 seconds
+   - do not block immediately; add small score only
+4. Frontend should send current playback position periodically via heartbeat/progress so backend knows expected window.
+
+Acceptance:
+Seeking, buffering, and segment buttons must not trigger block.
+
+Part 8 — Stop heartbeat/progress spam
+
+Network shows heartbeat/progress requests also running.
+Fix:
+1. heartbeat interval: every 20–30 seconds only.
+2. progress update: every 15–30 seconds only, or on pause/end.
+3. Do not send progress every second.
+4. Do not start multiple intervals.
+5. Add cleanup on unmount.
+
+Acceptance:
+In 1 minute, heartbeat/progress combined should be less than 8 requests.
+
+Part 9 — HLS config tuning
+
+Configure hls.js safely:
+
+- maxBufferLength: 30
+- maxMaxBufferLength: 60
+- backBufferLength: 30
+- fragLoadingMaxRetry: 2
+- fragLoadingRetryDelay: 1000
+- fragLoadingMaxRetryTimeout: 4000
+- manifestLoadingMaxRetry: 2
+- manifestLoadingRetryDelay: 1000
+- levelLoadingMaxRetry: 2
+- lowLatencyMode: false
+- enableWorker: true
+
+Do not use extremely aggressive retry settings.
+
+Acceptance:
+HLS should not retry endlessly.
+
+Part 10 — Add safe debug panel/logs
+
+Add backend logs for denied secure playback requests:
+
+- route
+- publicId
+- videoId
+- sessionId hash only
+- userId if available
+- errorCode
+- reason
+- abuseScore
+- threshold
+- segmentKey hash or segment index
+- provider
+- action
+
+Never log:
+- full token
+- signing secret
+- storage keys
+- full signed URL
+
+Add frontend console logs only in development:
+- HLS fatal error
+- token refresh started/succeeded/failed
+- ignored stale token generation error
+- request storm circuit breaker activated
+
+Acceptance:
+We should be able to identify why 403 is happening without leaking secrets.
+
+Part 11 — Correct UI messages
+
+Do not show:
+"Video playback denied due to suspicious activity"
+for every playback failure.
+
+Show messages based on backend errorCode:
+
+TOKEN_EXPIRED:
+"Refreshing secure playback..."
+
+SESSION_EXPIRED:
+"Restoring secure session..."
+
+PROVIDER_FETCH_FAILED:
+"Video connection error. Please retry."
+
+STORAGE_OBJECT_NOT_FOUND:
+"Video file is unavailable."
+
+BLOCKED_SUSPICIOUS_ACTIVITY:
+"Video playback denied due to suspicious activity."
+
+Acceptance:
+Suspicious overlay appears only for confirmed suspicious block.
+
+Part 12 — Regression safety
+
+Do not break:
+- shareable link playback
+- LMS iframe playback
+- admin preview playback
+- watermark overlay
+- screen recording/screenshot violation logic
+- one-device/session conflict logic
+- token signing
+- session binding
+- Cloudflare Worker support
+- Backblaze B2 support
+- Cloudflare R2 support
+- future Bunny storage/CDN support
+
+Part 13 — QA checklist
+
+After implementation, test:
+
+1. Open video normally.
+Expected:
+- video plays beyond 10 seconds
+- no suspicious block
+- no request storm
+
+2. Watch for 2 minutes.
+Expected:
+- reasonable request count
+- no 1000+ requests
+- heartbeat/progress controlled
+
+3. Seek forward/backward.
+Expected:
+- video resumes
+- no suspicious block
+
+4. Click segment chip.
+Expected:
+- video seeks
+- no suspicious block
+
+5. Refresh page.
+Expected:
+- session remints/restores
+- video plays
+
+6. Let token expire naturally.
+Expected:
+- frontend refreshes token silently
+- playback continues
+
+7. Open direct chunk URL without valid token/session.
+Expected:
+- blocked
+
+8. Tamper token.
+Expected:
+- blocked
+
+9. Use same token from another browser/device.
+Expected:
+- blocked or session conflict according to current rules
+
+10. Admin preview.
+Expected:
+- works
+
+11. LMS embed.
+Expected:
+- works and security applies
+
+12. Shareable link.
+Expected:
+- works and security applies
+
+Critical instruction:
+Fix the false request storm and retry loop.
+Do not solve it by disabling security.
+Do not expose direct CDN/storage URLs.
+Do not remove token validation.
+Do not remove session validation.
+Do not remove LMS/domain protection.

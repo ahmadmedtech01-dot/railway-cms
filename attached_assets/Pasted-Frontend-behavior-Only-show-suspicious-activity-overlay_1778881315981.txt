@@ -1,0 +1,151 @@
+Frontend behavior:
+Only show suspicious activity overlay when:
+errorCode === "BLOCKED_SUSPICIOUS_ACTIVITY"
+
+For:
+TOKEN_EXPIRED
+SESSION_EXPIRED
+SESSION_ROTATION_REQUIRED
+
+Frontend should silently refresh/remint once.
+
+For:
+STORAGE_OBJECT_NOT_FOUND
+PROVIDER_FETCH_FAILED
+
+Frontend should show normal playback error, not suspicious activity.
+
+Acceptance:
+403 alone should not automatically mean suspicious user.
+
+Part 5 — Fix token refresh and old URL reuse
+
+Current behavior suggests old signed chunk URLs continue firing after token expires.
+
+Implement:
+1. Store latest playback token/session in refs.
+2. When token refresh succeeds:
+   - update tokenRef immediately
+   - update sessionRef immediately
+   - stop old HLS loading
+   - reload manifest with fresh token/version
+   - do not let old pending requests trigger another refresh storm
+3. Add a token version number:
+   - tokenGenerationRef increments after every refresh/mint
+   - ignore HLS errors from older tokenGeneration
+4. If a request fails from an old token generation, ignore it.
+
+Acceptance:
+After refresh, old token requests should not keep causing lockouts.
+
+Part 6 — Backend suspicious scoring must ignore valid HLS requests
+
+In server/video-session.ts:
+Do not increase abuse/suspicious score for:
+- valid segment request
+- valid manifest request
+- valid key request
+- valid heartbeat
+- valid token refresh
+- valid progress ping
+- browser canceled request
+- hls.js retry
+- normal sequential segment burst
+- seek-related segment burst
+
+Only increase score for:
+- invalid signature
+- missing token
+- token used for wrong video
+- token used for wrong session
+- direct segment access without session
+- different device/user-agent token reuse
+- many far out-of-window segments
+- path tampering
+- many videos accessed with same session/token
+
+Important:
+Do not use total request count alone as suspicious.
+Total request count is not reliable for HLS.
+
+Acceptance:
+Normal viewing for 60 minutes should not trigger suspicious lockout.
+
+Part 7 — Segment window logic should not break normal playback
+
+If strict segment window exists:
+1. Disable it by default unless "Strict HLS Anti-Download Detection" is ON.
+2. When OFF:
+   - validate token/session only
+   - allow normal sequential segment access
+3. When ON:
+   - allow current segment window ± 90 seconds
+   - when seeking, allow expanded window ± 5 minutes for 10 seconds
+   - do not block immediately; add small score only
+4. Frontend should send current playback position periodically via heartbeat/progress so backend knows expected window.
+
+Acceptance:
+Seeking, buffering, and segment buttons must not trigger block.
+
+Part 8 — Stop heartbeat/progress spam
+
+Network shows heartbeat/progress requests also running.
+Fix:
+1. heartbeat interval: every 20–30 seconds only.
+2. progress update: every 15–30 seconds only, or on pause/end.
+3. Do not send progress every second.
+4. Do not start multiple intervals.
+5. Add cleanup on unmount.
+
+Acceptance:
+In 1 minute, heartbeat/progress combined should be less than 8 requests.
+
+Part 9 — HLS config tuning
+
+Configure hls.js safely:
+
+- maxBufferLength: 30
+- maxMaxBufferLength: 60
+- backBufferLength: 30
+- fragLoadingMaxRetry: 2
+- fragLoadingRetryDelay: 1000
+- fragLoadingMaxRetryTimeout: 4000
+- manifestLoadingMaxRetry: 2
+- manifestLoadingRetryDelay: 1000
+- levelLoadingMaxRetry: 2
+- lowLatencyMode: false
+- enableWorker: true
+
+Do not use extremely aggressive retry settings.
+
+Acceptance:
+HLS should not retry endlessly.
+
+Part 10 — Add safe debug panel/logs
+
+Add backend logs for denied secure playback requests:
+
+- route
+- publicId
+- videoId
+- sessionId hash only
+- userId if available
+- errorCode
+- reason
+- abuseScore
+- threshold
+- segmentKey hash or segment index
+- provider
+- action
+
+Never log:
+- full token
+- signing secret
+- storage keys
+- full signed URL
+
+Add frontend console logs only in development:
+- HLS fatal error
+- token refresh started/succeeded/failed
+- ignored stale token generation error
+- request storm circuit breaker activated

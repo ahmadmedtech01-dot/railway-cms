@@ -1,0 +1,112 @@
+Acceptance:
+We should be able to identify why 403 is happening without leaking secrets.
+
+Part 11 — Correct UI messages
+
+Do not show:
+"Video playback denied due to suspicious activity"
+for every playback failure.
+
+Show messages based on backend errorCode:
+
+TOKEN_EXPIRED:
+"Refreshing secure playback..."
+
+SESSION_EXPIRED:
+"Restoring secure session..."
+
+PROVIDER_FETCH_FAILED:
+"Video connection error. Please retry."
+
+STORAGE_OBJECT_NOT_FOUND:
+"Video file is unavailable."
+
+BLOCKED_SUSPICIOUS_ACTIVITY:
+"Video playback denied due to suspicious activity."
+
+Acceptance:
+Suspicious overlay appears only for confirmed suspicious block.
+
+Part 12 — Regression safety
+
+Do not break:
+- shareable link playback
+- LMS iframe playback
+- admin preview playback
+- watermark overlay
+- screen recording/screenshot violation logic
+- one-device/session conflict logic
+- token signing
+- session binding
+- Cloudflare Worker support
+- Backblaze B2 support
+- Cloudflare R2 support
+- future Bunny storage/CDN support
+
+Part 13 — QA checklist
+
+After implementation, test:
+
+1. Open video normally.
+Expected:
+- video plays beyond 10 seconds
+- no suspicious block
+- no request storm
+
+2. Watch for 2 minutes.
+Expected:
+- reasonable request count
+- no 1000+ requests
+- heartbeat/progress controlled
+
+3. Seek forward/backward.
+Expected:
+- video resumes
+- no suspicious block
+
+4. Click segment chip.
+Expected:
+- video seeks
+- no suspicious block
+
+5. Refresh page.
+Expected:
+- session remints/restores
+- video plays
+
+6. Let token expire naturally.
+Expected:
+- frontend refreshes token silently
+- playback continues
+
+7. Open direct chunk URL without valid token/session.
+Expected:
+- blocked
+
+8. Tamper token.
+Expected:
+- blocked
+
+9. Use same token from another browser/device.
+Expected:
+- blocked or session conflict according to current rules
+
+10. Admin preview.
+Expected:
+- works
+
+11. LMS embed.
+Expected:
+- works and security applies
+
+12. Shareable link.
+Expected:
+- works and security applies
+
+Critical instruction:
+Fix the false request storm and retry loop.
+Do not solve it by disabling security.
+Do not expose direct CDN/storage URLs.
+Do not remove token validation.
+Do not remove session validation.
+Do not remove LMS/domain protection.

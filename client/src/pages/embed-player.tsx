@@ -194,6 +194,20 @@ export default function EmbedPlayerPage(props: any = {}) {
   const lastPausedAtRef = useRef<number>(-1);
   const isRotatingRef = useRef(false);
   const rotationOpIdRef = useRef(0);
+  // Circuit breaker for hls.startLoad() recovery — caps restart-storm if the
+  // upstream is flapping. Max 5 startLoad() calls per 30s rolling window.
+  const startLoadLogRef = useRef<number[]>([]);
+  const guardedStartLoad = (hls: any, time?: number) => {
+    const now = Date.now();
+    startLoadLogRef.current = startLoadLogRef.current.filter(t => t > now - 30_000);
+    if (startLoadLogRef.current.length >= 5) {
+      if (import.meta.env.DEV) console.warn("[player] startLoad circuit-breaker tripped — pausing recovery for 30s");
+      return false;
+    }
+    startLoadLogRef.current.push(now);
+    if (typeof time === "number") hls.startLoad(time); else hls.startLoad();
+    return true;
+  };
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
   // Hardening hints from manifest endpoint: { intervalSec, v2, msGuard }
   const hardeningHintRef = useRef<{ intervalSec: number; v2: boolean; msGuard: boolean }>({ intervalSec: 180, v2: false, msGuard: false });
@@ -673,16 +687,20 @@ export default function EmbedPlayerPage(props: any = {}) {
             enableWorker: true,
             lowLatencyMode: false,
             maxBufferLength: 30,
-            maxMaxBufferLength: 600,
-            backBufferLength: 60,
-            manifestLoadingMaxRetry: 4,
+            maxMaxBufferLength: 60,
+            backBufferLength: 30,
+            // Retry counts reduced from 4 → 2 to prevent client-side retry
+            // storms. With 4 retries × ~6 prefetched fragments × cascading
+            // failures, a single transient error could create 20+ doomed
+            // requests in a couple of seconds. Two retries is enough for
+            // genuine transient errors; our token-rotation recovery path
+            // handles the rest.
+            manifestLoadingMaxRetry: 2,
             manifestLoadingRetryDelay: 1500,
-            levelLoadingMaxRetry: 4,
+            levelLoadingMaxRetry: 2,
             levelLoadingRetryDelay: 1500,
-            fragLoadingMaxRetry: 4,
+            fragLoadingMaxRetry: 2,
             fragLoadingRetryDelay: 1000,
-            keyLoadingMaxRetry: 4,
-            keyLoadingRetryDelay: 1000,
           });
           hlsRef.current = hls;
           hls.loadSource(manifestUrl);
@@ -723,7 +741,7 @@ export default function EmbedPlayerPage(props: any = {}) {
             // Suppress during rotation — old cancelled requests produce noise here and
             // calling startLoad() while the new source is loading would cancel it.
             if (!d.fatal) {
-              if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !isRotatingRef.current) hls.startLoad();
+              if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !isRotatingRef.current) guardedStartLoad(hls);
               return;
             }
 
@@ -877,8 +895,11 @@ export default function EmbedPlayerPage(props: any = {}) {
                   setErrorMsg("Stream error");
                 }
             } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                // Fatal network error — try to restart the load
-                hls.startLoad();
+                // Fatal network error — try to restart the load (rate-limited)
+                if (!guardedStartLoad(hls)) {
+                  setStatus("error");
+                  setErrorMsg("Network unstable. Please refresh to retry.");
+                }
             } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
                 // Fatal media error — attempt recovery before giving up
                 if (mediaErrorRecoveries < 3) {

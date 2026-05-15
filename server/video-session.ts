@@ -492,17 +492,23 @@ export function trackPlaylistFetch(sid: string, ip?: string): { abused: boolean;
 
   const now = Date.now();
 
-  // Grace window: skip playlist rate-counting for the first 10 seconds after
-  // session creation so that normal reloads don't trigger abuse detection.
-  if (now - s.createdAt < 10_000) return { abused: false };
+  // Grace window: skip playlist rate-counting for the first 30 seconds after
+  // session creation. Initial buffering, quality probing, and the first sliding
+  // playlist refresh can all happen within the first 10s — too tight a grace
+  // window false-trips on normal startup.
+  if (now - s.createdAt < 30_000) return { abused: false };
 
   // Keep playlist fetches in a 5-second window
   s.playlistFetchLog = s.playlistFetchLog.filter(t => t > now - 5000);
   s.playlistFetchLog.push(now);
 
-  // Signal: playlist fetch rate > 1/sec sustained for 5 seconds
-  // 1/sec × 5 seconds = 5 fetches in 5s window
-  if (s.playlistFetchLog.length > 5) {
+  // Threshold raised from 5 → 25 in 5s. The sliding-window HLS playlist is
+  // legitimately refetched by hls.js every targetDuration (~2s = 2-3/5s),
+  // multiplied by quality-level switches, seeks, and transient retries.
+  // The OLD limit of 5/5s was triggering on normal playback within seconds.
+  // Real scrapers hit hundreds in 5s — 25 still catches them while leaving
+  // 8-10x headroom for legitimate hls.js behavior.
+  if (s.playlistFetchLog.length > 25) {
     if (!s.playlistSpikeStart) {
       s.playlistSpikeStart = now;
     } else if (now - s.playlistSpikeStart >= ABUSE_THRESHOLDS.playlistSpikeWindowMs) {
