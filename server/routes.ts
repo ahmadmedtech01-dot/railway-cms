@@ -32,9 +32,14 @@ function buildHardening(s: any): SessionHardeningConfig {
     heartbeatV2Enabled: s?.heartbeatV2Enabled ?? defaultHardening.heartbeatV2Enabled,
     serverGatedWindowEnabled: s?.serverGatedWindowEnabled ?? defaultHardening.serverGatedWindowEnabled,
     shortTokenTtlEnabled: s?.shortTokenTtlEnabled ?? defaultHardening.shortTokenTtlEnabled,
-    tokenTtlPlaylistSec: s?.tokenTtlPlaylistSec ?? defaultHardening.tokenTtlPlaylistSec,
-    tokenTtlSegmentSec: s?.tokenTtlSegmentSec ?? defaultHardening.tokenTtlSegmentSec,
-    tokenTtlKeySec: s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec,
+    // Floor TTLs at 90s. The persisted security-settings defaults are 25/12/12
+    // but those values cause stealth chunk opaque IDs to expire before hls.js
+    // reaches deep segments in the sliding-window playlist (false "invalid
+    // chunk token" → fragment-retry storm → video stops). Real security is
+    // enforced by SID/UA/session/abuse layers, not by token TTL.
+    tokenTtlPlaylistSec: Math.max(90, s?.tokenTtlPlaylistSec ?? defaultHardening.tokenTtlPlaylistSec),
+    tokenTtlSegmentSec: Math.max(90, s?.tokenTtlSegmentSec ?? defaultHardening.tokenTtlSegmentSec),
+    tokenTtlKeySec: Math.max(90, s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec),
     heartbeatIntervalSec: s?.heartbeatIntervalSec ?? defaultHardening.heartbeatIntervalSec,
     downloadAheadLimit: s?.downloadAheadLimit ?? defaultHardening.downloadAheadLimit,
     stealthModeEnabled: s?.stealthModeEnabled ?? defaultHardening.stealthModeEnabled,
@@ -2329,11 +2334,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       log(`SEGMENT_PROXY: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
       try {
         const range = req.headers["range"];
-        // AbortController tied to client disconnect — cancels the upstream B2/R2/S3
-        // fetch immediately when the browser seeks or closes the tab, so concurrentSegments
-        // is decremented right away instead of waiting for the full segment to arrive.
+        // AbortController tied to PREMATURE client disconnect only — listens on
+        // res.close and checks res.writableEnded to distinguish a real disconnect
+        // from the normal end-of-response close event. The earlier req.on("close")
+        // version fired on every successful request after pipe completion, which
+        // in Node 20 could race with the body stream and terminate it mid-flight.
         const abortCtrl = new AbortController();
-        req.on("close", () => abortCtrl.abort());
+        res.on("close", () => { if (!res.writableEnded) abortCtrl.abort(); });
         const upstream = await fetch(b2Url, {
           headers: range ? { Range: String(range) } : undefined,
           signal: abortCtrl.signal,
@@ -2582,8 +2589,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // through our server so the only network entry visible to the client is
       // the opaque /stream/chunk/:opaqueId URL.
       const range = req.headers["range"];
+      // Abort upstream only on PREMATURE disconnect (see /seg comment above).
       const abortCtrl = new AbortController();
-      req.on("close", () => abortCtrl.abort());
+      res.on("close", () => { if (!res.writableEnded) abortCtrl.abort(); });
       const upstream = await fetch(originUrl, {
         headers: range ? { Range: String(range) } : undefined,
         signal: abortCtrl.signal,

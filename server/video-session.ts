@@ -73,9 +73,18 @@ export const defaultHardening: SessionHardeningConfig = {
   heartbeatV2Enabled: true,
   serverGatedWindowEnabled: true,
   shortTokenTtlEnabled: true,
-  tokenTtlPlaylistSec: 22,
-  tokenTtlSegmentSec: 10,
-  tokenTtlKeySec: 10,
+  // TTLs raised from 22/10/10 → 90/90/90 to stop stealth chunk URLs from
+  // expiring mid-playlist. The sliding-window playlist embeds ~60 chunk opaque
+  // IDs all minted at the same instant. With a 10s TTL, segments deep in the
+  // window expire long before hls.js reaches them (pause/seek/buffer-stall),
+  // causing "Invalid chunk token" → hls.js fragment-retry storm → red XHRs →
+  // video stops at ~10s. Real security is enforced by SID-binding, UA hash,
+  // session lifetime, abuse detection, and window validation — not by token
+  // TTL. 90s is well under SESSION_MAX_AGE_MS so signed URLs still rotate
+  // through the natural session lifecycle.
+  tokenTtlPlaylistSec: 90,
+  tokenTtlSegmentSec: 90,
+  tokenTtlKeySec: 90,
   heartbeatIntervalSec: 12,
   // Allow hls.js to prefetch ~2 min ahead (60 segs @ 2s) without false abuse.
   // Real bulk-download scrapers request hundreds in seconds and still get caught
