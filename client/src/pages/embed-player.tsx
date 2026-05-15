@@ -4,6 +4,7 @@ import Hls from "hls.js";
 import { useSecurityViolations, formatCountdown } from "@/security/useSecurityViolations";
 import type { ViolationType } from "@/security/useSecurityViolations";
 import { installMediaSourceGuard, reportSecurityEvent } from "@/lib/security/mediaSourceGuard";
+import { getBootstrapToken } from "@/lib/bootstrap-token";
 
 interface WatermarkSettings {
   logoEnabled?: boolean;
@@ -126,13 +127,32 @@ function getClientInstanceId(): string {
   }
 }
 
-export default function EmbedPlayerPage() {
-  const { publicId } = useParams<{ publicId: string }>();
+export default function EmbedPlayerPage(props: any = {}) {
+  const forcePublicId: string | undefined = props?.forcePublicId;
+  const params = useParams<{ publicId: string }>();
+  const publicId = forcePublicId || params.publicId;
   const search = useSearch();
   const urlParams = new URLSearchParams(search);
   const rawUrlToken = urlParams.get("token") || urlParams.get("embedToken") || "";
   const isLmsHmacToken = rawUrlToken ? rawUrlToken.split(".").length === 2 : false;
-  const urlToken = isLmsHmacToken ? "" : rawUrlToken;
+  // Bootstrap token: memory-only token minted server-side from a short share link.
+  // Allows /v/:publicId and /watch/:shareCode without exposing JWT in the URL.
+  const bootstrapToken = getBootstrapToken();
+  const urlToken = isLmsHmacToken ? "" : (rawUrlToken || bootstrapToken || "");
+
+  // DEPRECATED: legacy ?token=JWT in URL — strip from the address bar after read
+  // so the JWT never lives in browser history. Token stays in component state only.
+  useEffect(() => {
+    if (rawUrlToken && typeof window !== "undefined") {
+      try {
+        const clean = new URL(window.location.href);
+        clean.searchParams.delete("token");
+        clean.searchParams.delete("embedToken");
+        window.history.replaceState({}, "", clean.pathname + (clean.search ? clean.search : "") + clean.hash);
+      } catch {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // URL-based start time: ?t=SECONDS takes priority over ?start=SECONDS
   const urlSeekTime = (() => {

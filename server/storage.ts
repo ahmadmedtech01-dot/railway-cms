@@ -3,11 +3,13 @@ import {
   adminUsers, videos, videoPlayerSettings, videoWatermarkSettings,
   videoSecuritySettings, embedTokens, playbackSessions, auditLogs, systemSettings, storageConnections, mediaAssets, videoBanners,
   integrationClients, integrationClientVideoAccess, integrationLaunchLogs, integrationPlaybackSessions, integrationEventLogs, integrationApiKeys,
+  videoShareLinks,
   type AdminUser, type Video, type VideoPlayerSettings, type VideoWatermarkSettings,
   type VideoSecuritySettings, type EmbedToken, type PlaybackSession, type AuditLog,
   type SystemSetting, type StorageConnection, type MediaAsset, type VideoBanner,
   type IntegrationClient, type IntegrationClientVideoAccess, type IntegrationLaunchLog,
   type IntegrationPlaybackSession, type IntegrationEventLog, type IntegrationApiKey,
+  type VideoShareLink,
 } from "@shared/schema";
 import { eq, desc, and, sql, asc, like, inArray, lt } from "drizzle-orm";
 
@@ -178,6 +180,66 @@ export const storage = {
         await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
       }
     }
+  },
+
+  // Video Share Links (short, clean public URLs — no JWT in URL)
+  async getShareLinkByVideoId(videoId: string): Promise<VideoShareLink | undefined> {
+    const [s] = await db.select().from(videoShareLinks).where(eq(videoShareLinks.videoId, videoId));
+    return s;
+  },
+
+  async getShareLinkByCode(shareCode: string): Promise<VideoShareLink | undefined> {
+    const [s] = await db.select().from(videoShareLinks).where(eq(videoShareLinks.shareCode, shareCode));
+    return s;
+  },
+
+  async upsertShareLink(videoId: string, data: Partial<VideoShareLink> & { shareCode: string }): Promise<VideoShareLink> {
+    const existing = await this.getShareLinkByVideoId(videoId);
+    if (existing) {
+      const [s] = await db.update(videoShareLinks)
+        .set({ ...data, videoId } as any)
+        .where(eq(videoShareLinks.videoId, videoId))
+        .returning();
+      return s;
+    }
+    const [s] = await db.insert(videoShareLinks).values({ videoId, ...data } as any).returning();
+    return s;
+  },
+
+  async updateShareLink(videoId: string, data: Partial<VideoShareLink>): Promise<VideoShareLink | undefined> {
+    const [s] = await db.update(videoShareLinks)
+      .set(data as any)
+      .where(eq(videoShareLinks.videoId, videoId))
+      .returning();
+    return s;
+  },
+
+  async revokeShareLink(videoId: string): Promise<void> {
+    await db.update(videoShareLinks)
+      .set({ isActive: false, revokedAt: new Date() })
+      .where(eq(videoShareLinks.videoId, videoId));
+  },
+
+  async deleteShareLink(videoId: string): Promise<void> {
+    await db.delete(videoShareLinks).where(eq(videoShareLinks.videoId, videoId));
+  },
+
+  async incrementShareLinkViews(videoId: string): Promise<void> {
+    await db.update(videoShareLinks)
+      .set({ viewCount: sql`${videoShareLinks.viewCount} + 1` as any })
+      .where(eq(videoShareLinks.videoId, videoId));
+  },
+
+  // Revoke all active embed_tokens minted from share links for this video.
+  // Optionally narrow to a specific shareCode label suffix.
+  async revokeShareEmbedTokens(videoId: string, shareCode?: string): Promise<number> {
+    const all = await db.select().from(embedTokens).where(eq(embedTokens.videoId, videoId));
+    const prefix = shareCode ? `share:${shareCode}` : "share:";
+    const targets = all.filter(t => !t.revoked && (t.label || "").startsWith(prefix));
+    for (const t of targets) {
+      await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
+    }
+    return targets.length;
   },
 
   // Playback Sessions

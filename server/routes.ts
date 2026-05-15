@@ -2745,6 +2745,233 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ── Short Share Link Bootstrap (no JWT in URL) ────────────────────────────
+  // Public endpoint. Validates share-link policy (active, expiry, maxViews,
+  // password, allowedDomains, iframeOnly) and mints a short-lived embed token
+  // that is returned in the JSON body. The browser URL never contains the JWT.
+  async function validateAndMintFromShareLink(
+    video: { id: string; publicId: string },
+    link: any,
+    req: any,
+    res: any,
+  ): Promise<{ ok: true; token: string; expiresAt: string } | { ok: false }> {
+    if (!link || !link.isActive || link.revokedAt) {
+      res.status(403).json({ code: "SHARE_LINK_REVOKED", message: "This share link is no longer active." });
+      return { ok: false };
+    }
+    if (link.expiresAt && new Date(link.expiresAt).getTime() < Date.now()) {
+      res.status(403).json({ code: "SHARE_LINK_EXPIRED", message: "This share link has expired." });
+      return { ok: false };
+    }
+    if (typeof link.maxViews === "number" && link.maxViews > 0 && (link.viewCount ?? 0) >= link.maxViews) {
+      res.status(403).json({ code: "SHARE_LINK_MAXED", message: "This share link has reached its view limit." });
+      return { ok: false };
+    }
+    // Domain whitelist (Origin/Referer)
+    if (Array.isArray(link.allowedDomains) && link.allowedDomains.length > 0) {
+      const originHdr = (req.headers.origin as string) || "";
+      const refererHdr = (req.headers.referer as string) || "";
+      const hostFrom = (u: string) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+      const candidates = [hostFrom(originHdr), hostFrom(refererHdr)].filter(Boolean);
+      const allowed = (link.allowedDomains as string[]).map(d => d.trim().toLowerCase()).filter(Boolean);
+      const ok = candidates.some(h => allowed.some(d => h === d || h.endsWith("." + d)));
+      if (!ok) {
+        res.status(403).json({ code: "SHARE_LINK_DOMAIN_BLOCKED", message: "This share link is not authorized for this domain." });
+        return { ok: false };
+      }
+    }
+    // iframe-only enforcement: fail-closed. The bootstrap call is made by the
+    // player JS via fetch(), which always sets Sec-Fetch-Dest=empty. Top-level
+    // navigations to /v/:publicId never hit bootstrap (it's POST), but the
+    // referer/origin pair distinguishes embedded vs. standalone documents.
+    if (link.iframeOnly) {
+      const dest = (req.headers["sec-fetch-dest"] as string) || "";
+      const site = (req.headers["sec-fetch-site"] as string) || "";
+      if (!dest) {
+        // Missing header (older browser / non-browser) — refuse.
+        res.status(403).json({ code: "SHARE_LINK_IFRAME_ONLY", message: "This share link can only be played inside an iframe." });
+        return { ok: false };
+      }
+      // Allow the fetch from the embed page itself (empty) only when the page
+      // is loaded cross-site (i.e. inside an iframe on a different origin).
+      // If same-origin top-level, sec-fetch-site is "same-origin" and Referer
+      // host matches the CMS host — that's a standalone page, not an iframe.
+      if (dest !== "iframe") {
+        const referer = (req.headers.referer as string) || "";
+        let refHost = "";
+        try { refHost = new URL(referer).hostname.toLowerCase(); } catch {}
+        const reqHost = (req.headers.host || "").toString().toLowerCase().split(":")[0];
+        const sameOriginTopLevel = site === "same-origin" && refHost && refHost === reqHost;
+        if (sameOriginTopLevel || site === "none") {
+          res.status(403).json({ code: "SHARE_LINK_IFRAME_ONLY", message: "This share link can only be played inside an iframe." });
+          return { ok: false };
+        }
+      }
+    }
+    // Password gate
+    if (link.passwordHash) {
+      const password = (req.body && typeof req.body.password === "string") ? req.body.password : "";
+      if (!password) {
+        res.status(401).json({ code: "SHARE_LINK_PASSWORD_REQUIRED", message: "This share link requires a password." });
+        return { ok: false };
+      }
+      const ok = await bcrypt.compare(password, link.passwordHash);
+      if (!ok) {
+        res.status(401).json({ code: "SHARE_LINK_PASSWORD_INVALID", message: "Incorrect password." });
+        return { ok: false };
+      }
+    }
+
+    // Short-lived playback token (15 min default — heartbeat extends session, refresh-token rotates).
+    const ttlSeconds = 15 * 60;
+    const tokenValue = generateToken({ videoId: video.id, publicId: video.publicId, share: true }, ttlSeconds);
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+    await storage.createEmbedToken({
+      videoId: video.id,
+      token: tokenValue,
+      label: `share:${link.shareCode}`,
+      allowedDomain: null,
+      expiresAt,
+      revoked: false,
+      userId: null,
+    } as any);
+    await storage.incrementShareLinkViews(video.id).catch(() => {});
+    return { ok: true, token: tokenValue, expiresAt: expiresAt.toISOString() };
+  }
+
+  app.post("/api/player/:publicId/bootstrap", async (req: any, res: any) => {
+    try {
+      const video = await storage.getVideoByPublicId(req.params.publicId);
+      if (!video || !video.available) return res.status(404).json({ message: "Video not found" });
+      if (video.status !== "ready") return res.status(400).json({ code: "VIDEO_NOT_READY", message: "Video not ready" });
+
+      // Admin session bypass — admin gets an adminPreview token directly
+      if ((req as any).session?.userId) {
+        const tokenValue = generateToken({ videoId: video.id, publicId: video.publicId, adminPreview: true }, 86400);
+        return res.json({ token: tokenValue, expiresAt: new Date(Date.now() + 86400 * 1000).toISOString(), publicId: video.publicId, adminPreview: true });
+      }
+
+      const link = await storage.getShareLinkByVideoId(video.id);
+      if (!link) return res.status(404).json({ code: "SHARE_LINK_NOT_FOUND", message: "No share link configured for this video." });
+
+      const result = await validateAndMintFromShareLink(video, link, req, res);
+      if (!result.ok) return;
+      res.json({ token: result.token, expiresAt: result.expiresAt, publicId: video.publicId });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/share/:shareCode/bootstrap", async (req: any, res: any) => {
+    try {
+      const link = await storage.getShareLinkByCode(req.params.shareCode);
+      if (!link) return res.status(404).json({ code: "SHARE_LINK_NOT_FOUND", message: "Share link not found." });
+      const video = await storage.getVideoById(link.videoId);
+      if (!video || !video.available) return res.status(404).json({ message: "Video not found" });
+      if (video.status !== "ready") return res.status(400).json({ code: "VIDEO_NOT_READY", message: "Video not ready" });
+
+      const result = await validateAndMintFromShareLink(video, link, req, res);
+      if (!result.ok) return;
+      res.json({ token: result.token, expiresAt: result.expiresAt, publicId: video.publicId });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ── Admin Share Link CRUD ─────────────────────────────────────────────────
+  app.get("/api/videos/:id/share-link", requireAuth, async (req: any, res: any) => {
+    try {
+      const link = await storage.getShareLinkByVideoId(req.params.id);
+      if (!link) return res.json(null);
+      // Never leak password hash
+      const { passwordHash, ...safe } = link as any;
+      res.json({ ...safe, hasPassword: !!passwordHash });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Create or regenerate the share link (generates a new shareCode each call).
+  // Immediately revokes any previously minted share-link playback tokens.
+  app.post("/api/videos/:id/share-link", requireAuth, async (req: any, res: any) => {
+    try {
+      const video = await storage.getVideoById(req.params.id);
+      if (!video) return res.status(404).json({ message: "Video not found" });
+
+      // Invalidate previously minted share tokens — closes the gap where a
+      // regenerated link would leave old playback tokens valid until expiry.
+      const revokedCount = await storage.revokeShareEmbedTokens(video.id);
+      if (revokedCount > 0) log(`SHARE_LINK_TOKENS_REVOKED: videoId=${video.id} count=${revokedCount} reason=regenerate`);
+
+      const body = req.body || {};
+      const shareCode = nanoid(14);
+      let passwordHash: string | null | undefined = undefined;
+      if (typeof body.password === "string" && body.password.length > 0) {
+        passwordHash = await bcrypt.hash(body.password, 12);
+      } else if (body.password === null || body.password === "") {
+        passwordHash = null;
+      }
+
+      const data: any = {
+        shareCode,
+        isActive: true,
+        revokedAt: null,
+        viewCount: 0,
+        expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+        maxViews: typeof body.maxViews === "number" ? body.maxViews : null,
+        allowedDomains: Array.isArray(body.allowedDomains) ? body.allowedDomains : null,
+        iframeOnly: !!body.iframeOnly,
+      };
+      if (passwordHash !== undefined) data.passwordHash = passwordHash;
+
+      const link = await storage.upsertShareLink(video.id, data);
+      await storage.createAuditLog({ action: "share_link_regenerated", meta: { videoId: video.id, shareCode }, ip: req.ip });
+      const { passwordHash: ph, ...safe } = link as any;
+      res.json({ ...safe, hasPassword: !!ph });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Update share-link settings without rotating the shareCode.
+  app.patch("/api/videos/:id/share-link", requireAuth, async (req: any, res: any) => {
+    try {
+      const existing = await storage.getShareLinkByVideoId(req.params.id);
+      if (!existing) return res.status(404).json({ message: "No share link exists" });
+
+      const body = req.body || {};
+      const patch: any = {};
+      if (typeof body.isActive === "boolean") patch.isActive = body.isActive;
+      if (body.expiresAt !== undefined) patch.expiresAt = body.expiresAt ? new Date(body.expiresAt) : null;
+      if (body.maxViews !== undefined) patch.maxViews = typeof body.maxViews === "number" ? body.maxViews : null;
+      if (body.allowedDomains !== undefined) patch.allowedDomains = Array.isArray(body.allowedDomains) ? body.allowedDomains : null;
+      if (typeof body.iframeOnly === "boolean") patch.iframeOnly = body.iframeOnly;
+      if (body.password === null || body.password === "") patch.passwordHash = null;
+      else if (typeof body.password === "string") patch.passwordHash = await bcrypt.hash(body.password, 12);
+
+      const link = await storage.updateShareLink(req.params.id, patch);
+      await storage.createAuditLog({ action: "share_link_updated", meta: { videoId: req.params.id, fields: Object.keys(patch) }, ip: req.ip });
+      const { passwordHash, ...safe } = (link || {}) as any;
+      res.json({ ...safe, hasPassword: !!passwordHash });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Revoke (deactivate) the share link AND immediately invalidate all
+  // playback tokens that were minted from it.
+  app.delete("/api/videos/:id/share-link", requireAuth, async (req: any, res: any) => {
+    try {
+      await storage.revokeShareLink(req.params.id);
+      const revokedCount = await storage.revokeShareEmbedTokens(req.params.id);
+      if (revokedCount > 0) log(`SHARE_LINK_TOKENS_REVOKED: videoId=${req.params.id} count=${revokedCount} reason=revoke`);
+      await storage.createAuditLog({ action: "share_link_revoked", meta: { videoId: req.params.id, revokedTokens: revokedCount }, ip: req.ip });
+      res.json({ success: true, revokedTokens: revokedCount });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // ── Token Refresh ─────────────────────────────────────────────────────────
   // Player calls this when it receives a 401/403 TOKEN_EXPIRED or SIGNED_URL_EXPIRED.
   // Mints a new token for the same user, returns a new manifestUrl.

@@ -450,20 +450,35 @@ export default function VideoDetailPage() {
     onSuccess: () => { refetchTokens(); toast({ title: "Token deleted" }); },
   });
 
-  const resetShareLink = useMutation({
-    mutationFn: async () => {
-      const oldShareToken = tokens.find(t => !t.revoked && t.label === "Share Link") ?? tokens.find(t => !t.revoked);
-      await apiRequest("POST", `/api/videos/${id}/tokens`, {
-        label: "Share Link",
-        allowedDomain: null,
-        ttlHours: 87600,
-      });
-      if (oldShareToken) {
-        await apiRequest("POST", `/api/tokens/${oldShareToken.id}/revoke`);
-      }
+  // ── Short Share Link (clean URL, no JWT in browser) ────────────────────────
+  const { data: shareLinkData, refetch: refetchShareLink } = useQuery<any>({
+    queryKey: ["/api/videos", id, "share-link"],
+    queryFn: async () => {
+      const res = await fetch(`/api/videos/${id}/share-link`, { credentials: "include" });
+      if (!res.ok) return null;
+      return res.json();
     },
-    onSuccess: () => { refetchTokens(); toast({ title: "Share link reset — new link generated" }); },
-    onError: () => toast({ title: "Failed to reset share link", variant: "destructive" }),
+    enabled: !!id,
+  });
+
+  const regenerateShareLink = useMutation({
+    mutationFn: async (opts: { expiresAt?: string | null; maxViews?: number | null; password?: string | null; allowedDomains?: string[] | null; iframeOnly?: boolean } = {}) =>
+      apiRequest("POST", `/api/videos/${id}/share-link`, opts),
+    onSuccess: () => { refetchShareLink(); toast({ title: "Share link generated" }); },
+    onError: () => toast({ title: "Failed to generate share link", variant: "destructive" }),
+  });
+
+  const updateShareLink = useMutation({
+    mutationFn: async (patch: Record<string, any>) =>
+      apiRequest("PATCH", `/api/videos/${id}/share-link`, patch),
+    onSuccess: () => { refetchShareLink(); toast({ title: "Share link updated" }); },
+    onError: () => toast({ title: "Failed to update share link", variant: "destructive" }),
+  });
+
+  const revokeShareLink = useMutation({
+    mutationFn: async () => apiRequest("DELETE", `/api/videos/${id}/share-link`),
+    onSuccess: () => { refetchShareLink(); toast({ title: "Share link revoked" }); },
+    onError: () => toast({ title: "Failed to revoke share link", variant: "destructive" }),
   });
 
   const toggle = useMutation({
@@ -578,14 +593,17 @@ export default function VideoDetailPage() {
   const activeTokens = tokens.filter(t => !t.revoked && (!t.expiresAt || new Date(t.expiresAt) > new Date()));
   const neverExpiresTokens = activeTokens.filter(t => !t.expiresAt);
   const selectedToken = activeTokens.find(t => t.id === selectedTokenId) || neverExpiresTokens[0] || activeTokens[0];
-  const shareToken = activeTokens.find(t => (t.label || "").toLowerCase().includes("share")) || selectedToken;
   const embedSrc = `${baseUrl}/embed/${video.publicId}`;
   const embedSrcWithToken = selectedToken
     ? `${baseUrl}/embed/${video.publicId}?token=${selectedToken.token}`
     : embedSrc;
-  const shareLink = shareToken
-    ? `${baseUrl}/v/${video.publicId}?token=${shareToken.token}`
-    : `${baseUrl}/v/${video.publicId}`;
+  // Clean share link — no JWT in URL. The /v/:publicId page calls
+  // POST /api/player/:publicId/bootstrap to mint a short-lived token in memory.
+  const hasActiveShareLink = !!shareLinkData && shareLinkData.isActive && !shareLinkData.revokedAt;
+  const shareLink = `${baseUrl}/v/${video.publicId}`;
+  const shareLinkWithCode = shareLinkData?.shareCode
+    ? `${baseUrl}/watch/${shareLinkData.shareCode}`
+    : "";
 
   const iframeCodePostMessage = `<iframe
   id="secure-video-player"
@@ -2282,26 +2300,173 @@ iframe.addEventListener('load', async () => {
               )}
 
               <div className="border-t border-border pt-4 space-y-4">
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <Label>Masked Share Link</Label>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => resetShareLink.mutate()}
-                      disabled={resetShareLink.isPending}
-                      data-testid="button-reset-share-link"
-                      className="h-7 text-xs gap-1"
-                    >
-                      <RotateCcw className="h-3 w-3" />
-                      {resetShareLink.isPending ? "Resetting…" : "Reset Link"}
-                    </Button>
+                    <div>
+                      <Label>Short Share Link</Label>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Clean URL — no JWT in the address bar. The server mints a short-lived
+                        playback token on page load after validating this link.
+                      </p>
+                    </div>
+                    {hasActiveShareLink ? (
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => regenerateShareLink.mutate({})}
+                          disabled={regenerateShareLink.isPending}
+                          data-testid="button-regenerate-share-link"
+                          className="h-7 text-xs gap-1"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          {regenerateShareLink.isPending ? "…" : "Regenerate"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => revokeShareLink.mutate()}
+                          disabled={revokeShareLink.isPending}
+                          data-testid="button-revoke-share-link"
+                          className="h-7 text-xs gap-1"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          Revoke
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        size="sm"
+                        onClick={() => regenerateShareLink.mutate({})}
+                        disabled={regenerateShareLink.isPending}
+                        data-testid="button-generate-share-link"
+                        className="h-7 text-xs gap-1"
+                      >
+                        <Plus className="h-3 w-3" />
+                        {regenerateShareLink.isPending ? "…" : "Generate"}
+                      </Button>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Input value={shareLink} readOnly className="font-mono text-xs" />
-                    <CopyButton text={shareLink} />
-                  </div>
-                  <p className="text-xs text-muted-foreground">Reset generates a new link and invalidates the current one.</p>
+
+                  {hasActiveShareLink ? (
+                    <>
+                      <div className="space-y-2">
+                        <Label className="text-xs">Clean URL</Label>
+                        <div className="flex items-center gap-2">
+                          <Input value={shareLink} readOnly className="font-mono text-xs" data-testid="input-share-link-clean" />
+                          <CopyButton text={shareLink} />
+                        </div>
+                      </div>
+                      {shareLinkWithCode && (
+                        <div className="space-y-2">
+                          <Label className="text-xs">Unguessable share-code URL</Label>
+                          <div className="flex items-center gap-2">
+                            <Input value={shareLinkWithCode} readOnly className="font-mono text-xs" data-testid="input-share-link-code" />
+                            <CopyButton text={shareLinkWithCode} />
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Doesn't reveal the internal video ID. Use this when the publicId is sensitive.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Expiry (optional)</Label>
+                          <Input
+                            type="datetime-local"
+                            defaultValue={shareLinkData?.expiresAt ? new Date(shareLinkData.expiresAt).toISOString().slice(0, 16) : ""}
+                            onBlur={(e) => {
+                              const v = e.target.value;
+                              updateShareLink.mutate({ expiresAt: v ? new Date(v).toISOString() : null });
+                            }}
+                            className="h-8 text-xs"
+                            data-testid="input-share-link-expiry"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Max views (optional)</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            defaultValue={shareLinkData?.maxViews ?? ""}
+                            placeholder="Unlimited"
+                            onBlur={(e) => {
+                              const v = e.target.value;
+                              updateShareLink.mutate({ maxViews: v ? parseInt(v, 10) : null });
+                            }}
+                            className="h-8 text-xs"
+                            data-testid="input-share-link-maxviews"
+                          />
+                          {typeof shareLinkData?.viewCount === "number" && (
+                            <p className="text-[10px] text-muted-foreground">{shareLinkData.viewCount} view(s) recorded</p>
+                          )}
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Password (optional)</Label>
+                          <div className="flex gap-2">
+                            <Input
+                              type="text"
+                              placeholder={shareLinkData?.hasPassword ? "•••• (set)" : "No password"}
+                              onBlur={(e) => {
+                                const v = e.target.value;
+                                if (v) updateShareLink.mutate({ password: v });
+                                e.currentTarget.value = "";
+                              }}
+                              className="h-8 text-xs"
+                              data-testid="input-share-link-password"
+                            />
+                            {shareLinkData?.hasPassword && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 text-xs"
+                                onClick={() => updateShareLink.mutate({ password: null })}
+                                data-testid="button-clear-share-link-password"
+                              >
+                                Clear
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Allowed domains (comma-separated)</Label>
+                          <Input
+                            defaultValue={(shareLinkData?.allowedDomains || []).join(", ")}
+                            placeholder="e.g. school.edu, lms.example.com"
+                            onBlur={(e) => {
+                              const v = e.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                              updateShareLink.mutate({ allowedDomains: v.length ? v : null });
+                            }}
+                            className="h-8 text-xs"
+                            data-testid="input-share-link-domains"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2">
+                        <div>
+                          <Label className="text-xs">iframe-only</Label>
+                          <p className="text-[10px] text-muted-foreground">Block top-level navigation requests</p>
+                        </div>
+                        <Switch
+                          checked={!!shareLinkData?.iframeOnly}
+                          onCheckedChange={(v) => updateShareLink.mutate({ iframeOnly: v })}
+                          data-testid="switch-share-link-iframe-only"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Input value={shareLink} readOnly className="font-mono text-xs opacity-50" />
+                      <CopyButton text={shareLink} />
+                    </div>
+                  )}
+                  {!hasActiveShareLink && (
+                    <p className="text-xs text-muted-foreground">
+                      No active share link. Generate one to enable the clean public URL.
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">

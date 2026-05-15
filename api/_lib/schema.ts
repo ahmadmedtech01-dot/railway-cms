@@ -370,6 +370,21 @@ export const integrationApiKeys = pgTable("integration_api_keys", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const videoShareLinks = pgTable("video_share_links", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  videoId: uuid("video_id").notNull().references(() => videos.id, { onDelete: "cascade" }).unique(),
+  shareCode: text("share_code").notNull().unique(),
+  isActive: boolean("is_active").notNull().default(true),
+  expiresAt: timestamp("expires_at"),
+  maxViews: integer("max_views"),
+  viewCount: integer("view_count").notNull().default(0),
+  passwordHash: text("password_hash"),
+  allowedDomains: text("allowed_domains").array(),
+  iframeOnly: boolean("iframe_only").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  revokedAt: timestamp("revoked_at"),
+});
+
 export const sdkBuildMetadata = pgTable("sdk_build_metadata", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   version: text("version").notNull().unique(),
@@ -424,3 +439,13 @@ export type IntegrationPlaybackSession = typeof integrationPlaybackSessions.$inf
 export type IntegrationEventLog = typeof integrationEventLogs.$inferSelect;
 export type IntegrationApiKey = typeof integrationApiKeys.$inferSelect;
 export type SdkBuildMetadata = typeof sdkBuildMetadata.$inferSelect;
+
+export const insertVideoShareLinkSchema = createInsertSchema(videoShareLinks).omit({
+  id: true,
+  shareCode: true,
+  viewCount: true,
+  createdAt: true,
+  revokedAt: true,
+});
+export type VideoShareLink = typeof videoShareLinks.$inferSelect;
+export type InsertVideoShareLink = z.infer<typeof insertVideoShareLinkSchema>;

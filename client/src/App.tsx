@@ -89,6 +89,8 @@ function Router() {
       <Route path="/register" component={RegisterPage} />
       <Route path="/embed/:publicId" component={EmbedPlayerPage} />
       <Route path="/v/:publicId" component={SharePlayerPage} />
+      <Route path="/watch/:shareCode" component={SharePlayerPage} />
+      <Route path="/s/:shareCode" component={SharePlayerPage} />
       <Route path="/" component={() => <ProtectedRoute component={DashboardPage} />} />
       <Route path="/library" component={() => <ProtectedRoute component={LibraryPage} />} />
       <Route path="/upload" component={() => <ProtectedRoute component={UploadPage} />} />
