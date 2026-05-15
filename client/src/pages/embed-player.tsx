@@ -133,7 +133,16 @@ export default function EmbedPlayerPage(props: any = {}) {
   const publicId = forcePublicId || params.publicId;
   const search = useSearch();
   const urlParams = new URLSearchParams(search);
-  const rawUrlToken = urlParams.get("token") || urlParams.get("embedToken") || "";
+  // Capture the URL token ONCE at mount. wouter's useSearch updates on
+  // replaceState, so re-deriving rawUrlToken every render would flip it to
+  // empty as soon as the strip effect below cleans the address bar — and
+  // because the init effect's deps include `token`, that would re-run init
+  // with an empty token and abort playback. The ref freezes it.
+  const initialUrlTokenRef = useRef<string | null>(null);
+  if (initialUrlTokenRef.current === null) {
+    initialUrlTokenRef.current = urlParams.get("token") || urlParams.get("embedToken") || "";
+  }
+  const rawUrlToken = initialUrlTokenRef.current;
   const isLmsHmacToken = rawUrlToken ? rawUrlToken.split(".").length === 2 : false;
   // Bootstrap token: memory-only token minted server-side from a short share link.
   // Allows /v/:publicId and /watch/:shareCode without exposing JWT in the URL.
