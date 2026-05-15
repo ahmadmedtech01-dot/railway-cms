@@ -65,6 +65,7 @@ export class PostgresSecurityRepo implements SecurityRepo {
       tokenTtlKeySec: (row as any).tokenTtlKeySec ?? 12,
       heartbeatIntervalSec: (row as any).heartbeatIntervalSec ?? 12,
       downloadAheadLimit: (row as any).downloadAheadLimit ?? 25,
+      stealthModeEnabled: (row as any).stealthModeEnabled ?? false,
     };
   }
 
@@ -97,6 +98,7 @@ export class PostgresSecurityRepo implements SecurityRepo {
       tokenTtlKeySec: settings.tokenTtlKeySec ?? 12,
       heartbeatIntervalSec: settings.heartbeatIntervalSec ?? 12,
       downloadAheadLimit: settings.downloadAheadLimit ?? 25,
+      stealthModeEnabled: settings.stealthModeEnabled ?? false,
     };
 
     if (existing.length > 0) {

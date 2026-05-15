@@ -1,0 +1,215 @@
+Replit Agent Prompt — Make Short Secure Shareable Video Links Like Polytronx
+
+Problem:
+My current public/shareable video link is too long because it exposes the full JWT token in the URL:
+
+/v/:publicId?token=LONG_JWT
+
+Example:
+https://railway-cms-production.up.railway.app/v/mjakYG627Y?token=eyJhbGciOiJIUzI1Ni...
+
+Polytronx uses a clean short URL like:
+/demo/45b4bace-daf0-4aef-8262-e354fbe0ff7f
+
+Goal:
+Replace long token-in-URL links with short secure share links while keeping all existing security layers intact.
+
+Do NOT remove or weaken:
+- embed token system
+- HMAC signing
+- /hls, /seg, /key protection
+- session binding
+- iframe-only LMS mode
+- admin preview mode
+- watermark
+- abuse detection
+- heartbeat
+- Cloudflare Worker flow
+- B2/R2/S3 hiding
+
+Implement this:
+
+1. Add short share link system
+
+Create short public share URLs:
+
+/v/:publicId
+or
+/watch/:shareCode
+or
+/demo/:shareCode
+
+The browser URL must NOT contain the full JWT token.
+
+Example desired link:
+https://railway-cms-production.up.railway.app/v/mjakYG627Y
+
+or:
+https://railway-cms-production.up.railway.app/watch/45b4bace-daf0-4aef-8262-e354fbe0ff7f
+
+2. Move token creation to backend bootstrap
+
+When the page opens:
+
+GET /v/:publicId
+
+Frontend loads the player shell only.
+
+Then frontend calls:
+
+POST /api/player/:publicId/bootstrap
+
+Backend verifies:
+- video exists
+- link is active
+- share permission is allowed
+- expiry if share link has expiry
+- domain/origin/referrer if configured
+- user/course access if required
+- admin preview if admin token is used
+- iframe-only LMS rules if enabled
+
+Then backend creates a short-lived playback session and returns:
+- playbackSessionId
+- short-lived player token
+- stream bootstrap URL
+- security settings
+- watermark settings
+- heartbeat endpoint
+- allowed HLS/stream routes
+
+3. Do not expose JWT in URL
+
+Remove this pattern from generated links:
+
+?token=JWT
+
+Do not put sensitive token in:
+- URL query
+- hash
+- localStorage if avoidable
+- long-lived frontend state
+
+Use memory/session-only token storage in the player.
+
+4. Add share code table or reuse publicId safely
+
+If needed, add a table:
+
+video_share_links:
+- id
+- videoId
+- publicId
+- shareCode
+- createdBy
+- expiresAt nullable
+- isActive
+- maxViews nullable
+- passwordHash nullable
+- allowedDomains nullable
+- createdAt
+- revokedAt nullable
+
+Share code should be short but unguessable:
+- nanoid 12–16 chars minimum
+- or UUID if preferred
+- must be unique
+- must not reveal internal video ID
+
+Example:
+https://domain.com/watch/Ab9Xk72LpQm4
+
+5. Add admin controls
+
+In video detail / embed / tokens section add:
+
+Share Link Settings:
+- Enable public/share link
+- Generate short share link
+- Copy short link
+- Regenerate link
+- Revoke link
+- Set expiry date
+- Optional password protection
+- Optional max views
+- Optional allowed domains
+- Optional iframe-only mode
+- Optional require login/course access
+
+Display clean URL only, not JWT.
+
+6. Keep LMS embed separate
+
+For LMS iframe flow:
+- Do not put LMS token in URL.
+- Continue using postMessage LMS_LAUNCH_TOKEN.
+- Player calls backend bootstrap after LMS token validation.
+- Short public share link should not bypass paid/course access unless admin explicitly enables public access.
+
+7. Add backend route behavior
+
+Routes needed:
+
+GET /v/:publicId
+- serves player shell only
+- no sensitive token in HTML
+
+POST /api/player/:publicId/bootstrap
+- creates playback session after validation
+- returns short-lived playback token in JSON
+
+POST /api/videos/:id/share-link
+- admin creates/regenerates short link
+
+DELETE /api/videos/:id/share-link
+- admin revokes link
+
+GET /api/videos/:id/share-link
+- admin fetches current share link settings
+
+8. Security requirements
+
+- Playback token TTL should be short.
+- Token should be bound to sessionId, publicId, user/device hash, and expiry.
+- Share link should not be the playback token.
+- If share link is revoked, bootstrap must fail.
+- If session is revoked, /hls /seg /key must return 403.
+- Do not leak SIGNING_SECRET.
+- Do not expose raw B2/R2/S3 URLs.
+- Do not expose full JWT in browser URL.
+
+9. Migration / backward compatibility
+
+For old links with ?token=:
+- support temporarily if needed
+- immediately exchange old token for a new server-side session
+- clean URL using history.replaceState to remove ?token from address bar
+- add warning in code comments that token-in-URL is deprecated
+
+Example:
+User opens /v/:publicId?token=OLD_JWT
+Frontend calls bootstrap with token once
+Backend validates it
+Frontend runs:
+window.history.replaceState({}, "", "/v/:publicId")
+Playback continues using memory-only session token
+
+10. Acceptance criteria
+
+- New share link is short and clean.
+- URL does not contain JWT.
+- Browser history does not store playback token.
+- Network does not expose long-lived share JWT.
+- Admin can generate, copy, revoke, and regenerate short share links.
+- Old links can be migrated or cleaned safely.
+- Existing admin preview still works.
+- Existing LMS iframe flow still works.
+- Existing /hls /seg /key security still works.
+- No upload/transcode/storage/security settings broken.
+- No TypeScript errors.
+
+Important:
+Do not remove my existing security.
+Do not weaken video access.
+Short share link is only an identifier, not authorization by itself.
+Real playback token must be minted server-side after bootstrap validation.

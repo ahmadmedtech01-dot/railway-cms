@@ -57,25 +57,61 @@ export function installMediaSourceGuard(opts: GuardOptions): () => void {
   const NativeMediaSource = w.MediaSource;
   const NativeSourceBuffer = w.SourceBuffer;
   const nativeAppendBuffer = NativeSourceBuffer?.prototype?.appendBuffer;
+  const nativeAddSourceBuffer = NativeMediaSource?.prototype?.addSourceBuffer;
+  const nativeEndOfStream = NativeMediaSource?.prototype?.endOfStream;
+  const NativeURL = w.URL;
+  const nativeCreateObjectURL = NativeURL?.createObjectURL;
+  const nativeRevokeObjectURL = NativeURL?.revokeObjectURL;
 
+  // ── Initial snapshot checks ──────────────────────────────────────────────
   if (NativeMediaSource && !isLikelyNative(NativeMediaSource)) {
     report("MEDIA_SOURCE_HOOK_DETECTED", { stage: "snapshot", reason: "MediaSource not native" });
   }
   if (nativeAppendBuffer && !isLikelyNative(nativeAppendBuffer)) {
     report("APPEND_BUFFER_HOOK_DETECTED", { stage: "snapshot", reason: "appendBuffer not native" });
   }
+  if (nativeAddSourceBuffer && !isLikelyNative(nativeAddSourceBuffer)) {
+    report("MEDIA_SOURCE_HOOK_DETECTED", { stage: "snapshot", reason: "addSourceBuffer not native" });
+  }
+  if (nativeEndOfStream && !isLikelyNative(nativeEndOfStream)) {
+    report("MEDIA_SOURCE_HOOK_DETECTED", { stage: "snapshot", reason: "endOfStream not native" });
+  }
+  if (nativeCreateObjectURL && !isLikelyNative(nativeCreateObjectURL)) {
+    report("HLS_URL_EXPOSURE_PREVENTED", { stage: "snapshot", reason: "URL.createObjectURL not native" });
+  }
+  if (nativeRevokeObjectURL && !isLikelyNative(nativeRevokeObjectURL)) {
+    report("HLS_URL_EXPOSURE_PREVENTED", { stage: "snapshot", reason: "URL.revokeObjectURL not native" });
+  }
 
-  // Periodically re-check that globals haven't been replaced/wrapped mid-session.
+  // ── Periodic re-check for runtime tampering ──────────────────────────────
   const checkInterval = window.setInterval(() => {
     try {
       if (w.MediaSource && w.MediaSource !== NativeMediaSource) {
         report("MEDIA_SOURCE_HOOK_DETECTED", { stage: "runtime", reason: "MediaSource replaced" });
       }
-      const current = w.SourceBuffer?.prototype?.appendBuffer;
-      if (current && current !== nativeAppendBuffer) {
+      const curAppend = w.SourceBuffer?.prototype?.appendBuffer;
+      if (curAppend && curAppend !== nativeAppendBuffer) {
         report("APPEND_BUFFER_HOOK_DETECTED", { stage: "runtime", reason: "appendBuffer replaced" });
-      } else if (current && !isLikelyNative(current)) {
+      } else if (curAppend && !isLikelyNative(curAppend)) {
         report("APPEND_BUFFER_HOOK_DETECTED", { stage: "runtime", reason: "appendBuffer wrapped" });
+      }
+      const curAdd = w.MediaSource?.prototype?.addSourceBuffer;
+      if (curAdd && curAdd !== nativeAddSourceBuffer) {
+        report("MEDIA_SOURCE_HOOK_DETECTED", { stage: "runtime", reason: "addSourceBuffer replaced" });
+      }
+      const curEnd = w.MediaSource?.prototype?.endOfStream;
+      if (curEnd && curEnd !== nativeEndOfStream) {
+        report("MEDIA_SOURCE_HOOK_DETECTED", { stage: "runtime", reason: "endOfStream replaced" });
+      }
+      const curCreate = w.URL?.createObjectURL;
+      if (curCreate && curCreate !== nativeCreateObjectURL) {
+        report("HLS_URL_EXPOSURE_PREVENTED", { stage: "runtime", reason: "URL.createObjectURL replaced" });
+      } else if (curCreate && !isLikelyNative(curCreate)) {
+        report("HLS_URL_EXPOSURE_PREVENTED", { stage: "runtime", reason: "URL.createObjectURL wrapped" });
+      }
+      const curRevoke = w.URL?.revokeObjectURL;
+      if (curRevoke && curRevoke !== nativeRevokeObjectURL) {
+        report("HLS_URL_EXPOSURE_PREVENTED", { stage: "runtime", reason: "URL.revokeObjectURL replaced" });
       }
     } catch {}
   }, 4000);

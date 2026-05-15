@@ -24,6 +24,7 @@ export type ClientSecuritySettings = {
   heartbeatV2Enabled?: boolean;
   serverGatedWindowEnabled?: boolean;
   shortTokenTtlEnabled?: boolean;
+  stealthModeEnabled?: boolean;
   tokenTtlPlaylistSec?: number;
   tokenTtlSegmentSec?: number;
   tokenTtlKeySec?: number;
@@ -69,6 +70,7 @@ function SettingRow({ label, description, children }: { label: string; descripti
 }
 
 const HARDENING_TOGGLES: { key: keyof ClientSecuritySettings; label: string; desc: string }[] = [
+  { key: "stealthModeEnabled", label: "Stealth Protected Playback Mode", desc: "Hide HLS file names (.m3u8 / .ts / /key / master / index / seg_*) from the browser Network tab using opaque per-session URLs. Adds a layer over existing security." },
   { key: "mediaSourceGuardEnabled", label: "MediaSource/appendBuffer Guard", desc: "Detect CocoCut-style hooks that wrap MediaSource or SourceBuffer.appendBuffer." },
   { key: "velocityScoringEnabled", label: "Download Velocity Scoring", desc: "Revoke sessions when too many segments are fetched per second (bulk download)." },
   { key: "keyBindingEnabled", label: "Stronger Key Binding", desc: "Bind AES-128 keys to session + progress + time (rate limited)." },

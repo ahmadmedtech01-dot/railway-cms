@@ -28,6 +28,7 @@ export type ClientSecuritySettings = {
   tokenTtlKeySec?: number;
   heartbeatIntervalSec?: number;
   downloadAheadLimit?: number;
+  stealthModeEnabled?: boolean;
 };
 
 export const defaultClientSecuritySettings: ClientSecuritySettings = {
@@ -54,4 +55,5 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   tokenTtlKeySec: 12,
   heartbeatIntervalSec: 12,
   downloadAheadLimit: 25,
+  stealthModeEnabled: false,
 };

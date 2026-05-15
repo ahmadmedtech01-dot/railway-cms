@@ -609,8 +609,14 @@ export default function EmbedPlayerPage() {
           if (pingData.sessionCode) setSessionCode(pingData.sessionCode);
         }
 
-        const manifestUrl = data.manifestUrl;
+        // Stealth Protected Playback Mode: when enabled, the server returns
+        // an opaque stream URL (/api/player/:publicId/stream/window/<opaqueId>)
+        // that hides .m3u8 / .ts / /key / master / index / seg_* from the
+        // Network tab. Hls.js treats it as a single-bitrate level playlist.
+        const stealthEnabled = !!(data.stealth && data.stealth.enabled && data.stealth.streamUrl);
+        const manifestUrl = stealthEnabled ? data.stealth.streamUrl : data.manifestUrl;
         if (!manifestUrl) { setStatus("error"); setErrorMsg("No manifest URL"); return; }
+        if (stealthEnabled && import.meta.env.DEV) console.debug("[Stealth] using opaque stream URL");
         if (data.sessionId) streamSidRef.current = data.sessionId;
         if (data.heartbeat && typeof data.heartbeat === "object") {
           hardeningHintRef.current = {
@@ -722,7 +728,8 @@ export default function EmbedPlayerPage() {
                       streamSidRef.current = rd.sessionId;
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
-                      hls.loadSource(rd.manifestUrl);
+                      const nextUrl = (rd.stealth && rd.stealth.enabled && rd.stealth.streamUrl) ? rd.stealth.streamUrl : rd.manifestUrl;
+                      hls.loadSource(nextUrl);
                       const vid = videoRef.current;
                       const safetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
@@ -771,7 +778,8 @@ export default function EmbedPlayerPage() {
                     if (rd.manifestUrl) {
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
-                      hls.loadSource(rd.manifestUrl);
+                      const nextUrl = (rd.stealth && rd.stealth.enabled && rd.stealth.streamUrl) ? rd.stealth.streamUrl : rd.manifestUrl;
+                      hls.loadSource(nextUrl);
                       const vid = videoRef.current;
                       const refreshSafetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
@@ -1175,7 +1183,8 @@ export default function EmbedPlayerPage() {
                 if (hls) {
                   const opId = ++rotationOpIdRef.current;
                   isRotatingRef.current = true;
-                  hls.loadSource(data.manifestUrl);
+                  const nextUrl = (data.stealth && data.stealth.enabled && data.stealth.streamUrl) ? data.stealth.streamUrl : data.manifestUrl;
+                  hls.loadSource(nextUrl);
                   const pauseSafetyTimer = setTimeout(() => {
                     if (opId !== rotationOpIdRef.current) return;
                     if (isRotatingRef.current) {

@@ -58,6 +58,7 @@ export interface SessionHardeningConfig {
   tokenTtlKeySec: number;
   heartbeatIntervalSec: number;
   downloadAheadLimit: number;
+  stealthModeEnabled: boolean;
 }
 
 export const defaultHardening: SessionHardeningConfig = {
@@ -72,7 +73,58 @@ export const defaultHardening: SessionHardeningConfig = {
   tokenTtlKeySec: 12,
   heartbeatIntervalSec: 12,
   downloadAheadLimit: 25,
+  stealthModeEnabled: false,
 };
+
+// ── Stealth Mode opaque ID encoding ──────────────────────────────────────────
+// Encrypts a small JSON payload with AES-256-GCM. Output is hex — no .m3u8,
+// .ts, /key, seg_*, master, index visible in the URL. Server decodes to recover
+// the real segment path / key reference and applies all standard checks.
+const stealthAesKey = crypto
+  .createHash("sha256")
+  .update(SECRET + "::stealth-v1")
+  .digest();
+
+export type OpaqueKind = "l" | "c" | "k"; // level / chunk / key
+export interface OpaquePayload {
+  s: string;      // sid
+  t: OpaqueKind;  // type
+  v?: string;     // variant subpath (level: "720p/index.m3u8")
+  p?: string;     // segment subpath (chunk: "720p/seg_000.ts")
+  e: number;      // exp (unix seconds)
+  n?: string;     // optional nonce
+}
+
+export function mintOpaqueId(payload: OpaquePayload): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", stealthAesKey, iv);
+  const pt = Buffer.from(JSON.stringify(payload), "utf8");
+  const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, ct, tag]).toString("hex");
+}
+
+export function verifyOpaqueId(id: string): OpaquePayload | null {
+  try {
+    if (typeof id !== "string" || id.length < 60 || !/^[0-9a-f]+$/i.test(id)) return null;
+    const buf = Buffer.from(id, "hex");
+    if (buf.length < 12 + 16 + 1) return null;
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(buf.length - 16);
+    const ct = buf.subarray(12, buf.length - 16);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", stealthAesKey, iv);
+    decipher.setAuthTag(tag);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    const parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
+    if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") return null;
+    if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k") return null;
+    const now = Math.floor(Date.now() / 1000);
+    if (parsed.e + 3 < now) return null; // 3s clock skew tolerance
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 export interface ParsedSegment {
   extinf: string;

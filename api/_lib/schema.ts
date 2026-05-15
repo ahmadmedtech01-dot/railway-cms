@@ -240,6 +240,10 @@ export const videoClientSecurity = pgTable("video_client_security", {
   tokenTtlKeySec: integer("token_ttl_key_sec").notNull().default(12),
   heartbeatIntervalSec: integer("heartbeat_interval_sec").notNull().default(12),
   downloadAheadLimit: integer("download_ahead_limit").notNull().default(25),
+  // Stealth Protected Playback Mode — opt-in. Replaces /hls, /seg, /key with
+  // opaque routes (/stream/window, /stream/chunk, /stream/secret). Hides
+  // master.m3u8 / index.m3u8 / seg_*.ts / .key names from the Network tab.
+  stealthModeEnabled: boolean("stealth_mode_enabled").notNull().default(false),
 });
 
 export const storageConnections = pgTable("storage_connections", {

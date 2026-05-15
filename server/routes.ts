@@ -20,7 +20,7 @@ import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } fro
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, type SessionHardeningConfig } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings
 function buildHardening(s: any): SessionHardeningConfig {
@@ -36,7 +36,58 @@ function buildHardening(s: any): SessionHardeningConfig {
     tokenTtlKeySec: s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec,
     heartbeatIntervalSec: s?.heartbeatIntervalSec ?? defaultHardening.heartbeatIntervalSec,
     downloadAheadLimit: s?.downloadAheadLimit ?? defaultHardening.downloadAheadLimit,
+    stealthModeEnabled: s?.stealthModeEnabled ?? defaultHardening.stealthModeEnabled,
   };
+}
+
+// ── Stealth Mode helper: mint an opaque level URL for a given variant path ──
+function buildStealthLevelUrl(publicId: string, sid: string, variantSubPath: string, ttlSec: number): string {
+  const exp = Math.floor(Date.now() / 1000) + Math.max(30, ttlSec);
+  const id = mintOpaqueId({ s: sid, t: "l", v: variantSubPath.replace(/^\//, ""), e: exp });
+  return `/api/player/${publicId}/stream/window/${id}`;
+}
+function buildStealthChunkUrl(publicId: string, sid: string, segSubPath: string, ttlSec: number): string {
+  const exp = Math.floor(Date.now() / 1000) + Math.max(10, ttlSec);
+  const id = mintOpaqueId({ s: sid, t: "c", p: segSubPath.replace(/^\//, ""), e: exp });
+  return `/api/player/${publicId}/stream/chunk/${id}`;
+}
+function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): string {
+  const exp = Math.floor(Date.now() / 1000) + Math.max(10, ttlSec);
+  const id = mintOpaqueId({ s: sid, t: "k", e: exp });
+  return `/api/player/${publicId}/stream/secret/${id}`;
+}
+
+// Resolve the first variant playlist subpath from a video's HLS master.
+// Used by /manifest, /rotate-session, /refresh-token so all stealth entry
+// points emit a fresh opaque level URL with the new sid.
+async function resolveStealthVariantForSession(
+  hlsPrefix: string,
+  storageProvider: "backblaze_b2" | "cloudflare_r2" | "s3",
+  storageConfig: any,
+): Promise<string | null> {
+  try {
+    const masterKey = `${hlsPrefix.replace(/\/$/, "")}/master.m3u8`;
+    let originUrl: string;
+    if (storageProvider === "backblaze_b2") {
+      originUrl = await b2PresignGetObject(storageConfig.bucket, masterKey, storageConfig.endpoint, 30);
+    } else if (storageProvider === "cloudflare_r2") {
+      originUrl = await r2PresignGetObject(storageConfig.bucket, masterKey, storageConfig.endpoint, 30);
+    } else {
+      const c = await getS3Client();
+      if (!c) return null;
+      const cmd = new GetObjectCommand({ Bucket: storageConfig.bucket, Key: masterKey });
+      originUrl = await getSignedUrl(c, cmd, { expiresIn: 30 });
+    }
+    const masterRes = await fetch(originUrl);
+    if (!masterRes.ok) return null;
+    const masterText = await masterRes.text();
+    for (const raw of masterText.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      if (/\.m3u8(\?|$)/i.test(line) && !/^https?:\/\//i.test(line)) return line;
+    }
+  } catch { /* swallow — caller falls back to legacy manifestUrl */ }
+  return null;
 }
 import type { PlaylistCache } from "./video-session";
 
@@ -1766,6 +1817,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : buildHardening(effectiveClientSec);
       const heartbeatHint = { intervalSec: hardening.heartbeatIntervalSec, v2: hardening.heartbeatV2Enabled, msGuard: hardening.mediaSourceGuardEnabled };
 
+      // ── Stealth Mode: resolve the first variant playlist subpath from master.
+      // Returns null if not stealth or if we can't resolve a variant (caller
+      // falls back to the legacy /hls/* manifestUrl path).
+      async function resolveStealthVariant(
+        provider: "backblaze_b2" | "cloudflare_r2" | "s3",
+        cfg: any,
+      ): Promise<string | null> {
+        if (!hardening.stealthModeEnabled) return null;
+        try {
+          const masterKey = `${hlsPrefix.replace(/\/$/, "")}/master.m3u8`;
+          let originUrl: string;
+          if (provider === "backblaze_b2") {
+            originUrl = await b2PresignGetObject(cfg.bucket, masterKey, cfg.endpoint, 30);
+          } else if (provider === "cloudflare_r2") {
+            originUrl = await r2PresignGetObject(cfg.bucket, masterKey, cfg.endpoint, 30);
+          } else {
+            const c = await getS3Client();
+            if (!c) return null;
+            const cmd = new GetObjectCommand({ Bucket: cfg.bucket, Key: masterKey });
+            originUrl = await getSignedUrl(c, cmd, { expiresIn: 30 });
+          }
+          const masterRes = await fetch(originUrl);
+          if (!masterRes.ok) return null;
+          const masterText = await masterRes.text();
+          for (const raw of masterText.split("\n")) {
+            const line = raw.trim();
+            if (!line || line.startsWith("#")) continue;
+            if (/\.m3u8(\?|$)/i.test(line) && !/^https?:\/\//i.test(line)) {
+              return line; // e.g. "720p/index.m3u8"
+            }
+          }
+        } catch (e: any) {
+          log(`STEALTH_VARIANT_RESOLVE_FAILED: ${video.publicId} ${e?.message}`);
+        }
+        return null;
+      }
+
       if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
@@ -1773,7 +1861,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
-        return res.json({ manifestUrl, sourceType: `${providerType}_proxy`, sessionId: sid, videoId: video.id, videoDuration: video.duration || null, heartbeat: heartbeatHint, ...(isAdminPreview ? { adminPreview: true } : {}) });
+        const variantSub = await resolveStealthVariant(providerType, cfg);
+        const stealth = variantSub
+          ? { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, sid, variantSub, sessTtls.manifest) }
+          : { enabled: false };
+        return res.json({ manifestUrl, sourceType: `${providerType}_proxy`, sessionId: sid, videoId: video.id, videoDuration: video.duration || null, heartbeat: heartbeatHint, stealth, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       const client = await getS3Client();
@@ -1784,7 +1876,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
-        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, videoDuration: video.duration || null, heartbeat: heartbeatHint, ...(isAdminPreview ? { adminPreview: true } : {}) });
+        const variantSub = await resolveStealthVariant("s3", s3cfg);
+        const stealth = variantSub
+          ? { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, sid, variantSub, sessTtls.manifest) }
+          : { enabled: false };
+        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, videoDuration: video.duration || null, heartbeat: heartbeatHint, stealth, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       // Local HLS fallback
@@ -2080,6 +2176,263 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ── Stealth Mode endpoints ────────────────────────────────────────────────
+  // Opaque-named routes that hide HLS-specific names (.m3u8, .ts, /key, master,
+  // index, seg_*) from the browser Network tab. They internally reuse the
+  // exact same validation + B2/R2/S3 logic as /hls, /seg, /key — including
+  // session binding, UA check, abuse detection, segment window, velocity
+  // scoring, and key rate limits. Activated when stealthModeEnabled is on
+  // for the video; in that case the /manifest response returns a
+  // `stealth: { enabled:true, streamUrl }` field that points at /stream/window.
+  //
+  // The legacy /hls, /seg, /key routes remain fully functional so existing
+  // playback paths and admin previews are unaffected.
+
+  function stealthDeny(res: any, sid: string, message: string, signal?: string, status = 403) {
+    const bi = getBreachInfo(sid);
+    return res.status(status).json({ code: "PLAYBACK_DENIED", error: bi.blocked ? "VIDEO_BLOCKED" : (signal === "token_expired" ? "PLAYBACK_DENIED" : "SECURITY_BREACH"), breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message, signal });
+  }
+
+  // GET /api/player/:publicId/stream/window/:opaqueId
+  //   The "level" playlist. Browser sees only this opaque URL — no .m3u8 in
+  //   the path. Body is HLS text whose segment URIs are opaque /stream/chunk
+  //   IDs and whose key URI is an opaque /stream/secret ID.
+  app.get("/api/player/:publicId/stream/window/:opaqueId", async (req: any, res: any) => {
+    const opaqueId = String(req.params.opaqueId || "");
+    const decoded = verifyOpaqueId(opaqueId);
+    if (!decoded || decoded.t !== "l" || !decoded.v) {
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid stream window token", signal: "token_expired" });
+    }
+    const sid = decoded.s;
+    const session = getSession(sid);
+    if (!session || session.revoked) return stealthDeny(res, sid, "Session expired or revoked");
+    if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
+    if (!session.hardening.stealthModeEnabled) {
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Stealth mode not active for this session" });
+    }
+
+    const ua = req.headers["user-agent"] || "";
+    if (!validateUserAgent(sid, ua)) {
+      log(`SECURITY: UA mismatch on stream/window for sid=${sid}`);
+      return stealthDeny(res, sid, "Device mismatch");
+    }
+
+    const ip = (req.headers["x-forwarded-for"] as string || req.ip || "").split(",")[0].trim();
+    const { abused, reason } = trackPlaylistFetch(sid, ip);
+    if (abused) return stealthDeny(res, sid, "Video playback denied due to suspicious activity", reason?.signal);
+
+    try {
+      const variantSubPath = decoded.v!; // e.g. "720p/index.m3u8"
+      const variantDir = path.posix.dirname("/" + variantSubPath);
+      const { hlsPrefix, storageProvider, storageConfig } = session;
+      const fileKey = hlsPrefix.replace(/\/$/, "") + "/" + variantSubPath;
+
+      let originUrl: string;
+      if (storageProvider === "backblaze_b2") {
+        originUrl = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
+      } else if (storageProvider === "cloudflare_r2") {
+        originUrl = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
+      } else {
+        const c = await getS3Client();
+        const s3cfg = await getS3Config();
+        if (!c || !s3cfg.bucket) return res.status(500).json({ message: "Storage not configured" });
+        const cmd = new GetObjectCommand({ Bucket: s3cfg.bucket, Key: fileKey });
+        originUrl = await getSignedUrl(c, cmd, { expiresIn: 30 });
+      }
+
+      const cacheKey = "/" + variantSubPath;
+      let cached: PlaylistCache | undefined = session.variantCache.get(cacheKey);
+      if (!cached) {
+        const fetchRes = await fetch(originUrl);
+        if (!fetchRes.ok) return res.status(404).json({ message: "Variant playlist not found" });
+        cached = parsePlaylist(await fetchRes.text());
+        session.variantCache.set(cacheKey, cached);
+      }
+
+      const ttls = getSessionTokenTTL(sid);
+      const totalSegs = cached.segments.length;
+      const gated = session.hardening.serverGatedWindowEnabled;
+      const windowStart = gated ? Math.max(0, session.currentSegmentIndex - 2) : 0;
+      const windowEnd = gated
+        ? Math.min(totalSegs - 1, session.currentSegmentIndex + Math.max(2, session.hardening.downloadAheadLimit))
+        : totalSegs - 1;
+      const isFinalWindow = windowEnd >= totalSegs - 1;
+
+      const lines: string[] = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        ...(gated ? [] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
+        `#EXT-X-TARGETDURATION:${cached.targetDuration}`,
+        `#EXT-X-MEDIA-SEQUENCE:${windowStart}`,
+      ];
+
+      let lastKeyEmitted = "";
+      for (let i = windowStart; i <= windowEnd; i++) {
+        const seg = cached.segments[i];
+        if (seg.keyTag && seg.keyTag !== lastKeyEmitted) {
+          const signedKey = buildStealthKeyUrl(req.params.publicId, sid, ttls.key);
+          const rewritten = seg.keyTag.replace(/URI="([^"]+)"/, () => `URI="${signedKey}"`);
+          lines.push(rewritten);
+          lastKeyEmitted = seg.keyTag;
+        }
+        lines.push(seg.extinf);
+        const segSubPath = path.posix.join(variantDir, seg.uri).replace(/^\//, "");
+        lines.push(buildStealthChunkUrl(req.params.publicId, sid, segSubPath, ttls.segment));
+      }
+      if (!gated || isFinalWindow) lines.push("#EXT-X-ENDLIST");
+
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      return res.send(lines.join("\n") + "\n");
+    } catch (e: any) {
+      log(`stream/window error for ${req.params.publicId}: ${e.message}`);
+      return res.status(500).json({ message: "Stream window error" });
+    }
+  });
+
+  // GET /api/player/:publicId/stream/chunk/:opaqueId
+  //   The opaque-named segment endpoint. Decodes the opaque ID to recover
+  //   the real segment subpath, runs the full segment proxy validation
+  //   (UA, window, abuse, velocity), and redirects to the presigned origin.
+  app.get("/api/player/:publicId/stream/chunk/:opaqueId", async (req: any, res: any) => {
+    const opaqueId = String(req.params.opaqueId || "");
+    const decoded = verifyOpaqueId(opaqueId);
+    if (!decoded || decoded.t !== "c" || !decoded.p) {
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid chunk token", signal: "token_expired" });
+    }
+    const sid = decoded.s;
+    const session = getSession(sid);
+    if (!session || session.revoked) return stealthDeny(res, sid, "Session expired or revoked");
+    if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
+    if (!session.hardening.stealthModeEnabled) {
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Stealth mode not active for this session" });
+    }
+
+    const ua = req.headers["user-agent"] || "";
+    if (!validateUserAgent(sid, ua)) {
+      log(`SECURITY: UA mismatch on stream/chunk for sid=${sid}`);
+      return stealthDeny(res, sid, "Device mismatch");
+    }
+
+    const segSubPath = decoded.p!.replace(/^\//, "");
+    const segMatch = segSubPath.match(/seg_?(\d+)\./i);
+    if (segMatch) {
+      const segIdx = parseInt(segMatch[1], 10);
+      const windowCheck = validateSegmentWindow(sid, segIdx);
+      if (!windowCheck.allowed) {
+        return stealthDeny(res, sid, "Segment outside allowed window", windowCheck.reason?.signal || "out_of_window");
+      }
+    }
+
+    const ip = (req.headers["x-forwarded-for"] as string || req.ip || "").split(",")[0].trim();
+    const acquire = acquireSegment(sid, ip);
+    if (acquire.abused) return stealthDeny(res, sid, "Video playback denied due to suspicious activity", acquire.reason?.signal);
+
+    const velocity = trackSegmentVelocity(sid);
+    if (velocity.abused) {
+      releaseSegment(sid);
+      return stealthDeny(res, sid, "Download velocity exceeded", velocity.reason?.signal);
+    }
+
+    try {
+      const { hlsPrefix, storageProvider, storageConfig } = session;
+      const fileKey = hlsPrefix.replace(/\/$/, "") + "/" + segSubPath;
+      let originUrl: string;
+      if (storageProvider === "backblaze_b2") {
+        originUrl = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
+      } else if (storageProvider === "cloudflare_r2") {
+        originUrl = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
+      } else {
+        const c = await getS3Client();
+        const s3cfg = await getS3Config();
+        if (!c || !s3cfg.bucket) { releaseSegment(sid); return res.status(500).json({ message: "Storage not configured" }); }
+        const cmd = new GetObjectCommand({ Bucket: s3cfg.bucket, Key: fileKey });
+        originUrl = await getSignedUrl(c, cmd, { expiresIn: 20 });
+      }
+      // Stealth contract: never expose origin URL to the browser. Stream bytes
+      // through our server so the only network entry visible to the client is
+      // the opaque /stream/chunk/:opaqueId URL.
+      const range = req.headers["range"];
+      const upstream = await fetch(originUrl, { headers: range ? { Range: String(range) } : undefined });
+      if (!upstream.ok && upstream.status !== 206) {
+        releaseSegment(sid);
+        log(`stream/chunk upstream failed status=${upstream.status} key=${fileKey}`);
+        return res.status(502).json({ message: "Chunk upstream failed" });
+      }
+      res.status(upstream.status);
+      const passthrough = ["content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified"];
+      for (const h of passthrough) {
+        const v = upstream.headers.get(h);
+        if (v) res.setHeader(h, v);
+      }
+      if (!upstream.headers.get("content-type")) res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Cache-Control", "private, no-store, no-cache, max-age=0");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      const body = upstream.body as any;
+      if (body && typeof body.getReader === "function") {
+        const { Readable } = await import("stream");
+        const nodeStream = Readable.fromWeb(body);
+        nodeStream.on("close", () => releaseSegment(sid));
+        nodeStream.on("error", () => releaseSegment(sid));
+        nodeStream.pipe(res);
+      } else {
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        releaseSegment(sid);
+        res.end(buf);
+      }
+    } catch (e: any) {
+      releaseSegment(sid);
+      log(`stream/chunk error for ${req.params.publicId}: ${e.message}`);
+      return res.status(500).json({ message: "Chunk error" });
+    }
+  });
+
+  // GET /api/player/:publicId/stream/secret/:opaqueId
+  //   The opaque-named key endpoint. Decodes the opaque ID, validates session
+  //   + UA + key rate limits, then returns the AES master key bytes.
+  app.get("/api/player/:publicId/stream/secret/:opaqueId", async (req: any, res: any) => {
+    const opaqueId = String(req.params.opaqueId || "");
+    const decoded = verifyOpaqueId(opaqueId);
+    if (!decoded || decoded.t !== "k") {
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid secret token", signal: "token_expired" });
+    }
+    const sid = decoded.s;
+    const session = getSession(sid);
+    if (!session || session.revoked) return stealthDeny(res, sid, "Session revoked");
+    if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
+    if (!session.hardening.stealthModeEnabled) {
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Stealth mode not active for this session" });
+    }
+
+    const ua = req.headers["user-agent"] || "";
+    if (!validateUserAgent(sid, ua)) {
+      log(`SECURITY: UA mismatch on stream/secret for sid=${sid}`);
+      return stealthDeny(res, sid, "Device mismatch");
+    }
+
+    const ip = (req.headers["x-forwarded-for"] as string || req.ip || "").split(",")[0].trim();
+    const { abused: keyAbused, reason: keyReason } = trackKeyHit(sid, ip);
+    if (keyAbused) return stealthDeny(res, sid, "Key rate limit exceeded", keyReason?.signal, 429);
+
+    try {
+      const video = await storage.getVideoByPublicId(req.params.publicId);
+      if (!video?.encryptionKeyPath) {
+        return res.status(404).json({ code: "PLAYBACK_DENIED", message: "Encryption key not found" });
+      }
+      const masterKey = await getMasterKey(video.encryptionKeyPath, session);
+      if (!masterKey) return res.status(500).json({ code: "PLAYBACK_DENIED", message: "Key fetch failed" });
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Length", masterKey.length);
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      return res.send(masterKey);
+    } catch (e: any) {
+      log(`stream/secret error: ${e.message}`);
+      return res.status(500).json({ code: "PLAYBACK_DENIED", message: "Key fetch failed" });
+    }
+  });
+
   // ── Progress endpoint — player reports current segment for window tracking ───
   app.post("/api/stream/:publicId/progress", async (req: any, res: any) => {
     try {
@@ -2132,7 +2485,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const proxyBase = `/hls/${req.params.publicId}/master.m3u8`;
       const manifestUrl = buildSignedProxyUrl(proxyBase, newSid, "/master.m3u8", ttls.manifest);
 
-      return res.json({ manifestUrl, sessionId: newSid, rotationIntervalMs: SESSION_ROTATION_MS });
+      // Stealth: re-mint an opaque level URL bound to the new sid so the
+      // player can keep using opaque names across rotation.
+      let stealth: { enabled: boolean; streamUrl?: string } = { enabled: false };
+      if (newSession.hardening.stealthModeEnabled) {
+        const variantSub = await resolveStealthVariantForSession(
+          newSession.hlsPrefix,
+          newSession.storageProvider as any,
+          newSession.storageConfig,
+        );
+        if (variantSub) {
+          stealth = { enabled: true, streamUrl: buildStealthLevelUrl(req.params.publicId, newSid, variantSub, ttls.manifest) };
+        }
+      }
+      return res.json({ manifestUrl, sessionId: newSid, rotationIntervalMs: SESSION_ROTATION_MS, stealth });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -2224,6 +2590,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         "MEDIA_SOURCE_HOOK_DETECTED",
         "APPEND_BUFFER_HOOK_DETECTED",
         "HLS_BUFFER_CAPTURE_SUSPECTED",
+        "HLS_URL_EXPOSURE_PREVENTED",
         "OUT_OF_WINDOW_SEGMENT_REQUEST",
         "DOWNLOAD_AHEAD_LIMIT_EXCEEDED",
         "KEY_REJECTED",
@@ -2457,16 +2824,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const effectiveViolationLimit2 = effectiveClientSec2.violationLimit ?? 3;
       const hardening2 = buildHardening(effectiveClientSec2);
       let manifestUrl: string | null = null;
+      let stealth: { enabled: boolean; streamUrl?: string } = { enabled: false };
       if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
         const newSid = createSession(video.publicId, video.hlsS3Prefix!, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
         const ttls = getSessionTokenTTL(newSid);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
+        if (hardening2.stealthModeEnabled) {
+          const variantSub = await resolveStealthVariantForSession(video.hlsS3Prefix!, providerType, cfg);
+          if (variantSub) {
+            stealth = { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, newSid, variantSub, ttls.manifest) };
+          }
+        }
       }
 
       log(`TOKEN_REFRESH_SUCCESS: userId=${userId} videoId=${video.id} oldTokenId=${oldDbToken?.id} newTokenId=${newDbToken.id}`);
-      res.json({ token: newTokenValue, expiresAt: expiresAt.toISOString(), manifestUrl });
+      res.json({ token: newTokenValue, expiresAt: expiresAt.toISOString(), manifestUrl, stealth });
     } catch (e: any) {
       log(`TOKEN_REFRESH_FAIL: reason=server_error publicId=${req.params.publicId} error=${e.message}`);
       res.status(500).json({ message: e.message });
