@@ -642,7 +642,10 @@ export default function EmbedPlayerPage(props: any = {}) {
         // an opaque stream URL (/api/player/:publicId/stream/window/<opaqueId>)
         // that hides .m3u8 / .ts / /key / master / index / seg_* from the
         // Network tab. Hls.js treats it as a single-bitrate level playlist.
-        const stealthEnabled = !!(data.stealth && data.stealth.enabled && data.stealth.streamUrl);
+        // Stealth uses application/octet-stream — only safe for hls.js MSE path.
+        // Safari/iOS native HLS requires application/vnd.apple.mpegurl, so fall
+        // back to the legacy /hls/ manifestUrl on the native branch.
+        const stealthEnabled = !!(data.stealth && data.stealth.enabled && data.stealth.streamUrl) && Hls.isSupported();
         const manifestUrl = stealthEnabled ? data.stealth.streamUrl : data.manifestUrl;
         if (!manifestUrl) { setStatus("error"); setErrorMsg("No manifest URL"); return; }
         if (stealthEnabled && import.meta.env.DEV) console.debug("[Stealth] using opaque stream URL");

@@ -2176,12 +2176,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           return res.status(502).json({ message: "Segment upstream failed" });
         }
         res.status(upstream.status);
-        const passHeaders = ["content-type", "content-length", "content-range", "accept-ranges", "etag"];
+        // Stealth: do NOT pass through content-type (B2 returns "video/MP2T" which
+        // CocoCut detects as media). Force opaque application/octet-stream.
+        const passHeaders = ["content-length", "content-range", "accept-ranges"];
         for (const h of passHeaders) {
           const v = upstream.headers.get(h);
           if (v) res.setHeader(h, v);
         }
-        if (!upstream.headers.get("content-type")) res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("Content-Type", "application/octet-stream");
         res.setHeader("Cache-Control", "private, no-store, no-cache, max-age=0");
         res.setHeader("X-Content-Type-Options", "nosniff");
         const body = upstream.body as any;
@@ -2313,7 +2315,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       if (!gated || isFinalWindow) lines.push("#EXT-X-ENDLIST");
 
-      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      // Stealth: never expose HLS MIME — CocoCut/scrapers identify by Content-Type.
+      // hls.js parses the body by looking for "#EXTM3U", not by MIME type.
+      res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.setHeader("X-Content-Type-Options", "nosniff");
       return res.send(lines.join("\n") + "\n");
@@ -2393,12 +2397,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(502).json({ message: "Chunk upstream failed" });
       }
       res.status(upstream.status);
-      const passthrough = ["content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified"];
+      // Stealth: drop content-type, etag, last-modified from passthrough — these leak
+      // media identity to scrapers (B2 returns "video/MP2T" which CocoCut sniffs).
+      const passthrough = ["content-length", "content-range", "accept-ranges"];
       for (const h of passthrough) {
         const v = upstream.headers.get(h);
         if (v) res.setHeader(h, v);
       }
-      if (!upstream.headers.get("content-type")) res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("Cache-Control", "private, no-store, no-cache, max-age=0");
       res.setHeader("X-Content-Type-Options", "nosniff");
       const body = upstream.body as any;

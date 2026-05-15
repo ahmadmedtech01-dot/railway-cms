@@ -1,0 +1,183 @@
+Replit Agent Prompt — Final Fix for CocoCut Detecting Opaque HLS Chunks
+
+My Video CMS now hides obvious HLS names like master.m3u8, index.m3u8, seg_000.ts, but CocoCut still detects the video.
+
+Problem seen in Network/CocoCut:
+The browser still receives many repeated XHR chunk files like:
+
+/watch/<opaque-id>-mp2t
+
+with sizes like 300 KB, 400 KB, 500 KB.
+
+CocoCut detects these as media chunks because:
+- route pattern is repeated
+- chunks are large XHR responses
+- “mp2t” reveals MPEG-TS media
+- chunks can still be collected as stream parts
+
+Do NOT disturb existing security:
+- short share links
+- server-side bootstrap
+- /hls /seg /key protection
+- stealth mode
+- HMAC tokens
+- AES-HLS
+- session binding
+- LMS iframe flow
+- admin preview
+- watermark
+- heartbeat
+- upload/transcode/storage
+- Cloudflare Worker gateway
+
+Fix only the remaining anti-download gap.
+
+Required changes:
+
+1. Remove all media-type hints from public chunk URLs
+
+Current bad pattern:
+- /watch/<opaque-id>-mp2t
+
+Replace with fully opaque routes:
+- /api/player/:publicId/stream/chunk/:opaqueChunkId
+- /r/:opaqueChunkId
+- /stream/c/:opaqueChunkId
+
+The public URL must NOT contain:
+- mp2t
+- ts
+- m4s
+- m3u8
+- key
+- seg
+- chunk index
+- quality name
+- video id
+- file extension
+
+opaqueChunkId must be random/session-bound/window-bound and not reveal file type.
+
+2. Remove media-type hints from headers where possible
+
+For stealth chunk routes, avoid obvious HLS/TS headers.
+
+Do not return:
+- Content-Type: video/mp2t
+- Content-Type: application/vnd.apple.mpegurl
+- obvious HLS names
+
+Use controlled binary response where compatible:
+- Content-Type: application/octet-stream
+
+Make sure hls.js playback still works. If hls.js requires MPEG-TS handling, keep compatibility internally but do not expose obvious file naming.
+
+3. Rotate opaque chunk IDs per session and per window
+
+Same segment must have different opaque IDs for:
+- different users
+- different sessions
+- different playback windows
+- regenerated share links
+
+Old opaque IDs must expire quickly.
+
+4. Enforce strict playback-time window
+
+Do not allow downloader to fetch chunks faster than real playback.
+
+Backend must track:
+- verifiedCurrentTime
+- watchedSeconds
+- downloadedMediaSeconds
+- downloadAheadSeconds
+- maxAllowedSegmentIndex
+- lastHeartbeatAt
+
+Rules:
+- chunk access advances only from verified heartbeat currentTime
+- fetching chunks must NOT advance the window
+- if requested chunk is ahead of watched time + buffer, return 403
+- if downloadAheadSeconds exceeds limit, revoke session
+
+Defaults:
+- max prebuffer ahead: 20–30 sec
+- max download ahead: 20–30 sec for protected videos
+
+5. Strong download velocity scoring
+
+Track:
+- chunks per 5 seconds
+- chunks per minute
+- total downloaded media duration
+- duplicate chunk requests
+- window refresh rate
+- key/secret request rate
+- stale heartbeat with active chunk requests
+
+If suspicious:
+- log DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+- revoke session
+- all media routes return 403/429
+
+6. MediaSource / appendBuffer guard must revoke session
+
+Verify client module detects:
+- MediaSource.prototype.addSourceBuffer modified
+- SourceBuffer.prototype.appendBuffer modified
+- MediaSource.prototype.endOfStream modified
+- URL.createObjectURL modified
+- URL.revokeObjectURL modified
+
+If detected:
+- pause playback immediately
+- send APPEND_BUFFER_HOOK_DETECTED
+- revoke session for protected videos
+- all chunk/key/window routes return 403
+
+7. Use in-memory blob playlist only
+
+If hls.js still needs a playlist:
+- generate playlist in memory as Blob URL
+- playlist should reference only fully opaque chunk URLs
+- no .m3u8, .ts, mp2t, key, seg, index, master names
+- no obvious extension in URL
+
+8. Cloudflare edge production route
+
+Prepare production media delivery behind Cloudflare:
+
+video.yourdomain.com
+→ Cloudflare Worker
+→ validate signature/session/window/chunk ID
+→ fetch private storage/server
+→ return opaque binary chunk
+
+Do not expose railway-cms-production.up.railway.app as the final media gateway in production.
+
+9. Acceptance criteria
+
+After fix:
+- Network must not show master.m3u8
+- Network must not show index.m3u8
+- Network must not show .ts
+- Network must not show mp2t
+- Network must not show seg_000 or segment names
+- Network must not show obvious /key
+- CocoCut should not list clean downloadable mp2t chunk files
+- copied opaque chunk URL expires quickly
+- same chunk URL does not work in another session
+- fetching chunks faster than playback revokes session
+- appendBuffer hook revokes session
+- after revoke, all media routes return 403
+- normal playback still works
+- LMS iframe still works
+- admin preview still works
+- upload/transcode/storage not broken
+- no TypeScript errors
+
+Important:
+Do not claim Widevine/FairPlay DRM.
+This is AES-HLS stealth hardening only.
+Do not implement downloader code.
+Only defensive security.
