@@ -17,6 +17,18 @@ export type ClientSecuritySettings = {
   violationLimit: number;
   allowedBrowsers: string[];
   suspiciousDetectionEnabled?: boolean;
+  // Advanced hardening
+  mediaSourceGuardEnabled?: boolean;
+  velocityScoringEnabled?: boolean;
+  keyBindingEnabled?: boolean;
+  heartbeatV2Enabled?: boolean;
+  serverGatedWindowEnabled?: boolean;
+  shortTokenTtlEnabled?: boolean;
+  tokenTtlPlaylistSec?: number;
+  tokenTtlSegmentSec?: number;
+  tokenTtlKeySec?: number;
+  heartbeatIntervalSec?: number;
+  downloadAheadLimit?: number;
 };
 
 export const defaultClientSecuritySettings: ClientSecuritySettings = {
@@ -31,6 +43,17 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   violationLimit: 3,
   allowedBrowsers: [],
   suspiciousDetectionEnabled: true,
+  mediaSourceGuardEnabled: true,
+  velocityScoringEnabled: true,
+  keyBindingEnabled: true,
+  heartbeatV2Enabled: true,
+  serverGatedWindowEnabled: false,
+  shortTokenTtlEnabled: false,
+  tokenTtlPlaylistSec: 25,
+  tokenTtlSegmentSec: 12,
+  tokenTtlKeySec: 12,
+  heartbeatIntervalSec: 12,
+  downloadAheadLimit: 25,
 };
 
 function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
@@ -44,6 +67,15 @@ function SettingRow({ label, description, children }: { label: string; descripti
     </div>
   );
 }
+
+const HARDENING_TOGGLES: { key: keyof ClientSecuritySettings; label: string; desc: string }[] = [
+  { key: "mediaSourceGuardEnabled", label: "MediaSource/appendBuffer Guard", desc: "Detect CocoCut-style hooks that wrap MediaSource or SourceBuffer.appendBuffer." },
+  { key: "velocityScoringEnabled", label: "Download Velocity Scoring", desc: "Revoke sessions when too many segments are fetched per second (bulk download)." },
+  { key: "keyBindingEnabled", label: "Stronger Key Binding", desc: "Bind AES-128 keys to session + progress + time (rate limited)." },
+  { key: "heartbeatV2Enabled", label: "Strong Heartbeat (v2)", desc: "Use monotonic seq + nonce heartbeat every N seconds instead of the legacy 3-min extend." },
+  { key: "serverGatedWindowEnabled", label: "Server-Gated Playlist Window", desc: "Only show a small live-window of segments; playlist advances ONLY on verified heartbeats. May break seeking on some players." },
+  { key: "shortTokenTtlEnabled", label: "Short Token TTLs", desc: "Shorten signed segment/playlist/key TTLs so leaked URLs expire fast. Can cause more 403s on slow networks." },
+];
 
 const TOGGLES: { key: keyof ClientSecuritySettings; label: string; desc: string }[] = [
   { key: "suspiciousDetectionEnabled", label: "Suspicious Activity Detection", desc: "Blocks bulk-download patterns (parallel segment scraping, key spamming). Turn off if it blocks normal users." },
@@ -82,6 +114,50 @@ export function SecuritySettingsForm({ value, onChange, disabled, onSave, showSa
 
   return (
     <div className="space-y-1">
+      <div className="pb-2">
+        <p className="text-sm font-semibold text-foreground">Advanced Hardening</p>
+        <p className="text-xs text-muted-foreground">Anti-downloader defenses. Safe defaults are on; gated playlist + short TTLs are optional.</p>
+      </div>
+      {HARDENING_TOGGLES.map(({ key, label, desc }) => (
+        <SettingRow key={key} label={label} description={desc}>
+          <Switch
+            checked={!!value[key]}
+            onCheckedChange={v => set(key as any, v as any)}
+            disabled={disabled}
+            data-testid={`switch-client-${key}`}
+          />
+        </SettingRow>
+      ))}
+
+      <SettingRow label="Heartbeat Interval (sec)" description="How often the player pings the server. Lower = faster revocation but more traffic.">
+        <Input type="number" min={5} max={60} value={value.heartbeatIntervalSec ?? 12}
+          onChange={e => set("heartbeatIntervalSec", parseInt(e.target.value) || 12)}
+          disabled={disabled} className="w-20 text-center" data-testid="input-heartbeat-interval" />
+      </SettingRow>
+      <SettingRow label="Download-Ahead Limit" description="Max segments fetchable in 5s before velocity scoring trips.">
+        <Input type="number" min={5} max={200} value={value.downloadAheadLimit ?? 25}
+          onChange={e => set("downloadAheadLimit", parseInt(e.target.value) || 25)}
+          disabled={disabled} className="w-20 text-center" data-testid="input-download-ahead" />
+      </SettingRow>
+      <SettingRow label="Token TTL — Playlist (sec)" description="Only used when Short Token TTLs is on.">
+        <Input type="number" min={10} max={300} value={value.tokenTtlPlaylistSec ?? 25}
+          onChange={e => set("tokenTtlPlaylistSec", parseInt(e.target.value) || 25)}
+          disabled={disabled} className="w-20 text-center" data-testid="input-ttl-playlist" />
+      </SettingRow>
+      <SettingRow label="Token TTL — Segment (sec)" description="Only used when Short Token TTLs is on.">
+        <Input type="number" min={5} max={120} value={value.tokenTtlSegmentSec ?? 12}
+          onChange={e => set("tokenTtlSegmentSec", parseInt(e.target.value) || 12)}
+          disabled={disabled} className="w-20 text-center" data-testid="input-ttl-segment" />
+      </SettingRow>
+      <SettingRow label="Token TTL — Key (sec)" description="Only used when Short Token TTLs is on.">
+        <Input type="number" min={5} max={120} value={value.tokenTtlKeySec ?? 12}
+          onChange={e => set("tokenTtlKeySec", parseInt(e.target.value) || 12)}
+          disabled={disabled} className="w-20 text-center" data-testid="input-ttl-key" />
+      </SettingRow>
+
+      <div className="pt-4 pb-2 border-t border-border">
+        <p className="text-sm font-semibold text-foreground">Client-Side Protection</p>
+      </div>
       {TOGGLES.map(({ key, label, desc }) => (
         <SettingRow key={key} label={label} description={desc}>
           <Switch

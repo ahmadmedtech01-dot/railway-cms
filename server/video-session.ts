@@ -42,9 +42,37 @@ const TOKEN_TTL = {
 };
 
 export interface AbuseReason {
-  signal: "rate_limit" | "concurrent" | "playlist_abuse" | "key_abuse" | "ip_mismatch" | "out_of_window" | "bulk_download";
+  signal: "rate_limit" | "concurrent" | "playlist_abuse" | "key_abuse" | "ip_mismatch" | "out_of_window" | "bulk_download" | "velocity_abuse" | "hook_detected" | "heartbeat_invalid";
   detail: string;
 }
+
+export interface SessionHardeningConfig {
+  mediaSourceGuardEnabled: boolean;
+  velocityScoringEnabled: boolean;
+  keyBindingEnabled: boolean;
+  heartbeatV2Enabled: boolean;
+  serverGatedWindowEnabled: boolean;
+  shortTokenTtlEnabled: boolean;
+  tokenTtlPlaylistSec: number;
+  tokenTtlSegmentSec: number;
+  tokenTtlKeySec: number;
+  heartbeatIntervalSec: number;
+  downloadAheadLimit: number;
+}
+
+export const defaultHardening: SessionHardeningConfig = {
+  mediaSourceGuardEnabled: true,
+  velocityScoringEnabled: true,
+  keyBindingEnabled: true,
+  heartbeatV2Enabled: true,
+  serverGatedWindowEnabled: false,
+  shortTokenTtlEnabled: false,
+  tokenTtlPlaylistSec: 25,
+  tokenTtlSegmentSec: 12,
+  tokenTtlKeySec: 12,
+  heartbeatIntervalSec: 12,
+  downloadAheadLimit: 25,
+};
 
 export interface ParsedSegment {
   extinf: string;
@@ -101,6 +129,18 @@ export interface VideoSession {
   // Track spike detection: timestamp when rate first exceeded threshold
   segmentRateSpikeStart: number | null;
   playlistSpikeStart: number | null;
+
+  // ── Hardening config (per-session snapshot) ──────────────────────────────
+  hardening: SessionHardeningConfig;
+  // Last heartbeat metadata for server-gated window + replay protection
+  lastHeartbeatSeq: number;
+  lastHeartbeatAt: number;
+  lastHeartbeatNonces: string[]; // ring buffer (max 64)
+  windowLastAdvancedAt: number;
+  // Velocity scoring (segment fetches in last N seconds)
+  velocityLog: number[];
+  // Client-reported security events (counter for revocation thresholds)
+  clientSecurityEvents: number;
 }
 
 const sessions = new Map<string, VideoSession>();
@@ -126,6 +166,7 @@ export function createSession(
   userAgent?: string,
   suspiciousDetectionEnabled = true,
   violationLimit = DEFAULT_VIOLATION_LIMIT,
+  hardening: SessionHardeningConfig = defaultHardening,
 ): string {
   const sid = crypto.randomBytes(16).toString("hex");
   const uaHash = userAgent ? crypto.createHash("sha256").update(userAgent).digest("hex").slice(0, 32) : "";
@@ -166,6 +207,13 @@ export function createSession(
     violationLimit,
     segmentRateSpikeStart: null,
     playlistSpikeStart: null,
+    hardening,
+    lastHeartbeatSeq: 0,
+    lastHeartbeatAt: Date.now(),
+    lastHeartbeatNonces: [],
+    windowLastAdvancedAt: Date.now(),
+    velocityLog: [],
+    clientSecurityEvents: 0,
   });
   return sid;
 }
@@ -202,6 +250,12 @@ export function rotateSession(oldSid: string): string | null {
     keySig,
     segmentRateSpikeStart: null,
     playlistSpikeStart: null,
+    lastHeartbeatSeq: 0,
+    lastHeartbeatAt: Date.now(),
+    lastHeartbeatNonces: [],
+    windowLastAdvancedAt: Date.now(),
+    velocityLog: [],
+    clientSecurityEvents: 0,
   });
 
   old.revoked = true;
@@ -500,11 +554,148 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
   if (!s) return { allowed: false, reason: { signal: "rate_limit", detail: "Session not found" } };
   if (s.revoked) return { allowed: false, reason: s.revokeReason ?? { signal: "rate_limit", detail: "Session revoked" } };
 
-  // VOD: any segment index is valid (user may seek anywhere). Always update position tracker.
+  // SERVER-GATED MODE: only the heartbeat endpoint advances currentSegmentIndex.
+  // Reject any segment outside [start, end] window so playlist walking is blocked.
+  if (s.hardening.serverGatedWindowEnabled) {
+    const start = Math.max(0, s.currentSegmentIndex - 2);
+    const end = s.currentSegmentIndex + Math.max(2, s.hardening.downloadAheadLimit);
+    if (segIndex < start || segIndex > end) {
+      s.outOfWindowCount += 1;
+      const reason: AbuseReason = {
+        signal: "out_of_window",
+        detail: `seg=${segIndex} outside gated window [${start},${end}] | publicId=${s.publicId}`,
+      };
+      console.log(`[video-session] SECURITY_OUT_OF_WINDOW: sid=${sid} seg=${segIndex} window=[${start},${end}]`);
+      return addAbuse(s, ABUSE_THRESHOLDS.outOfWindowPenalty, reason).abused
+        ? { allowed: false, reason }
+        : { allowed: false, reason };
+    }
+    return { allowed: true };
+  }
+
+  // Legacy mode: VOD allows any segment, auto-advance position tracker
   if (segIndex > s.currentSegmentIndex) {
     s.currentSegmentIndex = segIndex;
   }
   return { allowed: true };
+}
+
+// ── Velocity scoring — detects fast bulk fetches even if rate spike is sustained ───
+// Returns abuse decision per segment fetch when velocityScoring is on.
+export function trackSegmentVelocity(sid: string): { abused: boolean; reason?: AbuseReason } {
+  const s = sessions.get(sid);
+  if (!s || !s.hardening.velocityScoringEnabled || !s.suspiciousDetectionEnabled) return { abused: false };
+  const now = Date.now();
+  s.velocityLog = s.velocityLog.filter(t => t > now - 5000);
+  s.velocityLog.push(now);
+  // > downloadAheadLimit segments in 5 seconds = bulk download
+  if (s.velocityLog.length > s.hardening.downloadAheadLimit) {
+    const reason: AbuseReason = {
+      signal: "velocity_abuse",
+      detail: `${s.velocityLog.length} segments in 5s exceeds downloadAheadLimit=${s.hardening.downloadAheadLimit} | publicId=${s.publicId}`,
+    };
+    console.log(`[video-session] SECURITY_VELOCITY_ABUSE: sid=${sid} segs_5s=${s.velocityLog.length} limit=${s.hardening.downloadAheadLimit}`);
+    return addAbuse(s, 8, reason);
+  }
+  return { abused: false };
+}
+
+// ── Heartbeat verification — server-gated window only advances here ───────────
+export interface HeartbeatInput {
+  seq: number;
+  nonce: string;
+  currentTime: number;
+  segmentIndex?: number;
+}
+export function verifyHeartbeat(sid: string, input: HeartbeatInput): { ok: boolean; reason?: string; windowStart?: number; windowEnd?: number; newSegmentIndex?: number } {
+  const s = sessions.get(sid);
+  if (!s || s.revoked) return { ok: false, reason: "session_invalid" };
+  if (!Number.isFinite(input.seq) || input.seq <= 0) return { ok: false, reason: "bad_seq" };
+  if (!input.nonce || typeof input.nonce !== "string" || input.nonce.length < 8 || input.nonce.length > 128) return { ok: false, reason: "bad_nonce" };
+  if (!Number.isFinite(input.currentTime) || input.currentTime < 0) return { ok: false, reason: "bad_currentTime" };
+
+  // Strict monotonic seq — defeats replay
+  if (input.seq <= s.lastHeartbeatSeq) {
+    addAbuse(s, 2, { signal: "heartbeat_invalid", detail: `seq regression ${input.seq} <= ${s.lastHeartbeatSeq}` });
+    return { ok: false, reason: "seq_replay" };
+  }
+  if (s.lastHeartbeatNonces.includes(input.nonce)) {
+    addAbuse(s, 2, { signal: "heartbeat_invalid", detail: `nonce replay ${input.nonce}` });
+    return { ok: false, reason: "nonce_replay" };
+  }
+  // Ring buffer cap 64
+  s.lastHeartbeatNonces.push(input.nonce);
+  if (s.lastHeartbeatNonces.length > 64) s.lastHeartbeatNonces.shift();
+
+  const now = Date.now();
+  const elapsedSec = Math.max(0.5, (now - s.lastHeartbeatAt) / 1000);
+  // Cap how fast playback time may advance between heartbeats — defeats heartbeat-forge walking
+  const maxAdvanceSec = elapsedSec * 2.5 + 5; // generous: allow buffering catch-up + small skip
+  const prevTime = s.currentSegmentIndex; // index proxy
+  // (only enforced when server-gated window is on, since legacy mode is permissive)
+  let advanceCappedSegIdx = input.segmentIndex;
+  if (s.hardening.serverGatedWindowEnabled) {
+    const anyCache = s.variantCache.values().next().value as PlaylistCache | undefined;
+    const targetDur = anyCache?.targetDuration || 2;
+    // Verify currentTime grew reasonably (allow seek backwards freely; cap forward advance)
+    const segPerSec = 1 / targetDur;
+    const maxSegAdvance = Math.ceil(maxAdvanceSec * segPerSec) + 2;
+    const requestedSeg = typeof input.segmentIndex === "number" ? input.segmentIndex : Math.floor(input.currentTime / targetDur);
+    const cappedSeg = Math.min(requestedSeg, s.currentSegmentIndex + maxSegAdvance);
+    advanceCappedSegIdx = Math.max(0, cappedSeg);
+    s.currentSegmentIndex = Math.max(s.currentSegmentIndex, advanceCappedSegIdx);
+    // Allow backward seek (user scrubbing) — but reset window start
+    if (requestedSeg < s.currentSegmentIndex - 10) {
+      s.currentSegmentIndex = Math.max(0, requestedSeg);
+    }
+    s.windowLastAdvancedAt = now;
+  }
+
+  s.lastHeartbeatSeq = input.seq;
+  s.lastHeartbeatAt = now;
+  s.lastProgressAt = now;
+  s.expiresAt = now + SESSION_MAX_AGE_MS;
+
+  const { start, end } = getWindowRange(sid);
+  return { ok: true, windowStart: start, windowEnd: end, newSegmentIndex: s.currentSegmentIndex };
+}
+
+// ── Client-reported security events (e.g. MediaSource hook detected) ──────────
+export function recordSecurityEvent(sid: string, eventType: string): { revoked: boolean; score: number } {
+  const s = sessions.get(sid);
+  if (!s || s.revoked) return { revoked: true, score: 0 };
+  s.clientSecurityEvents += 1;
+  // High-severity events: revoke fast
+  const highSeverity = new Set([
+    "MEDIA_SOURCE_HOOK_DETECTED",
+    "APPEND_BUFFER_HOOK_DETECTED",
+    "HLS_BUFFER_CAPTURE_SUSPECTED",
+  ]);
+  if (highSeverity.has(eventType)) {
+    const reason: AbuseReason = { signal: "hook_detected", detail: `client event=${eventType} publicId=${s.publicId}` };
+    console.log(`[video-session] SECURITY_CLIENT_EVENT_HIGH: sid=${sid} event=${eventType}`);
+    addAbuse(s, 10, reason); // score >= 10 triggers revoke (threshold=20 needs two; severe events alone bump breachEvents)
+    s.revoked = true;
+    s.blockedUntil = Date.now() + 10 * 60 * 1000;
+    if (!s.revokeReason) s.revokeReason = reason;
+    return { revoked: true, score: s.abuseScore };
+  }
+  const reason: AbuseReason = { signal: "hook_detected", detail: `client event=${eventType}` };
+  console.log(`[video-session] SECURITY_CLIENT_EVENT: sid=${sid} event=${eventType}`);
+  addAbuse(s, 2, reason);
+  return { revoked: s.revoked, score: s.abuseScore };
+}
+
+// ── Per-session effective token TTL (short or default) ────────────────────────
+export function getSessionTokenTTL(sid: string): { manifest: number; playlist: number; segment: number; key: number } {
+  const s = sessions.get(sid);
+  if (!s || !s.hardening.shortTokenTtlEnabled) return getTokenTTL();
+  return {
+    manifest: s.hardening.tokenTtlPlaylistSec,
+    playlist: s.hardening.tokenTtlPlaylistSec,
+    segment: s.hardening.tokenTtlSegmentSec,
+    key: s.hardening.tokenTtlKeySec,
+  };
 }
 
 export function parsePlaylist(playlistText: string): PlaylistCache {

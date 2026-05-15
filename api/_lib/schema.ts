@@ -226,6 +226,20 @@ export const videoClientSecurity = pgTable("video_client_security", {
   suspiciousDetectionEnabled: boolean("suspicious_detection_enabled").notNull().default(true),
   violationLimit: integer("violation_limit").notNull().default(3),
   allowedBrowsers: text("allowed_browsers").array().default(sql`'{}'::text[]`),
+  // ── Advanced anti-downloader layers (additive; default ON unless noted) ─────
+  mediaSourceGuardEnabled: boolean("media_source_guard_enabled").notNull().default(true),
+  velocityScoringEnabled: boolean("velocity_scoring_enabled").notNull().default(true),
+  keyBindingEnabled: boolean("key_binding_enabled").notNull().default(true),
+  heartbeatV2Enabled: boolean("heartbeat_v2_enabled").notNull().default(true),
+  // Behavior-changing — opt-in
+  serverGatedWindowEnabled: boolean("server_gated_window_enabled").notNull().default(false),
+  shortTokenTtlEnabled: boolean("short_token_ttl_enabled").notNull().default(false),
+  // Configurable values
+  tokenTtlPlaylistSec: integer("token_ttl_playlist_sec").notNull().default(25),
+  tokenTtlSegmentSec: integer("token_ttl_segment_sec").notNull().default(12),
+  tokenTtlKeySec: integer("token_ttl_key_sec").notNull().default(12),
+  heartbeatIntervalSec: integer("heartbeat_interval_sec").notNull().default(12),
+  downloadAheadLimit: integer("download_ahead_limit").notNull().default(25),
 });
 
 export const storageConnections = pgTable("storage_connections", {

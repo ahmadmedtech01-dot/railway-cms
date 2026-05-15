@@ -1,0 +1,91 @@
+PHASE 10 — IFRAME AND EXTENSION TAMPER GUARD
+====================================================
+
+Create:
+client/src/lib/security/iframeGuard.ts
+
+Detect:
+- direct open when iframe-only is required
+- invalid parent origin
+- missing LMS_LAUNCH_TOKEN
+- postMessage origin mismatch
+- document.referrer mismatch
+- unexpected top/self context
+- suspicious iframe environment changes where safely detectable
+
+Do not read cross-origin parent DOM directly.
+Use safe checks only:
+- window.top !== window.self
+- document.referrer
+- postMessage handshake
+- allowed LMS origins
+- signed LMS launch token validation
+
+On invalid:
+- do not start playback
+- report event
+- show Access Restricted overlay
+
+Events:
+- DIRECT_OPEN_BLOCKED
+- INVALID_PARENT_ORIGIN
+- POSTMESSAGE_ORIGIN_MISMATCH
+- IFRAME_TAMPER_DETECTED
+
+====================================================
+PHASE 11 — STRONGER WATERMARK ANTI-TAMPER
+====================================================
+
+Do not remove existing watermark. Enhance it.
+
+Add:
+- DOM watermark integrity check
+- canvas watermark overlay
+- moving ticker watermark
+- random center pulse watermark
+- fullscreen watermark persistence
+- MutationObserver to detect removal/style tamper
+
+Detect:
+- node removed
+- display none
+- visibility hidden
+- opacity too low
+- z-index below video
+- transform moved offscreen
+- parent removed
+- canvas hidden
+- CSS class removed
+
+On detection:
+- restore watermark immediately
+- log WATERMARK_TAMPERED
+- increase abuse score
+- pause/revoke after threshold
+
+Watermark heartbeat should include:
+- watermarkInstanceId
+- position hash
+- visible status
+- lastMutationDetected
+
+====================================================
+PHASE 12 — DEVTOOLS/TAMPER RESPONSE MUST BECOME SESSION-LEVEL
+====================================================
+
+Current behavior may only show violation overlay.
+
+Improve behavior:
+- DevTools open once: warning + event
+- DevTools persists: pause playback
+- DevTools + MediaSource tamper: critical
+- repeated critical events: revoke session
+- revoked session blocks /hls /seg /key
+
+Important:
+Do not rely only on DevTools. Use it as signal combined with:
+- MediaSource tamper
+- download velocity
+- heartbeat mismatch
+- watermark tamper
+- playlist walking

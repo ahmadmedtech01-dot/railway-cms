@@ -15,6 +15,19 @@ export type ClientSecuritySettings = {
   watermarkFields?: { name: boolean; email: boolean; userId: boolean; timestamp: boolean };
   maxPlaybackSpeed?: number;
   suspiciousDetectionEnabled?: boolean;
+
+  // ── Advanced anti-downloader hardening (additive layers) ──────────────────
+  mediaSourceGuardEnabled?: boolean;
+  velocityScoringEnabled?: boolean;
+  keyBindingEnabled?: boolean;
+  heartbeatV2Enabled?: boolean;
+  serverGatedWindowEnabled?: boolean;
+  shortTokenTtlEnabled?: boolean;
+  tokenTtlPlaylistSec?: number;
+  tokenTtlSegmentSec?: number;
+  tokenTtlKeySec?: number;
+  heartbeatIntervalSec?: number;
+  downloadAheadLimit?: number;
 };
 
 export const defaultClientSecuritySettings: ClientSecuritySettings = {
@@ -29,4 +42,16 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   violationLimit: 3,
   allowedBrowsers: [],
   suspiciousDetectionEnabled: true,
+
+  mediaSourceGuardEnabled: true,
+  velocityScoringEnabled: true,
+  keyBindingEnabled: true,
+  heartbeatV2Enabled: true,
+  serverGatedWindowEnabled: false,
+  shortTokenTtlEnabled: false,
+  tokenTtlPlaylistSec: 25,
+  tokenTtlSegmentSec: 12,
+  tokenTtlKeySec: 12,
+  heartbeatIntervalSec: 12,
+  downloadAheadLimit: 25,
 };

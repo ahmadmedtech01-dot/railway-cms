@@ -1,0 +1,132 @@
+────────────────────────────────────────
+PHASE 6 — Add MediaSource / HLS Buffer Exposure Guard
+────────────────────────────────────────
+
+This is the most important part.
+
+Problem:
+hls.js eventually passes usable media buffers into MediaSource / SourceBuffer.appendBuffer. CocoCut-style recording mode may monkey-patch/proxy these APIs and capture buffers.
+
+Required:
+Create a new defensive client module:
+
+client/src/lib/security/mediaSourceGuard.ts
+
+Purpose:
+Detect browser API tampering and extension-like buffer capture hooks.
+
+Do NOT attempt to bypass extensions.
+Do NOT implement anti-user malware behavior.
+Only detect tampering, log event, pause/revoke session according to settings.
+
+APIs to monitor:
+- window.MediaSource
+- MediaSource.prototype.addSourceBuffer
+- MediaSource.prototype.endOfStream
+- SourceBuffer.prototype.appendBuffer
+- SourceBuffer.prototype.remove
+- SourceBuffer.prototype.abort
+- URL.createObjectURL
+- URL.revokeObjectURL
+- Blob constructor if safely checkable
+- Function.prototype.toString
+
+Implementation requirements:
+1. Capture native references as early as possible in embed-player boot, before hls.js initialization.
+2. Store:
+   - original function reference
+   - original Function.prototype.toString output
+   - native code marker if applicable
+3. Re-check:
+   - before HLS instance creation
+   - before hls.attachMedia(video)
+   - after MANIFEST_PARSED
+   - after first FRAG_LOADED
+   - every 10–15 seconds during playback
+   - when DevTools/tamper/focus suspicious event occurs
+4. Detect:
+   - function reference changed
+   - Function.prototype.toString changed
+   - function no longer looks native where it should
+   - function appears proxied/wrapped
+   - appendBuffer replaced
+   - addSourceBuffer replaced
+   - endOfStream replaced
+   - createObjectURL replaced
+5. Safe behavior:
+   - do not crash old browsers
+   - if SourceBuffer is undefined, skip gracefully
+   - if MediaSource unsupported, report unsupported but do not hard-crash
+   - avoid false positives from hls.js itself
+   - do not modify MediaSource functions yourself
+6. Return a structured status:
+   - ok
+   - suspicious
+   - critical
+   - reasons[]
+   - changedApis[]
+   - timestamp
+
+Events to send:
+- MEDIA_SOURCE_HOOK_DETECTED
+- SOURCE_BUFFER_HOOK_DETECTED
+- APPEND_BUFFER_HOOK_DETECTED
+- CREATE_OBJECT_URL_HOOK_DETECTED
+- END_OF_STREAM_HOOK_DETECTED
+
+Frontend response:
+- First suspicious event:
+  - send security event
+  - show warning if enabled
+- Critical/repeated event:
+  - pause video
+  - mute video optionally
+  - request token/session rotation if available
+  - call backend to mark session suspicious
+- Persistent/repeated critical event:
+  - revoke playback session
+  - show blocked overlay with cooldown
+
+Admin settings:
+- enableMediaSourceGuard
+- mediaSourceGuardMode: monitor | warn | pause | revoke
+- mediaSourceCheckIntervalSeconds
+- mediaSourceCriticalThreshold
+- mediaSourceFalsePositiveTolerance
+- disableOnUnsupportedBrowsers
+
+Acceptance:
+- Normal playback works.
+- hls.js still works.
+- If appendBuffer is monkey-patched in console/test, event is logged.
+- If MediaSource.addSourceBuffer is proxied, event is logged.
+- On repeated critical detection, session is revoked and /hls /seg /key fail.
+
+────────────────────────────────────────
+PHASE 7 — Add AppendBuffer Capture Response
+────────────────────────────────────────
+
+Required:
+Create a specific response pipeline for appendBuffer tampering.
+
+When mediaSourceGuard detects SourceBuffer.prototype.appendBuffer is changed:
+1. Immediately send APPEND_BUFFER_HOOK_DETECTED.
+2. Pause playback.
+3. Stop hls.js loading if possible:
+   - hls.stopLoad()
+4. Ask backend to rotate/revoke current playback token.
+5. Recheck after 1–2 seconds.
+6. If still tampered:
+   - revoke session
+   - destroy hls instance
+   - clear video src
+   - show cooldown overlay
+7. Backend must mark session revoked so old signed /seg /key URLs fail.
+
+Do not rely on frontend only.
+The backend must enforce revoked session.
+
+Acceptance:
+- Monkey-patched appendBuffer causes playback interruption.
+- Session revocation blocks further segment/key fetch.
+- Refreshing page during cooldown remains blocked until cooldown expires.

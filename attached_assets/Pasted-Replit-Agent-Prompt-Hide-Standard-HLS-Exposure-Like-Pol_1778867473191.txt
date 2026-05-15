@@ -1,0 +1,130 @@
+Replit Agent Prompt — Hide Standard HLS Exposure Like Polytronx
+
+Problem:
+In my Video CMS, Chrome Network clearly shows master.m3u8, index.m3u8, and seg_000.ts / seg_001.ts segment files. Downloader tools like CocoCut can recognize this as standard HLS and capture/walk the stream.
+
+Polytronx protected demo does not show master.m3u8 or segment files in Network. It only shows player.js, embed-init.js, offer, heartbeat, and video-events. It likely hides the media pipeline behind secure player/session/WebRTC/MediaSource/DRM-style delivery.
+
+Goal:
+Do NOT remove or weaken my existing security:
+- raw B2/R2/S3 URLs hidden
+- /hls, /seg, /key routes
+- HMAC signed tokens
+- AES-HLS
+- sliding playlist
+- session binding
+- iframe-only LMS
+- embed tokens
+- abuse detection
+- watermark
+- DevTools protection
+
+Add an extra “Stealth Protected Playback Mode” on top for premium videos.
+
+Required changes:
+
+1. Hide obvious HLS names from browser Network
+Current exposed paths:
+- master.m3u8
+- index.m3u8
+- seg_000.ts
+- seg_001.ts
+- /key
+
+Replace public/browser-facing names with opaque routes:
+- /api/player/:publicId/stream/bootstrap
+- /api/player/:publicId/stream/window
+- /api/player/:publicId/stream/chunk/:opaqueChunkId
+- /api/player/:publicId/stream/secret/:opaqueKeyId
+
+Do not expose .m3u8, .ts, .m4s, .key, master, index, seg in URLs.
+
+Internally, server can still map opaque chunk IDs to real HLS segments.
+
+2. Obfuscate playlist response
+Do not let browser directly receive a normal full HLS playlist with clear segment names.
+Create a protected stream window response that returns only encrypted/opaque chunk descriptors for the current playback window.
+The player should construct the required hls.js playlist in memory using blob URLs if needed.
+The Network tab should not show master.m3u8 / index.m3u8 / seg_000.ts names.
+
+3. Keep hls.js compatibility
+If hls.js still needs a playlist:
+- generate the playlist in memory as a Blob URL
+- segment URLs inside it must be opaque signed URLs, not .ts names
+- each chunk URL must be short-lived, session-bound, video-bound, segment-index-bound, and playback-window-bound
+
+4. Strict playback-window enforcement
+Do not advance sliding window by segment fetches.
+Advance only by verified heartbeat currentTime.
+Reject chunks ahead of verified playback window.
+Track:
+- verifiedCurrentTime
+- maxAllowedSegmentIndex
+- downloadedSegmentDuration
+- downloadAheadSeconds
+- heartbeat freshness
+
+5. MediaSource / appendBuffer guard
+Add client security module to detect downloader recording mode:
+client/src/lib/security/mediaSourceGuard.ts
+
+Detect tampering of:
+- MediaSource.prototype.addSourceBuffer
+- SourceBuffer.prototype.appendBuffer
+- MediaSource.prototype.endOfStream
+- URL.createObjectURL
+- URL.revokeObjectURL
+
+If tampered:
+- pause video
+- send security event
+- revoke session after threshold
+- make stream/window/chunk/key routes return 403
+
+6. Short TTLs
+Use stricter defaults:
+- stream window token: 20–30 sec
+- chunk token: 10–15 sec
+- key token: 10–15 sec
+
+7. Backend enforcement
+Create/extend security events:
+- HLS_URL_EXPOSURE_PREVENTED
+- MEDIA_SOURCE_HOOK_DETECTED
+- APPEND_BUFFER_HOOK_DETECTED
+- OUT_OF_WINDOW_CHUNK_REQUEST
+- DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+- CHUNK_REJECTED
+- KEY_REJECTED
+- SESSION_REVOKED
+
+After revocation:
+- all stream/window/chunk/key routes return 403.
+
+8. Admin setting
+Add:
+- Enable Stealth Protected Playback Mode
+- Hide HLS filenames in Network
+- Use opaque chunk routes
+- Enable MediaSource Guard
+- Enable strict playback window
+- Max download ahead seconds
+- Short token TTLs
+
+Acceptance:
+- Existing normal HLS mode still works.
+- New stealth mode works for premium videos.
+- Network tab no longer shows master.m3u8, index.m3u8, seg_000.ts, seg_001.ts, or obvious /key path.
+- Browser only sees opaque stream/chunk routes.
+- Raw B2/R2/S3 URLs remain hidden.
+- CocoCut-style HLS detection cannot easily identify normal HLS playlist/segments.
+- Segment walking faster than playback is blocked.
+- appendBuffer hook detection works.
+- No upload/transcode/storage/admin preview/LMS iframe flow is broken.
+- No TypeScript errors.
+
+Important:
+Do not claim Widevine/FairPlay DRM unless real DRM is implemented.
+This is still AES-HLS stealth mode, not real DRM.
+Do not implement downloader logic.
+Only defensive security hardening.

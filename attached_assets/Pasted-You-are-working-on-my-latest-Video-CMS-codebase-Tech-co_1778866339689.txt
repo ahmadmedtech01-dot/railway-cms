@@ -1,0 +1,89 @@
+You are working on my latest Video CMS codebase.
+
+Tech/context:
+- React 18 + TypeScript + Vite frontend
+- Express 5 + TypeScript backend
+- Drizzle ORM + Postgres/Supabase
+- hls.js player
+- Secure HLS flow with /hls, /seg, /key
+- Cloudflare Worker gateway
+- Backblaze B2 / S3 / R2 private storage
+- Existing security already includes:
+  - raw storage URLs never exposed
+  - browser only sees /hls, /seg, /key on my own domain
+  - per-chunk HMAC signed URLs with sid, exp, st
+  - sliding window playlist
+  - session binding with user-agent/device/IP checks
+  - AES-128 double encryption
+  - iframe-only LMS launch
+  - embed JWT token system
+  - server-side abuse detection
+  - client-side right-click/devtools/focus/download protections
+  - watermark/security settings
+  - heartbeat/session APIs
+  - global and per-video security settings
+
+IMPORTANT:
+Do NOT remove, rewrite, or weaken my existing security layers.
+Do NOT break current playback.
+Do NOT break upload, import, transcode, HLS generation, B2/S3/R2 storage, Cloudflare Worker, LMS iframe flow, admin preview, watermark, token minting, or current security settings.
+Do NOT expose raw B2/S3/R2 URLs.
+Do NOT expose reusable .mp4, .m3u8, .ts, .m4s, or key URLs.
+Do NOT label anything as Widevine/FairPlay DRM unless real DRM license flow is implemented.
+This task is defensive security hardening only.
+Do not implement downloader/extraction logic.
+
+Main problem:
+My existing CMS is strong against raw URL theft and normal IDM-style downloaders, but CocoCut-style recording mode can still download/capture by:
+1. Walking the HLS sliding playlist,
+2. Fetching segment windows faster than real playback,
+3. Capturing decrypted buffers passed into MediaSource / SourceBuffer.appendBuffer by hls.js,
+4. Staying under current abuse limits while slowly collecting all HLS segments.
+
+Goal:
+Add Polytronx-level extra protection without disturbing current layers, especially:
+- hls.js buffer exposure protection
+- MediaSource / appendBuffer tamper detection
+- download-walk prevention
+- stricter playback-time-based sliding window
+- shorter segment/key TTLs
+- key/window binding
+- session-level interruption on tamper
+- stronger download velocity scoring
+- stronger security event logging
+
+────────────────────────────────────────
+PHASE 1 — Do a Safe Code Audit First
+────────────────────────────────────────
+
+Before editing:
+1. Locate current secure playback files:
+   - server/video-session.ts
+   - server/routes.ts
+   - Cloudflare Worker file if present
+   - client/src/pages/embed-player.tsx
+   - client/src/pages/video-detail.tsx
+   - client/src/pages/system-settings.tsx
+   - api/_lib/schema.ts
+   - any HLS signing/helper files
+   - any watermark/security setting files
+
+2. Identify existing logic for:
+   - /api/player/:publicId/mint
+   - /hls
+   - /seg
+   - /key
+   - heartbeat
+   - token rotation
+   - session revocation
+   - abuse scoring
+   - sliding playlist window
+   - watermark tamper
+   - DevTools/violation system
+   - Cloudflare Worker validation
+
+3. Do not duplicate existing systems.
+4. Extend existing systems cleanly.
+5. If a table/setting already exists, extend it instead of creating parallel conflicting logic.
+
+Deliver changes in small modular files, not one giant file.

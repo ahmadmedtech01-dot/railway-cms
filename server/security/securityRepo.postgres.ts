@@ -54,6 +54,17 @@ export class PostgresSecurityRepo implements SecurityRepo {
       suspiciousDetectionEnabled: row.suspiciousDetectionEnabled,
       violationLimit: row.violationLimit,
       allowedBrowsers: row.allowedBrowsers ?? [],
+      mediaSourceGuardEnabled: (row as any).mediaSourceGuardEnabled ?? true,
+      velocityScoringEnabled: (row as any).velocityScoringEnabled ?? true,
+      keyBindingEnabled: (row as any).keyBindingEnabled ?? true,
+      heartbeatV2Enabled: (row as any).heartbeatV2Enabled ?? true,
+      serverGatedWindowEnabled: (row as any).serverGatedWindowEnabled ?? false,
+      shortTokenTtlEnabled: (row as any).shortTokenTtlEnabled ?? false,
+      tokenTtlPlaylistSec: (row as any).tokenTtlPlaylistSec ?? 25,
+      tokenTtlSegmentSec: (row as any).tokenTtlSegmentSec ?? 12,
+      tokenTtlKeySec: (row as any).tokenTtlKeySec ?? 12,
+      heartbeatIntervalSec: (row as any).heartbeatIntervalSec ?? 12,
+      downloadAheadLimit: (row as any).downloadAheadLimit ?? 25,
     };
   }
 
@@ -75,6 +86,17 @@ export class PostgresSecurityRepo implements SecurityRepo {
       suspiciousDetectionEnabled: settings.suspiciousDetectionEnabled ?? true,
       violationLimit: settings.violationLimit,
       allowedBrowsers: settings.allowedBrowsers,
+      mediaSourceGuardEnabled: settings.mediaSourceGuardEnabled ?? true,
+      velocityScoringEnabled: settings.velocityScoringEnabled ?? true,
+      keyBindingEnabled: settings.keyBindingEnabled ?? true,
+      heartbeatV2Enabled: settings.heartbeatV2Enabled ?? true,
+      serverGatedWindowEnabled: settings.serverGatedWindowEnabled ?? false,
+      shortTokenTtlEnabled: settings.shortTokenTtlEnabled ?? false,
+      tokenTtlPlaylistSec: settings.tokenTtlPlaylistSec ?? 25,
+      tokenTtlSegmentSec: settings.tokenTtlSegmentSec ?? 12,
+      tokenTtlKeySec: settings.tokenTtlKeySec ?? 12,
+      heartbeatIntervalSec: settings.heartbeatIntervalSec ?? 12,
+      downloadAheadLimit: settings.downloadAheadLimit ?? 25,
     };
 
     if (existing.length > 0) {

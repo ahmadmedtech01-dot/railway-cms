@@ -1,0 +1,170 @@
+PHASE 6 — STRICT SLIDING WINDOW BASED ON VERIFIED PLAYBACK TIME
+====================================================
+
+Current issue:
+If playlist window advances when segments are fetched, downloader can walk the playlist.
+
+Fix:
+Do not advance playlist window based only on segment fetches.
+
+New rule:
+Playlist window must be based on server-verified playback progress from heartbeat, not download progress.
+
+Backend session state should track:
+- verifiedCurrentTime
+- verifiedWatchedSeconds
+- lastHeartbeatAt
+- lastHeartbeatSequence
+- lastAllowedSegmentIndex
+- maxAllowedSegmentIndex
+- downloadedSegmentIndexes
+- downloadedMediaSeconds
+- downloadAheadSeconds
+- lastSeekRequestAt
+- approvedSeekTarget
+- revoked/blocked state
+
+Heartbeat interval:
+- default strict protected videos: 10–15 seconds
+- configurable
+- mobile tolerance available
+
+Allowed segment calculation:
+- segmentDuration = actual HLS segment duration
+- currentSegmentIndex = floor(verifiedCurrentTime / segmentDuration)
+- allowedLookAheadSegments = configurable, default 6
+- maxAllowedSegmentIndex = currentSegmentIndex + allowedLookAheadSegments
+- also allow small seek tolerance if a valid seek event was approved
+
+Reject:
+- segmentIndex > maxAllowedSegmentIndex
+- segmentIndex far behind/forward in suspicious pattern
+- segment requested before valid heartbeat/session
+- segment requested after session revoked
+- segment requested too quickly beyond watched time
+
+Log:
+OUT_OF_WINDOW_SEGMENT_REQUEST
+
+Important:
+Normal player buffering and seeking must still work.
+Add seek flow:
+- player sends seek-intent event before/after seeking
+- backend validates session and requested seek time
+- backend temporarily approves a small segment window around seek target
+- approval expires quickly, e.g. 15–30 seconds
+
+====================================================
+PHASE 7 — DOWNLOAD VELOCITY SCORING
+====================================================
+
+Create:
+server/security/downloadVelocityGuard.ts
+
+Track per playback session:
+- segment count fetched
+- unique segment indexes fetched
+- repeated segment indexes
+- downloadedMediaSeconds
+- verifiedWatchedSeconds
+- downloadAheadSeconds
+- requestsPerSecond
+- segmentsPerMinute
+- playlistFetchesPerMinute
+- keyFetchesPerMinute
+- concurrentSegmentRequests
+- quality variant switching behavior
+
+Core rule:
+The user should not be able to download much more media duration than they have actually watched.
+
+Default:
+- maxDownloadAheadSeconds: 30–45 seconds
+- premium strict mode: 20–30 seconds
+- mobile tolerance: 45–60 seconds
+
+If:
+downloadAheadSeconds > maxDownloadAheadSeconds
+
+Then:
+- add abuse score
+- log DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+- if repeated, revoke session
+- block /hls /seg /key for cooldown
+
+Also detect playlist walking:
+- playlist fetched repeatedly without matching playback progress
+- segment window advances but heartbeat currentTime does not
+- many unique segments downloaded while currentTime remains low
+- key requests for future windows
+- sequential windows requested too fast
+
+Log:
+PLAYLIST_WALKING_SUSPECTED
+
+====================================================
+PHASE 8 — REDUCE TOKEN TTL WITHOUT BREAKING PLAYBACK
+====================================================
+
+Add settings, but do not hard-break existing behavior.
+
+New configurable defaults:
+- playlist/window token TTL: 20–30 seconds
+- segment token TTL: 10–15 seconds
+- key token TTL: 10–15 seconds
+- clock skew tolerance: 3 seconds
+
+Make these configurable:
+- global security settings
+- per-video override
+
+Token binding must include:
+- publicId/videoId
+- playbackSessionId
+- segment index
+- quality/rendition if available
+- expiry
+- path scope
+- method
+- key group id if available
+
+Do not allow one signed URL to access another segment or another quality.
+
+====================================================
+PHASE 9 — WINDOW-BOUND KEY ACCESS
+====================================================
+
+Current risk:
+If session key is reusable for too long, CocoCut can decrypt captured segments.
+
+Improve /key:
+1. Key request must be session-valid.
+2. Key request must be current-window-valid.
+3. Key request must be tied to:
+   - playbackSessionId
+   - publicId
+   - current segment window
+   - expiry
+   - keyGroupId if implemented
+
+Best implementation:
+- rotate ephemeral key per segment group/window.
+- example:
+  keyGroup 1 = segments 0–5
+  keyGroup 2 = segments 6–11
+  keyGroup 3 = segments 12–17
+
+If full key rotation is too big:
+- keep current ephemeral session key
+- but restrict /key access to current verified playback window
+- shorten key token TTL
+- rate-limit key requests
+- revoke on key replay pattern
+
+Log:
+KEY_REPLAY_SUSPECTED
+KEY_REJECTED
+
+Never cache key response publicly:
+Cache-Control: no-store, private
+

@@ -3,6 +3,7 @@ import { useParams, useSearch } from "wouter";
 import Hls from "hls.js";
 import { useSecurityViolations, formatCountdown } from "@/security/useSecurityViolations";
 import type { ViolationType } from "@/security/useSecurityViolations";
+import { installMediaSourceGuard, reportSecurityEvent } from "@/lib/security/mediaSourceGuard";
 
 interface WatermarkSettings {
   logoEnabled?: boolean;
@@ -165,6 +166,11 @@ export default function EmbedPlayerPage() {
   const isRotatingRef = useRef(false);
   const rotationOpIdRef = useRef(0);
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
+  // Hardening hints from manifest endpoint: { intervalSec, v2, msGuard }
+  const hardeningHintRef = useRef<{ intervalSec: number; v2: boolean; msGuard: boolean }>({ intervalSec: 180, v2: false, msGuard: false });
+  // Heartbeat v2 monotonic seq
+  const heartbeatSeqRef = useRef(0);
+  const msGuardCleanupRef = useRef<(() => void) | null>(null);
 
   // Control bridge refs
   const playerReadyRef = useRef(false);
@@ -606,6 +612,20 @@ export default function EmbedPlayerPage() {
         const manifestUrl = data.manifestUrl;
         if (!manifestUrl) { setStatus("error"); setErrorMsg("No manifest URL"); return; }
         if (data.sessionId) streamSidRef.current = data.sessionId;
+        if (data.heartbeat && typeof data.heartbeat === "object") {
+          hardeningHintRef.current = {
+            intervalSec: Number(data.heartbeat.intervalSec) || 180,
+            v2: !!data.heartbeat.v2,
+            msGuard: !!data.heartbeat.msGuard,
+          };
+          if (hardeningHintRef.current.msGuard && !msGuardCleanupRef.current && publicId) {
+            msGuardCleanupRef.current = installMediaSourceGuard({
+              publicId,
+              getSid: () => streamSidRef.current,
+              enabled: true,
+            });
+          }
+        }
 
         if (!videoRef.current) return;
         const video = videoRef.current;
@@ -880,28 +900,65 @@ export default function EmbedPlayerPage() {
   useEffect(() => {
     const sid = streamSidRef.current;
     if (!sid || !publicId) return;
+    const hint = hardeningHintRef.current;
+    const intervalMs = hint.v2 ? Math.max(5, hint.intervalSec) * 1000 : 3 * 60 * 1000;
     rotationIntervalRef.current = setInterval(async () => {
       const currentSid = streamSidRef.current;
       if (!currentSid) return;
       try {
-        const res = await fetch(`/api/player/${publicId}/extend-session`, {
+        const useV2 = hardeningHintRef.current.v2;
+        const v = videoRef.current;
+        const body: any = { sid: currentSid };
+        let endpoint = "extend-session";
+        if (useV2) {
+          endpoint = "heartbeat";
+          heartbeatSeqRef.current += 1;
+          body.seq = heartbeatSeqRef.current;
+          body.nonce = (typeof crypto !== "undefined" && (crypto as any).randomUUID)
+            ? (crypto as any).randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+          body.currentTime = v ? v.currentTime : 0;
+        }
+        const res = await fetch(`/api/player/${publicId}/${endpoint}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sid: currentSid }),
+          body: JSON.stringify(body),
         });
         if (!res.ok) {
-          // Session was revoked or expired — trigger denial so the user sees the
-          // proper "session ended" overlay rather than a silent stall.
           const data = await res.json().catch(() => ({}));
           if (res.status === 403 && data.code === "PLAYBACK_DENIED") {
             triggerDenial(data.signal || "rate_limit");
           }
         }
-        // On success: session TTL extended, same SID, no manifest reload needed.
       } catch {}
-    }, 3 * 60 * 1000);
+    }, intervalMs);
     return () => { if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current); };
   }, [publicId, status]);
+
+  // Forward client-side violation events to the server's security-event endpoint.
+  // (Existing reportViolation() handles client-side counter/cooldown — this adds
+  // server-side abuse scoring so persistent violators get the session revoked.)
+  useEffect(() => {
+    if (!publicId) return;
+    const wrap = (handler: (ev: any) => void) => handler;
+    const onRightClick = wrap((e: MouseEvent) => {
+      if (e && (e.target as HTMLElement)?.closest?.("video")) {
+        reportSecurityEvent(publicId, streamSidRef.current, "RIGHT_CLICK");
+      }
+    });
+    document.addEventListener("contextmenu", onRightClick);
+    return () => document.removeEventListener("contextmenu", onRightClick);
+  }, [publicId]);
+
+  // Cleanup MediaSource guard on unmount
+  useEffect(() => {
+    return () => {
+      if (msGuardCleanupRef.current) {
+        msGuardCleanupRef.current();
+        msGuardCleanupRef.current = null;
+      }
+    };
+  }, []);
 
   // Pause video immediately when violation cooldown block is triggered
   useEffect(() => {

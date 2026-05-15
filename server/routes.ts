@@ -20,7 +20,24 @@ import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } fro
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, type SessionHardeningConfig } from "./video-session";
+
+// Build hardening config from effective security settings
+function buildHardening(s: any): SessionHardeningConfig {
+  return {
+    mediaSourceGuardEnabled: s?.mediaSourceGuardEnabled ?? defaultHardening.mediaSourceGuardEnabled,
+    velocityScoringEnabled: s?.velocityScoringEnabled ?? defaultHardening.velocityScoringEnabled,
+    keyBindingEnabled: s?.keyBindingEnabled ?? defaultHardening.keyBindingEnabled,
+    heartbeatV2Enabled: s?.heartbeatV2Enabled ?? defaultHardening.heartbeatV2Enabled,
+    serverGatedWindowEnabled: s?.serverGatedWindowEnabled ?? defaultHardening.serverGatedWindowEnabled,
+    shortTokenTtlEnabled: s?.shortTokenTtlEnabled ?? defaultHardening.shortTokenTtlEnabled,
+    tokenTtlPlaylistSec: s?.tokenTtlPlaylistSec ?? defaultHardening.tokenTtlPlaylistSec,
+    tokenTtlSegmentSec: s?.tokenTtlSegmentSec ?? defaultHardening.tokenTtlSegmentSec,
+    tokenTtlKeySec: s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec,
+    heartbeatIntervalSec: s?.heartbeatIntervalSec ?? defaultHardening.heartbeatIntervalSec,
+    downloadAheadLimit: s?.downloadAheadLimit ?? defaultHardening.downloadAheadLimit,
+  };
+}
 import type { PlaylistCache } from "./video-session";
 
 function log(message: string) {
@@ -1743,24 +1760,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : ((await secRepo.getVideo(video.id)) ?? globalSec);
       const suspiciousEnabled = isAdminPreview ? false : (effectiveClientSec.suspiciousDetectionEnabled !== false);
       const effectiveViolationLimit = effectiveClientSec.violationLimit ?? 3;
+      // Admin preview disables behavior-changing hardening so authors can scrub freely
+      const hardening = isAdminPreview
+        ? { ...buildHardening(effectiveClientSec), serverGatedWindowEnabled: false, shortTokenTtlEnabled: false, velocityScoringEnabled: false }
+        : buildHardening(effectiveClientSec);
+      const heartbeatHint = { intervalSec: hardening.heartbeatIntervalSec, v2: hardening.heartbeatV2Enabled, msGuard: hardening.mediaSourceGuardEnabled };
 
       if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
-        const sid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit);
+        const sid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest);
-        return res.json({ manifestUrl, sourceType: `${providerType}_proxy`, sessionId: sid, videoId: video.id, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
+        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
+        return res.json({ manifestUrl, sourceType: `${providerType}_proxy`, sessionId: sid, videoId: video.id, videoDuration: video.duration || null, heartbeat: heartbeatHint, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       const client = await getS3Client();
       const s3cfg = await getS3Config();
 
       if (client && s3cfg.bucket) {
-        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit);
+        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
-        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", ttls.manifest);
-        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, videoDuration: video.duration || null, ...(isAdminPreview ? { adminPreview: true } : {}) });
+        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
+        return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, videoDuration: video.duration || null, heartbeat: heartbeatHint, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       // Local HLS fallback
@@ -1858,7 +1882,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         originUrl = await getSignedUrl(client, cmd, { expiresIn: 30 });
       }
 
-      const ttls = getTokenTTL();
+      const ttls = getSessionTokenTTL(sid);
 
       if (isMaster) {
         const fetchRes = await fetch(originUrl);
@@ -1920,19 +1944,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         const totalSegs = cached.segments.length;
         const dh = session.deviceHash;
+        const gated = session.hardening.serverGatedWindowEnabled;
 
-        // Full VOD playlist — all segments, proper VOD tags so HLS.js knows the
-        // full duration and allows seeking to any position without reloading.
+        // Compute window when gated mode is on: [currentIdx-2, currentIdx+downloadAheadLimit]
+        const windowStart = gated ? Math.max(0, session.currentSegmentIndex - 2) : 0;
+        const windowEnd = gated
+          ? Math.min(totalSegs - 1, session.currentSegmentIndex + Math.max(2, session.hardening.downloadAheadLimit))
+          : totalSegs - 1;
+        const isFinalWindow = windowEnd >= totalSegs - 1;
+
+        // Full VOD playlist (legacy) or live-like windowed playlist (gated)
         const lines: string[] = [
           "#EXTM3U",
           "#EXT-X-VERSION:3",
-          "#EXT-X-PLAYLIST-TYPE:VOD",
+          ...(gated ? [] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
           `#EXT-X-TARGETDURATION:${cached.targetDuration}`,
-          "#EXT-X-MEDIA-SEQUENCE:0",
+          `#EXT-X-MEDIA-SEQUENCE:${windowStart}`,
         ];
 
         let lastKeyEmitted = "";
-        for (let i = 0; i < totalSegs; i++) {
+        for (let i = windowStart; i <= windowEnd; i++) {
           const seg = cached.segments[i];
 
           if (seg.keyTag && seg.keyTag !== lastKeyEmitted) {
@@ -1949,8 +1980,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           lines.push(buildSignedProxyUrl(proxyBase, sid, segSubPath, ttls.segment));
         }
 
-        // VOD always ends with ENDLIST
-        lines.push("#EXT-X-ENDLIST");
+        // VOD/final-window ends with ENDLIST. Mid-window stays open so hls.js polls.
+        if (!gated || isFinalWindow) {
+          lines.push("#EXT-X-ENDLIST");
+        }
 
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
         res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -2010,6 +2043,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (acquire.abused) {
       const bi = getBreachInfo(sid);
       return res.status(403).json({ code: "PLAYBACK_DENIED", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Video playback denied due to suspicious activity", signal: acquire.reason?.signal });
+    }
+
+    // Velocity scoring — bulk download / "download ahead" defense
+    const velocity = trackSegmentVelocity(sid);
+    if (velocity.abused) {
+      releaseSegment(sid);
+      const bi = getBreachInfo(sid);
+      return res.status(403).json({ code: "PLAYBACK_DENIED", error: "SECURITY_BREACH", breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message: "Download velocity exceeded", signal: velocity.reason?.signal });
     }
 
     try {
@@ -2086,7 +2127,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const newSession = getSession(newSid);
       if (!newSession) return res.status(500).json({ message: "Failed to create rotated session" });
 
-      const ttls = getTokenTTL();
+      const ttls = getSessionTokenTTL(newSid);
       const dh = newSession.deviceHash;
       const proxyBase = `/hls/${req.params.publicId}/master.m3u8`;
       const manifestUrl = buildSignedProxyUrl(proxyBase, newSid, "/master.m3u8", ttls.manifest);
@@ -2116,6 +2157,114 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       return res.json({ ok: true, rotationIntervalMs: SESSION_ROTATION_MS });
     } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ── Heartbeat V2 — stronger session keepalive with replay/integrity checks ──
+  // Body: { sid, seq, nonce, currentTime, segmentIndex? }
+  //  - seq must be strictly monotonic per session
+  //  - nonce must be unseen in the last 64 heartbeats
+  //  - currentTime cannot advance faster than wall clock × 2.5 (+5s buffer)
+  // When serverGatedWindowEnabled=true the playlist window only advances here.
+  app.post("/api/player/:publicId/heartbeat", async (req: any, res: any) => {
+    try {
+      const { sid, seq, nonce, currentTime, segmentIndex } = req.body || {};
+      if (!sid) return res.status(400).json({ message: "Missing sid" });
+
+      const session = getSession(sid);
+      if (!session || session.revoked) {
+        return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session invalid or expired" });
+      }
+      if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
+
+      const ua = req.headers["user-agent"] || "";
+      if (!validateUserAgent(sid, ua)) {
+        return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
+      }
+
+      const result = verifyHeartbeat(sid, {
+        seq: Number(seq),
+        nonce: String(nonce || ""),
+        currentTime: Number(currentTime),
+        segmentIndex: typeof segmentIndex === "number" ? segmentIndex : undefined,
+      });
+      if (!result.ok) {
+        const bi = getBreachInfo(sid);
+        return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Heartbeat rejected", signal: result.reason, breach: `${bi.breachCount}/${bi.violationLimit}` });
+      }
+      extendSession(sid);
+
+      const hardening = session.hardening;
+      return res.json({
+        ok: true,
+        rotationIntervalMs: SESSION_ROTATION_MS,
+        intervalSec: hardening.heartbeatIntervalSec,
+        windowStart: result.windowStart,
+        windowEnd: result.windowEnd,
+        segmentIndex: result.newSegmentIndex,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ── Client-reported security events — MediaSource hooks, focus loss, devtools, etc. ──
+  // Body: { sid?, eventType, meta? }
+  // High-severity events (MEDIA_SOURCE_HOOK_DETECTED, APPEND_BUFFER_HOOK_DETECTED,
+  // HLS_BUFFER_CAPTURE_SUSPECTED) immediately revoke the session.
+  app.post("/api/player/:publicId/security-event", async (req: any, res: any) => {
+    try {
+      const { sid, eventType, meta } = req.body || {};
+      const publicId = req.params.publicId;
+      if (!eventType || typeof eventType !== "string" || eventType.length > 80) {
+        return res.status(400).json({ message: "Missing or invalid eventType" });
+      }
+      const allowed = new Set([
+        "MEDIA_SOURCE_HOOK_DETECTED",
+        "APPEND_BUFFER_HOOK_DETECTED",
+        "HLS_BUFFER_CAPTURE_SUSPECTED",
+        "OUT_OF_WINDOW_SEGMENT_REQUEST",
+        "DOWNLOAD_AHEAD_LIMIT_EXCEEDED",
+        "KEY_REJECTED",
+        "SEGMENT_REJECTED",
+        "SESSION_REVOKED",
+        "RIGHT_CLICK",
+        "FOCUS_LOST",
+        "DEVTOOLS_DETECTED",
+        "FULLSCREEN_REQUIRED_BREACH",
+        "DOWNLOAD_ATTEMPT",
+      ]);
+      if (!allowed.has(eventType)) {
+        return res.status(400).json({ message: "Unknown eventType" });
+      }
+
+      let revoked = false;
+      let score = 0;
+      if (sid && typeof sid === "string") {
+        const session = getSession(sid);
+        if (session && session.publicId === publicId) {
+          const r = recordSecurityEvent(sid, eventType);
+          revoked = r.revoked;
+          score = r.score;
+        }
+      }
+
+      const ip = ((req.headers["x-forwarded-for"] as string) || req.ip || "").split(",")[0].trim();
+      const video = await storage.getVideoByPublicId(publicId).catch(() => null);
+      // Best-effort audit log (do not block on failure)
+      try {
+        await storage.createAuditLog({
+          action: "SECURITY_EVENT",
+          meta: { eventType, publicId, sid: sid || null, videoId: video?.id || null, score, revoked, clientMeta: meta || null } as any,
+          ip,
+        } as any);
+      } catch {}
+
+      log(`SECURITY_EVENT: eventType=${eventType} sid=${sid || "none"} publicId=${publicId} revoked=${revoked} score=${score}`);
+      return res.json({ ok: true, revoked, score });
+    } catch (e: any) {
+      log(`SECURITY_EVENT_ERROR: ${e.message}`);
       res.status(500).json({ message: e.message });
     }
   });
@@ -2306,12 +2455,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : ((await secRepo.getVideo(video.id)) ?? globalSec);
       const suspiciousEnabled = effectiveClientSec2.suspiciousDetectionEnabled !== false;
       const effectiveViolationLimit2 = effectiveClientSec2.violationLimit ?? 3;
-      const ttls = getTokenTTL();
+      const hardening2 = buildHardening(effectiveClientSec2);
       let manifestUrl: string | null = null;
       if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
-        const newSid = createSession(video.publicId, video.hlsS3Prefix!, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2);
+        const newSid = createSession(video.publicId, video.hlsS3Prefix!, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+        const ttls = getSessionTokenTTL(newSid);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
       }
 
@@ -2485,7 +2635,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const cfg = conn.config as any;
       const altUa = req.headers["user-agent"] || "";
       const altDh = computeDeviceHash(altUa);
-      const altTtls = getTokenTTL();
       const altGlobalSec = await secRepo.getGlobal();
       const altVideoUseGlobal = await secRepo.getUseGlobal(video.id);
       const altEffectiveSec = altVideoUseGlobal
@@ -2493,7 +2642,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : ((await secRepo.getVideo(video.id)) ?? altGlobalSec);
       const altSuspiciousEnabled = altEffectiveSec.suspiciousDetectionEnabled !== false;
       const altViolationLimit = altEffectiveSec.violationLimit ?? 3;
-      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled, altViolationLimit);
+      const altHardening = buildHardening(altEffectiveSec);
+      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled, altViolationLimit, altHardening);
+      const altTtls = getSessionTokenTTL(sid);
       const proxyBase = `/hls/${video.publicId}/master.m3u8`;
       const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", altTtls.manifest);
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();

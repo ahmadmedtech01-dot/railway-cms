@@ -1,0 +1,108 @@
+PHASE 4 — Reduce Token TTLs Safely
+────────────────────────────────────────
+
+Current:
+- playlist and segment URLs may use 60 sec TTL.
+
+Required:
+Add configurable shorter TTLs for strict mode.
+
+Defaults:
+- playlist/window token TTL: 20–30 seconds
+- segment token TTL: 10–15 seconds
+- key token TTL: 10–15 seconds
+- clock skew tolerance: 3 seconds
+
+Make these configurable:
+Global security settings:
+- playlistTokenTtlSeconds
+- segmentTokenTtlSeconds
+- keyTokenTtlSeconds
+- tokenClockSkewSeconds
+
+Per-video override:
+- inherit global by default
+- allow stricter premium values
+
+Segment token must be bound to:
+- session ID
+- video/publicId
+- exact segment index/path
+- quality/rendition if applicable
+- expiry
+- token type = seg
+- optional window id
+- optional device/user-agent hash
+
+Playlist token must be bound to:
+- session ID
+- video/publicId
+- window start/end
+- expiry
+- token type = hls
+
+Key token must be bound to:
+- session ID
+- video/publicId
+- key group/window id
+- expiry
+- token type = key
+
+Acceptance:
+- Copied /seg URL fails after expiry.
+- Copied /key URL fails after expiry.
+- URL from one session cannot work in another.
+- URL from one video cannot work for another.
+- Valid playback continues because player refreshes normally.
+
+────────────────────────────────────────
+PHASE 5 — Add Window-Bound Key Protection
+────────────────────────────────────────
+
+Problem:
+If one session key stays reusable too long, captured segments become easier to reconstruct.
+
+Required:
+Tighten /key behavior without breaking existing AES-HLS.
+
+Minimum implementation:
+- /key must validate:
+  - active session
+  - non-revoked session
+  - valid HMAC
+  - expiry
+  - video/publicId
+  - current verified playback window
+  - key group/window id
+  - request rate
+- If key request is outside current verified window:
+  - return 403
+  - log KEY_REJECTED
+  - add abuse score
+
+Preferred implementation if architecture allows:
+- Rotate ephemeral AES key per window or per small segment group.
+- Example:
+  - key group 1 = segments 0–5
+  - key group 2 = segments 6–11
+  - key group 3 = segments 12–17
+- The playlist should reference only the current allowed key group.
+- Key endpoint should only return key for currently allowed group.
+- Never expose master key.
+- Never cache key publicly.
+
+If full per-window key rotation is too risky for this pass:
+- Keep existing double encryption but add strict key request validation and key-window binding metadata.
+- Do not rewrite transcoding pipeline unless necessary.
+
+Headers for /key:
+- Cache-Control: no-store, private
+- Content-Type: application/octet-stream
+- no detailed error body
+
+Acceptance:
+- Normal playback works.
+- Key cannot be fetched after session revocation.
+- Key cannot be fetched for future windows.
+- Excessive key requests add abuse score.
+- No master key ever reaches browser.

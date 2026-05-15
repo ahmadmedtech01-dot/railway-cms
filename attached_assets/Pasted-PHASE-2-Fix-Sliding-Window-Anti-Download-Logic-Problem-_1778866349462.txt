@@ -1,0 +1,122 @@
+PHASE 2 — Fix Sliding Window Anti-Download Logic
+────────────────────────────────────────
+
+Problem:
+Current sliding window can still be walked if playlist window advances when segments are fetched.
+
+Required:
+Modify sliding window so it advances only by server-verified playback progress, not by segment fetch count.
+
+Rules:
+- Playlist window must be based on verified currentTime from heartbeat.
+- Segment fetch alone must NOT advance the playlist window.
+- Store per playback session:
+  - playbackSessionId
+  - publicId/videoId
+  - verifiedCurrentTime
+  - verifiedWatchedSeconds
+  - lastHeartbeatAt
+  - lastHeartbeatSequence
+  - maxAllowedSegmentIndex
+  - downloadedSegmentIndexes
+  - downloadedSegmentDuration
+  - downloadAheadSeconds
+  - lastAllowedWindowStart
+  - lastAllowedWindowEnd
+  - seekGraceUntil
+  - seekTargetTime nullable
+  - abuseScore
+  - revokedAt nullable
+  - blockUntil nullable
+
+Window calculation:
+- segmentDuration = actual segment duration if available, else safe fallback.
+- verifiedSegmentIndex = floor(verifiedCurrentTime / segmentDuration)
+- prebufferAllowanceSegments = configurable, default equivalent to 20–30 seconds.
+- windowSizeSegments = configurable, default 6 segments.
+- allowedStart = max(0, verifiedSegmentIndex - 1)
+- allowedEnd = verifiedSegmentIndex + prebufferAllowanceSegments
+- Playlist should only reveal segments inside allowed range/window.
+- Do NOT reveal full playlist.
+- Do NOT add #EXT-X-ENDLIST until final allowed end actually reaches final video window and playback is near the end.
+
+Out-of-window behavior:
+- If /seg requests a segment index greater than allowedEnd:
+  - return 403
+  - log OUT_OF_WINDOW_SEGMENT_REQUEST
+  - add abuse score
+  - if repeated, revoke session
+- If /seg requests old segment far behind current window repeatedly:
+  - allow limited seeking/rebuffer tolerance
+  - otherwise add suspicious score
+
+Seeking:
+- Add a server-approved seek flow if not already present.
+- When player seeks, send a signed seek event/heartbeat:
+  - currentTime
+  - targetTime
+  - sequence
+  - sessionId
+- Backend allows a short seek grace window for that target.
+- Do not allow arbitrary playlist walking through fake seeks.
+- Rate-limit seeks.
+- Large seek jumps repeatedly should add abuse score.
+
+Acceptance:
+- Repeatedly fetching /hls must not reveal the whole video.
+- Fetching segments must not advance the playlist.
+- Only real verified playback progress should advance allowed segments.
+- Normal playback and seeking must still work.
+
+────────────────────────────────────────
+PHASE 3 — Add Download-Ahead / Download Velocity Scoring
+────────────────────────────────────────
+
+Problem:
+Downloader can fetch allowed windows faster than human playback while staying under simple request thresholds.
+
+Required:
+Add server-side download velocity scoring.
+
+Track per session:
+- verifiedWatchedDuration
+- downloadedSegmentDuration
+- uniqueDownloadedSegmentIndexes
+- downloadedAheadSeconds
+- segmentFetchRate
+- playlistFetchRate
+- keyFetchRate
+
+Formula:
+downloadAheadSeconds = downloadedSegmentDuration - verifiedWatchedDuration
+
+Default thresholds:
+- maxDownloadAheadSeconds: 30 seconds
+- warningDownloadAheadSeconds: 20 seconds
+- criticalDownloadAheadSeconds: 45 seconds
+- maxUniqueSegmentsPerMinute: configurable
+- maxPlaylistFetchesPerMinute: configurable
+- maxKeyFetchesPerMinute: configurable
+
+Behavior:
+- If downloadAheadSeconds > warning:
+  - log DOWNLOAD_AHEAD_WARNING
+  - add abuse score
+- If downloadAheadSeconds > max:
+  - log DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+  - return 429/403 for segment requests temporarily
+- If critical or repeated:
+  - revoke session
+  - /hls, /seg, /key return 403
+  - show playback blocked overlay on frontend
+
+Important:
+Do not count duplicate retry of same segment too harshly because hls.js may retry on network errors.
+Count unique segment indexes mainly.
+Add mobile/network tolerance.
+
+Acceptance:
+- Normal hls.js buffering works.
+- Slow network retries do not false-block.
+- Bulk/fast segment fetching is detected.
+- Session revocation immediately blocks /hls, /seg, /key.

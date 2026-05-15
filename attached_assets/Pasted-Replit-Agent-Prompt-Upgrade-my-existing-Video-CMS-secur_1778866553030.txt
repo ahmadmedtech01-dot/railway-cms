@@ -1,0 +1,181 @@
+Replit Agent Prompt:
+
+Upgrade my existing Video CMS security WITHOUT disturbing or replacing any current security layers.
+
+Current layers already working:
+- Raw B2/R2/S3 URLs are hidden
+- /hls, /seg, /key protected routes exist
+- HMAC signed tokens exist
+- sliding playlist exists
+- AES-HLS encryption exists
+- iframe-only mode exists
+- embed token system exists
+- abuse detection exists
+- DevTools/right-click/focus protections exist
+
+Do not rewrite the whole system. Only add missing Polytronx-like hardening on top.
+
+Main goal:
+Fix the gap where CocoCut / downloader recording mode can still capture HLS through hls.js / MediaSource buffer exposure.
+
+Implement these improvements:
+
+1. MediaSource / hls.js Buffer Exposure Guard
+Create a new defensive module:
+
+client/src/lib/security/mediaSourceGuard.ts
+
+It must detect tampering or proxying of:
+- window.MediaSource
+- MediaSource.prototype.addSourceBuffer
+- MediaSource.prototype.endOfStream
+- SourceBuffer.prototype.appendBuffer
+- SourceBuffer.prototype.remove
+- URL.createObjectURL
+- URL.revokeObjectURL
+
+Capture native references very early before hls.js initializes.
+Re-check:
+- before HLS attach
+- after manifest parsed
+- every 10–15 seconds during playback
+
+If any function is monkey-patched, proxied, replaced, or suspicious:
+- pause playback immediately
+- send security event to backend
+- show “Security Risk Detected” overlay
+- revoke playback session if repeated or critical
+
+Do not break normal hls.js playback.
+
+2. Add AppendBuffer Capture Detection
+Downloader extensions often hook SourceBuffer.appendBuffer to copy decrypted video buffers.
+Detect this specifically.
+If appendBuffer is modified after player boot:
+- log APPEND_BUFFER_HOOK_DETECTED
+- pause video
+- revoke token/session based on threshold
+- make /hls, /seg, /key return 403 for that session after revocation
+
+3. Improve Sliding Window Anti-Download
+Do NOT advance playlist window just because segments are fetched.
+Window must advance only by verified playback progress from heartbeat.
+
+Add server-side tracking:
+- verifiedCurrentTime
+- watchedSeconds
+- maxAllowedSegmentIndex
+- downloadedSegmentDuration
+- downloadAheadSeconds
+
+Reject segment requests if:
+- segment index is ahead of verified playback window
+- downloaded duration is much higher than watched duration
+- playlist is being walked faster than real playback
+
+Default rules:
+- window size: 6 segments
+- max prebuffer ahead: 30 seconds
+- max download ahead: 30–45 seconds
+
+4. Reduce Token TTLs
+Keep existing token system but make stricter defaults:
+- playlist token TTL: 20–30 seconds
+- segment token TTL: 10–15 seconds
+- key token TTL: 10–15 seconds
+- keep 3 seconds clock skew tolerance
+
+Make TTLs configurable in global/per-video security settings.
+
+5. Strengthen Key Access
+/key must be session-bound, video-bound, time-window-bound, and playback-progress-bound.
+If possible, rotate ephemeral AES key per small segment group/window.
+If full rotation is too large, at least restrict key access to the current verified playback window.
+Log KEY_REJECTED on invalid access.
+
+6. Strict Download Velocity Scoring
+Add server-side scoring:
+- too many segments ahead of playback
+- too many playlist refreshes
+- too many key requests
+- downloading faster than real playback
+- out-of-window segment request
+
+When threshold reached:
+- revoke session
+- block /hls, /seg, /key for cooldown
+- return 403/429
+- log SESSION_REVOKED
+
+7. Backend Security Event Enforcement
+Create/extend:
+
+POST /api/player/:publicId/security-event
+
+Events:
+- MEDIA_SOURCE_HOOK_DETECTED
+- APPEND_BUFFER_HOOK_DETECTED
+- HLS_BUFFER_CAPTURE_SUSPECTED
+- OUT_OF_WINDOW_SEGMENT_REQUEST
+- DOWNLOAD_AHEAD_LIMIT_EXCEEDED
+- KEY_REJECTED
+- SEGMENT_REJECTED
+- SESSION_REVOKED
+
+Backend must:
+- validate session/token
+- store event in audit log
+- update abuse score
+- revoke session when threshold is reached
+- never trust frontend alone; use backend enforcement
+
+8. Stronger Heartbeat
+For protected videos, heartbeat every 10–15 seconds.
+Payload:
+- sessionId
+- publicId
+- currentTime
+- duration
+- playing/paused
+- sequence number
+- nonce
+- client integrity status
+- watermark status
+
+Backend rejects stale sequence, wrong session, impossible time jump, revoked session, or wrong video.
+
+9. Admin Settings
+Add settings without removing old settings:
+- Enable MediaSource Guard
+- Enable AppendBuffer Hook Detection
+- Enable strict sliding window
+- Max prebuffer seconds
+- Max download ahead seconds
+- Playlist token TTL
+- Segment token TTL
+- Key token TTL
+- Revoke session on critical tamper
+- Heartbeat strict mode
+- Cooldown duration
+
+Allow global default + per-video override.
+
+10. Acceptance Criteria
+- Existing video playback still works
+- Existing security layers remain untouched
+- Admin preview works
+- LMS iframe works
+- B2/R2/S3 raw URLs still hidden
+- CocoCut-style appendBuffer hook is detected
+- Segment walking faster than playback is blocked
+- Copied segment/key URLs expire quickly
+- After session revoke, /hls /seg /key return 403
+- No TypeScript errors
+- No upload/transcode/storage flow broken
+
+Important:
+Do not add fake DRM labels.
+If this is AES-HLS, call it AES-HLS, not Widevine/FairPlay.
+Do not implement downloader code.
+Only defensive security hardening.
+Keep code modular and clean.
