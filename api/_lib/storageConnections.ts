@@ -3,7 +3,7 @@ import { and, eq, ne } from "drizzle-orm";
 import { db } from "./db.js";
 import { storageConnections } from "./schema.js";
 
-export type StorageProvider = "backblaze_b2" | "aws_s3" | "cloudflare_r2";
+export type StorageProvider = "backblaze_b2" | "aws_s3" | "cloudflare_r2" | "bunny_net";
 
 export interface NormalizedStorageConfig {
   bucket: string;
@@ -34,8 +34,8 @@ export function parseCreateConnectionPayload(body: unknown): CreateConnectionInp
 
   const input = body as Record<string, unknown>;
   const provider = toNonEmptyString(input.provider) as StorageProvider;
-  if (provider !== "backblaze_b2" && provider !== "aws_s3" && provider !== "cloudflare_r2") {
-    throw new Error("provider must be backblaze_b2, aws_s3, or cloudflare_r2");
+  if (provider !== "backblaze_b2" && provider !== "aws_s3" && provider !== "cloudflare_r2" && provider !== "bunny_net") {
+    throw new Error("provider must be backblaze_b2, aws_s3, cloudflare_r2, or bunny_net");
   }
 
   const name = toNonEmptyString(input.name);
@@ -48,10 +48,25 @@ export function parseCreateConnectionPayload(body: unknown): CreateConnectionInp
       ? (input.config as Record<string, unknown>)
       : input;
 
-  const bucket = toNonEmptyString(cfgInput.bucket);
-  const endpoint = toNonEmptyString(cfgInput.endpoint);
   const rawPrefix = normalizePrefix(cfgInput.rawPrefix, "raw/");
   const hlsPrefix = normalizePrefix(cfgInput.hlsPrefix, "hls/");
+
+  // Bunny.net has a different config shape (storageZoneName + pullZoneUrl instead of bucket + endpoint)
+  if (provider === "bunny_net") {
+    const storageZoneName = toNonEmptyString(cfgInput.storageZoneName);
+    if (!storageZoneName) throw new Error("storageZoneName is required for bunny_net");
+    const pullZoneUrl = toNonEmptyString(cfgInput.pullZoneUrl);
+    if (!pullZoneUrl) throw new Error("pullZoneUrl is required for bunny_net");
+    const storageRegion = toNonEmptyString(cfgInput.storageRegion) || "de";
+    return {
+      provider,
+      name,
+      config: { storageZoneName, pullZoneUrl, rawPrefix, hlsPrefix, storageRegion } as any,
+    };
+  }
+
+  const bucket = toNonEmptyString(cfgInput.bucket);
+  const endpoint = toNonEmptyString(cfgInput.endpoint);
 
   if (!bucket) {
     throw new Error("bucket is required");
@@ -194,6 +209,28 @@ export async function testStorageConnection(conn: {
     } catch (error: any) {
       console.error("STORAGE_CONNECTION_TEST_ERROR", error);
       return { ok: false, error: String(error?.message || error) };
+    }
+  }
+
+  if (conn.provider === "bunny_net") {
+    const storageZoneName = toNonEmptyString(cfg.storageZoneName);
+    if (!storageZoneName) return { ok: false, error: "storageZoneName is required" };
+    const apiKey = process.env.BUNNY_API_KEY;
+    if (!apiKey) return { ok: false, error: "BUNNY_API_KEY is missing from server environment" };
+    try {
+      const region: string = toNonEmptyString(cfg.storageRegion) || "de";
+      const baseUrl = region === "de" || !region ? "https://storage.bunnycdn.com" : `https://${region}.storage.bunnycdn.com`;
+      const res = await fetch(`${baseUrl}/${storageZoneName}/`, {
+        headers: { AccessKey: apiKey },
+      });
+      // 200 = zone exists and is accessible; 404 from Bunny = zone exists but is empty
+      if (res.status === 200 || res.status === 404) {
+        return { ok: true, message: `Bunny storage zone reachable (HTTP ${res.status})` };
+      }
+      const text = await res.text().catch(() => "");
+      return { ok: false, error: `HTTP ${res.status}: ${text}` };
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message || e) };
     }
   }
 

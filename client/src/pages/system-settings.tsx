@@ -98,12 +98,15 @@ export default function SystemSettingsPage() {
   });
 
   const [showAddConn, setShowAddConn] = useState(false);
-  const [connProvider, setConnProvider] = useState<"backblaze_b2" | "aws_s3" | "cloudflare_r2">("backblaze_b2");
+  const [connProvider, setConnProvider] = useState<"backblaze_b2" | "aws_s3" | "cloudflare_r2" | "bunny_net">("backblaze_b2");
   const [connName, setConnName] = useState("Backblaze B2 - mytestvideo");
   const [connBucket, setConnBucket] = useState("mytestvideo");
   const [connEndpoint, setConnEndpoint] = useState("https://s3.ca-east-006.backblazeb2.com");
   const [connRawPrefix, setConnRawPrefix] = useState("raw/");
   const [connHlsPrefix, setConnHlsPrefix] = useState("hls/");
+  const [connStorageZoneName, setConnStorageZoneName] = useState("");
+  const [connPullZoneUrl, setConnPullZoneUrl] = useState("");
+  const [connStorageRegion, setConnStorageRegion] = useState("de");
   const [connTestResults, setConnTestResults] = useState<Record<string, { ok: boolean; message: string }>>({});
   const [connTestLoading, setConnTestLoading] = useState<Record<string, boolean>>({});
   const [showCorsTip, setShowCorsTip] = useState(false);
@@ -149,9 +152,14 @@ export default function SystemSettingsPage() {
   };
 
   const handleAddConn = () => {
-    const config = (connProvider === "backblaze_b2" || connProvider === "cloudflare_r2")
-      ? { endpoint: connEndpoint, bucket: connBucket, rawPrefix: connRawPrefix, hlsPrefix: connHlsPrefix }
-      : { bucket: connBucket, rawPrefix: connRawPrefix, hlsPrefix: connHlsPrefix };
+    let config: Record<string, string>;
+    if (connProvider === "bunny_net") {
+      config = { storageZoneName: connStorageZoneName, pullZoneUrl: connPullZoneUrl, storageRegion: connStorageRegion, rawPrefix: connRawPrefix, hlsPrefix: connHlsPrefix };
+    } else if (connProvider === "backblaze_b2" || connProvider === "cloudflare_r2") {
+      config = { endpoint: connEndpoint, bucket: connBucket, rawPrefix: connRawPrefix, hlsPrefix: connHlsPrefix };
+    } else {
+      config = { bucket: connBucket, rawPrefix: connRawPrefix, hlsPrefix: connHlsPrefix };
+    }
     createConn.mutate({ name: connName, provider: connProvider, config });
   };
 
@@ -264,7 +272,7 @@ export default function SystemSettingsPage() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium text-foreground">{conn.name}</span>
                   <Badge variant="outline" className="text-xs">
-                    {conn.provider === "backblaze_b2" ? "Backblaze B2" : conn.provider === "cloudflare_r2" ? "Cloudflare R2" : "AWS S3"}
+                    {conn.provider === "backblaze_b2" ? "Backblaze B2" : conn.provider === "cloudflare_r2" ? "Cloudflare R2" : conn.provider === "bunny_net" ? "Bunny.net" : "AWS S3"}
                   </Badge>
                   {conn.isActive && (
                     <Badge className="text-xs bg-primary/10 text-primary border-0">
@@ -288,15 +296,28 @@ export default function SystemSettingsPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                  {cfg.endpoint && <span>Endpoint: <span className="text-foreground font-mono text-[11px]">{cfg.endpoint}</span></span>}
-                  <span>Bucket: <span className="text-foreground font-medium">{cfg.bucket || "—"}</span></span>
-                  <span>Raw prefix: <code className="bg-muted px-1 rounded">{cfg.rawPrefix || "raw/"}</code></span>
-                  <span>HLS prefix: <code className="bg-muted px-1 rounded">{cfg.hlsPrefix || "hls/"}</code></span>
-                  {conn.provider === "backblaze_b2" && (
-                    <span className="col-span-2 text-muted-foreground">Credentials: B2_KEY_ID + B2_APPLICATION_KEY from server environment (never shown here)</span>
-                  )}
-                  {conn.provider === "cloudflare_r2" && (
-                    <span className="col-span-2 text-muted-foreground">Credentials: R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY from server environment (never shown here)</span>
+                  {conn.provider === "bunny_net" ? (
+                    <>
+                      <span>Zone: <span className="text-foreground font-medium">{cfg.storageZoneName || "—"}</span></span>
+                      <span>Region: <span className="text-foreground font-medium">{cfg.storageRegion || "de"}</span></span>
+                      <span className="col-span-2">Pull Zone: <span className="text-foreground font-mono text-[11px]">{cfg.pullZoneUrl || "—"}</span></span>
+                      <span>Raw prefix: <code className="bg-muted px-1 rounded">{cfg.rawPrefix || "raw/"}</code></span>
+                      <span>HLS prefix: <code className="bg-muted px-1 rounded">{cfg.hlsPrefix || "hls/"}</code></span>
+                      <span className="col-span-2 text-muted-foreground">Credentials: BUNNY_API_KEY from server environment. Optional: BUNNY_TOKEN_AUTH_KEY for signed CDN URLs.</span>
+                    </>
+                  ) : (
+                    <>
+                      {cfg.endpoint && <span>Endpoint: <span className="text-foreground font-mono text-[11px]">{cfg.endpoint}</span></span>}
+                      <span>Bucket: <span className="text-foreground font-medium">{cfg.bucket || "—"}</span></span>
+                      <span>Raw prefix: <code className="bg-muted px-1 rounded">{cfg.rawPrefix || "raw/"}</code></span>
+                      <span>HLS prefix: <code className="bg-muted px-1 rounded">{cfg.hlsPrefix || "hls/"}</code></span>
+                      {conn.provider === "backblaze_b2" && (
+                        <span className="col-span-2 text-muted-foreground">Credentials: B2_KEY_ID + B2_APPLICATION_KEY from server environment (never shown here)</span>
+                      )}
+                      {conn.provider === "cloudflare_r2" && (
+                        <span className="col-span-2 text-muted-foreground">Credentials: R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY from server environment (never shown here)</span>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -328,6 +349,11 @@ export default function SystemSettingsPage() {
                     setConnName("Cloudflare R2 - my-bucket");
                     setConnBucket("my-bucket");
                     setConnEndpoint("");
+                  } else if (v === "bunny_net") {
+                    setConnName("Bunny.net - my-zone");
+                    setConnStorageZoneName("");
+                    setConnPullZoneUrl("");
+                    setConnStorageRegion("de");
                   } else {
                     setConnName("AWS S3 - my-bucket");
                     setConnEndpoint("");
@@ -339,6 +365,7 @@ export default function SystemSettingsPage() {
                   <SelectContent>
                     <SelectItem value="backblaze_b2">Backblaze B2 (S3 Compatible)</SelectItem>
                     <SelectItem value="cloudflare_r2">Cloudflare R2 (S3 Compatible)</SelectItem>
+                    <SelectItem value="bunny_net">Bunny.net (Storage + CDN)</SelectItem>
                     <SelectItem value="aws_s3">AWS S3</SelectItem>
                   </SelectContent>
                 </Select>
@@ -347,45 +374,97 @@ export default function SystemSettingsPage() {
                 <Label>Connection Name</Label>
                 <Input value={connName} onChange={e => setConnName(e.target.value)} data-testid="input-conn-name" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label>Bucket Name</Label>
-                  <Input value={connBucket} onChange={e => setConnBucket(e.target.value)} placeholder="mytestvideo" data-testid="input-conn-bucket" />
-                </div>
-                {(connProvider === "backblaze_b2" || connProvider === "cloudflare_r2") && (
+              {connProvider === "bunny_net" ? (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Storage Zone Name</Label>
+                      <Input value={connStorageZoneName} onChange={e => setConnStorageZoneName(e.target.value)} placeholder="my-video-zone" data-testid="input-conn-zone-name" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Storage Region</Label>
+                      <Select value={connStorageRegion} onValueChange={setConnStorageRegion}>
+                        <SelectTrigger data-testid="select-conn-region"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="de">DE — Frankfurt (default)</SelectItem>
+                          <SelectItem value="uk">UK — London</SelectItem>
+                          <SelectItem value="ny">NY — New York</SelectItem>
+                          <SelectItem value="la">LA — Los Angeles</SelectItem>
+                          <SelectItem value="sg">SG — Singapore</SelectItem>
+                          <SelectItem value="syd">SYD — Sydney</SelectItem>
+                          <SelectItem value="br">BR — São Paulo</SelectItem>
+                          <SelectItem value="se">SE — Stockholm</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                   <div className="space-y-1.5">
-                    <Label>S3 Endpoint</Label>
-                    <Input value={connEndpoint} onChange={e => setConnEndpoint(e.target.value)} placeholder={connProvider === "cloudflare_r2" ? "https://<account-id>.r2.cloudflarestorage.com" : "https://s3.ca-east-006.backblazeb2.com"} data-testid="input-conn-endpoint" />
+                    <Label>Pull Zone URL</Label>
+                    <Input value={connPullZoneUrl} onChange={e => setConnPullZoneUrl(e.target.value)} placeholder="https://my-zone.b-cdn.net" data-testid="input-conn-pull-zone-url" />
+                    <p className="text-xs text-muted-foreground">Your Bunny CDN Pull Zone hostname. Used for all server-side file reads and HLS proxying.</p>
                   </div>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label>Raw Prefix</Label>
-                  <Input value={connRawPrefix} onChange={e => setConnRawPrefix(e.target.value)} placeholder="raw/" data-testid="input-conn-raw-prefix" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>HLS Prefix</Label>
-                  <Input value={connHlsPrefix} onChange={e => setConnHlsPrefix(e.target.value)} placeholder="hls/" data-testid="input-conn-hls-prefix" />
-                </div>
-              </div>
-              {connProvider === "backblaze_b2" && (
-                <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                  <Key className="h-4 w-4 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-foreground mb-0.5">B2 credentials are stored in server secrets (never in UI)</p>
-                    <p>Set <code className="bg-background px-1 rounded">B2_KEY_ID</code> and <code className="bg-background px-1 rounded">B2_APPLICATION_KEY</code> in Replit Secrets. The Access Key ID is: <code className="bg-background px-1 rounded">a54c2d711411</code> (display only).</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Raw Prefix</Label>
+                      <Input value={connRawPrefix} onChange={e => setConnRawPrefix(e.target.value)} placeholder="raw/" data-testid="input-conn-raw-prefix" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>HLS Prefix</Label>
+                      <Input value={connHlsPrefix} onChange={e => setConnHlsPrefix(e.target.value)} placeholder="hls/" data-testid="input-conn-hls-prefix" />
+                    </div>
                   </div>
-                </div>
-              )}
-              {connProvider === "cloudflare_r2" && (
-                <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                  <Key className="h-4 w-4 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-foreground mb-0.5">R2 credentials are stored in server secrets (never in UI)</p>
-                    <p>Set <code className="bg-background px-1 rounded">R2_ACCESS_KEY_ID</code> and <code className="bg-background px-1 rounded">R2_SECRET_ACCESS_KEY</code> in Replit Secrets. Optionally set <code className="bg-background px-1 rounded">R2_ENDPOINT</code> and <code className="bg-background px-1 rounded">R2_REGION</code> (defaults to "auto").</p>
+                  <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                    <Key className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="font-medium text-foreground">Bunny credentials are stored in server secrets (never in UI)</p>
+                      <p>Set <code className="bg-background px-1 rounded">BUNNY_API_KEY</code> to your Storage Zone Password in Replit Secrets.</p>
+                      <p>Optional: set <code className="bg-background px-1 rounded">BUNNY_TOKEN_AUTH_KEY</code> to your Pull Zone Token Auth Security Key for signed CDN URLs (recommended for private content).</p>
+                    </div>
                   </div>
-                </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Bucket Name</Label>
+                      <Input value={connBucket} onChange={e => setConnBucket(e.target.value)} placeholder="mytestvideo" data-testid="input-conn-bucket" />
+                    </div>
+                    {(connProvider === "backblaze_b2" || connProvider === "cloudflare_r2") && (
+                      <div className="space-y-1.5">
+                        <Label>S3 Endpoint</Label>
+                        <Input value={connEndpoint} onChange={e => setConnEndpoint(e.target.value)} placeholder={connProvider === "cloudflare_r2" ? "https://<account-id>.r2.cloudflarestorage.com" : "https://s3.ca-east-006.backblazeb2.com"} data-testid="input-conn-endpoint" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Raw Prefix</Label>
+                      <Input value={connRawPrefix} onChange={e => setConnRawPrefix(e.target.value)} placeholder="raw/" data-testid="input-conn-raw-prefix" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>HLS Prefix</Label>
+                      <Input value={connHlsPrefix} onChange={e => setConnHlsPrefix(e.target.value)} placeholder="hls/" data-testid="input-conn-hls-prefix" />
+                    </div>
+                  </div>
+                  {connProvider === "backblaze_b2" && (
+                    <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                      <Key className="h-4 w-4 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-medium text-foreground mb-0.5">B2 credentials are stored in server secrets (never in UI)</p>
+                        <p>Set <code className="bg-background px-1 rounded">B2_KEY_ID</code> and <code className="bg-background px-1 rounded">B2_APPLICATION_KEY</code> in Replit Secrets. The Access Key ID is: <code className="bg-background px-1 rounded">a54c2d711411</code> (display only).</p>
+                      </div>
+                    </div>
+                  )}
+                  {connProvider === "cloudflare_r2" && (
+                    <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                      <Key className="h-4 w-4 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-medium text-foreground mb-0.5">R2 credentials are stored in server secrets (never in UI)</p>
+                        <p>Set <code className="bg-background px-1 rounded">R2_ACCESS_KEY_ID</code> and <code className="bg-background px-1 rounded">R2_SECRET_ACCESS_KEY</code> in Replit Secrets. Optionally set <code className="bg-background px-1 rounded">R2_ENDPOINT</code> and <code className="bg-background px-1 rounded">R2_REGION</code> (defaults to "auto").</p>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
               <div className="flex gap-2">
                 <Button size="sm" onClick={handleAddConn} disabled={createConn.isPending} data-testid="button-save-conn">

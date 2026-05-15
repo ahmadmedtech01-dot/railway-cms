@@ -19,6 +19,7 @@ import os from "os";
 import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } from "./vimeo";
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
+import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
 import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
@@ -62,23 +63,26 @@ function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): stri
 // points emit a fresh opaque level URL with the new sid.
 async function resolveStealthVariantForSession(
   hlsPrefix: string,
-  storageProvider: "backblaze_b2" | "cloudflare_r2" | "s3",
+  storageProvider: "backblaze_b2" | "cloudflare_r2" | "s3" | "bunny_net",
   storageConfig: any,
 ): Promise<string | null> {
   try {
     const masterKey = `${hlsPrefix.replace(/\/$/, "")}/master.m3u8`;
     let originUrl: string;
+    let fetchHeaders: Record<string, string> | undefined;
     if (storageProvider === "backblaze_b2") {
       originUrl = await b2PresignGetObject(storageConfig.bucket, masterKey, storageConfig.endpoint, 30);
     } else if (storageProvider === "cloudflare_r2") {
       originUrl = await r2PresignGetObject(storageConfig.bucket, masterKey, storageConfig.endpoint, 30);
+    } else if (storageProvider === "bunny_net") {
+      originUrl = bunnyCdnUrl(storageConfig.pullZoneUrl, masterKey, 30);
     } else {
       const c = await getS3Client();
       if (!c) return null;
       const cmd = new GetObjectCommand({ Bucket: storageConfig.bucket, Key: masterKey });
       originUrl = await getSignedUrl(c, cmd, { expiresIn: 30 });
     }
-    const masterRes = await fetch(originUrl);
+    const masterRes = await fetch(originUrl, fetchHeaders ? { headers: fetchHeaders } : undefined);
     if (!masterRes.ok) return null;
     const masterText = await masterRes.text();
     for (const raw of masterText.split("\n")) {
@@ -144,7 +148,7 @@ async function getActiveStorageConn() {
   return storage.getActiveStorageConnection();
 }
 
-// Generate a signed URL for HLS playback — supports B2, R2, and AWS S3
+// Generate a signed URL for HLS playback — supports B2, R2, Bunny CDN, and AWS S3
 async function generateSignedUrl(key: string, ttlSeconds = 120, connId?: string | null): Promise<string> {
   const conn = connId
     ? await storage.getStorageConnectionById(connId)
@@ -157,10 +161,14 @@ async function generateSignedUrl(key: string, ttlSeconds = 120, connId?: string 
     const cfg = conn.config as any;
     return r2PresignGetObject(cfg.bucket, key, cfg.endpoint, ttlSeconds);
   }
+  if (conn?.provider === "bunny_net") {
+    const cfg = conn.config as any;
+    return bunnyCdnUrl(cfg.pullZoneUrl, key, ttlSeconds);
+  }
   return generateSignedS3Url(key, ttlSeconds);
 }
 
-// Upload a local file to active storage (B2, R2, or S3)
+// Upload a local file to active storage (B2, R2, Bunny, or S3)
 async function uploadToActiveStorage(localPath: string, key: string, contentType: string, conn?: Awaited<ReturnType<typeof storage.getActiveStorageConnection>>): Promise<void> {
   const active = conn ?? await storage.getActiveStorageConnection();
   if (active?.provider === "backblaze_b2") {
@@ -173,6 +181,12 @@ async function uploadToActiveStorage(localPath: string, key: string, contentType
     const cfg = active.config as any;
     const data = fs.readFileSync(localPath);
     await r2UploadFile(cfg.bucket, key, data, contentType, cfg.endpoint);
+    return;
+  }
+  if (active?.provider === "bunny_net") {
+    const cfg = active.config as any;
+    const data = fs.readFileSync(localPath);
+    await bunnyUploadFile(cfg.storageZoneName, key, data, contentType, cfg.storageRegion);
     return;
   }
   await uploadToS3(localPath, key, contentType);
@@ -250,6 +264,36 @@ async function deleteVideoStorage(v: { id: string; hlsS3Prefix?: string | null; 
   const assetsPrefix = `assets/videos/${v.id}/`;
 
   const conn = connId ? await storage.getStorageConnectionById(connId) : await storage.getActiveStorageConnection();
+
+  if (conn?.provider === "bunny_net") {
+    const cfg = conn.config as any;
+    const zone = cfg.storageZoneName;
+    const region = cfg.storageRegion;
+    if (hlsPrefix) {
+      try {
+        const deleted = await bunnyDeletePrefix(zone, hlsPrefix, region);
+        log(`[delete] Bunny: removed ${deleted} HLS files from ${hlsPrefix}`);
+      } catch (err: any) {
+        log(`[delete] Bunny HLS cleanup error for ${hlsPrefix}: ${err.message}`);
+      }
+    }
+    if (v.rawS3Key) {
+      try {
+        const { bunnyDeleteFile } = await import("./bunny");
+        await bunnyDeleteFile(zone, v.rawS3Key, region);
+        log(`[delete] Bunny: removed raw file ${v.rawS3Key}`);
+      } catch (err: any) {
+        log(`[delete] Bunny raw cleanup error for ${v.rawS3Key}: ${err.message}`);
+      }
+    }
+    try {
+      const deleted = await bunnyDeletePrefix(zone, assetsPrefix, region);
+      if (deleted > 0) log(`[delete] Bunny: removed ${deleted} asset files from ${assetsPrefix}`);
+    } catch (err: any) {
+      log(`[delete] Bunny asset cleanup error for ${assetsPrefix}: ${err.message}`);
+    }
+    return;
+  }
 
   const isS3Compatible = conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2";
   if (isS3Compatible) {
@@ -364,6 +408,27 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
 
   if (videoId) transcodeProgress.set(videoId, { time: "", speed: "", stage: "uploading" });
   const activeConn = connOverride ?? await storage.getActiveStorageConnection();
+
+  if (activeConn?.provider === "bunny_net") {
+    const cfg = activeConn.config as any;
+    const hlsPrefix = `${cfg.hlsPrefix || "hls/"}${videoId}/`;
+    const keyBucketPath = `${hlsPrefix}enc.key`;
+    await bunnyUploadFile(cfg.storageZoneName, keyBucketPath, enc.keyBytes, "application/octet-stream", cfg.storageRegion);
+    await uploadHlsDir(hlsOutputDir, hlsPrefix, activeConn!);
+    await storage.updateVideo(videoId, {
+      status: "ready",
+      hlsS3Prefix: hlsPrefix,
+      storageConnectionId: activeConn!.id,
+      encryptionKid: enc.kid,
+      encryptionKeyPath: keyBucketPath,
+      lastError: null,
+      duration: durationMs > 0 ? Math.round(durationMs / 1000) : null,
+    } as any);
+    try { fs.rmSync(hlsOutputDir, { recursive: true }); } catch {}
+    transcodeProgress.delete(videoId);
+    log(`Bunny HLS upload (AES-128 encrypted) complete for video ${videoId}`);
+    return;
+  }
 
   const isS3CompatConn = activeConn?.provider === "backblaze_b2" || activeConn?.provider === "cloudflare_r2";
   if (isS3CompatConn) {
@@ -772,10 +837,15 @@ async function getMasterKey(encryptionKeyPath: string, session: any): Promise<Bu
   if (masterKeyCache.has(encryptionKeyPath)) return masterKeyCache.get(encryptionKeyPath)!;
   try {
     const cfg = session.storageConfig;
-    const client = session.storageProvider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
-    const { GetObjectCommand } = await import("@aws-sdk/client-s3");
-    const resp = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: encryptionKeyPath }));
-    const keyBytes = Buffer.from(await resp.Body!.transformToByteArray());
+    let keyBytes: Buffer;
+    if (session.storageProvider === "bunny_net") {
+      keyBytes = await bunnyFetchFile(cfg.storageZoneName, encryptionKeyPath, cfg.storageRegion);
+    } else {
+      const client = session.storageProvider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
+      const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const resp = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: encryptionKeyPath }));
+      keyBytes = Buffer.from(await resp.Body!.transformToByteArray());
+    }
     masterKeyCache.set(encryptionKeyPath, keyBytes);
     return keyBytes;
   } catch (e: any) {
@@ -910,17 +980,22 @@ export async function recoverProcessingVideos(): Promise<void> {
             const conn = await storage.getStorageConnectionById(connId);
             if (!conn) throw new Error("Storage connection not found");
             const cfg = conn.config as any;
-            const storageClient = conn.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
-            const { GetObjectCommand } = await import("@aws-sdk/client-s3");
-            const resp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
             const tmpPath = path.join(os.tmpdir(), `recover-${video.id}.mp4`);
-            const bodyStream = resp.Body as any;
-            const ws = fs.createWriteStream(tmpPath);
-            await new Promise<void>((resolve, reject) => {
-              bodyStream.pipe(ws);
-              ws.on("finish", resolve);
-              ws.on("error", reject);
-            });
+            if (conn.provider === "bunny_net") {
+              const buf = await bunnyFetchFile(cfg.storageZoneName, rawKey, cfg.storageRegion);
+              fs.writeFileSync(tmpPath, buf);
+            } else {
+              const storageClient = conn.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
+              const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+              const resp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
+              const bodyStream = resp.Body as any;
+              const ws = fs.createWriteStream(tmpPath);
+              await new Promise<void>((resolve, reject) => {
+                bodyStream.pipe(ws);
+                ws.on("finish", resolve);
+                ws.on("error", reject);
+              });
+            }
             const quals = (video as any).qualities?.length ? (video as any).qualities : [720, 480, 360];
             await transcodeAndStoreHls(video.id, tmpPath, quals);
             try { fs.unlinkSync(tmpPath); } catch {}
@@ -1277,23 +1352,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!conn) return res.status(400).json({ message: "No storage connection found" });
 
         const cfg = conn.config as any;
-        const storageClient = conn.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
-        const { GetObjectCommand } = await import("@aws-sdk/client-s3");
 
         await storage.updateVideo(video.id, { status: "processing", lastError: null } as any);
         res.json({ ok: true, message: "Re-transcoding started with AES-128 encryption. This may take a few minutes." });
 
         (async () => {
           try {
-            const resp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
             const tmpPath = path.join(os.tmpdir(), `retranscode-${video.id}.mp4`);
-            const bodyStream = resp.Body as any;
-            const ws = fs.createWriteStream(tmpPath);
-            await new Promise<void>((resolve, reject) => {
-              bodyStream.pipe(ws);
-              ws.on("finish", resolve);
-              ws.on("error", reject);
-            });
+            if (conn!.provider === "bunny_net") {
+              const buf = await bunnyFetchFile(cfg.storageZoneName, rawKey, cfg.storageRegion);
+              fs.writeFileSync(tmpPath, buf);
+            } else {
+              const storageClient = conn!.provider === "cloudflare_r2" ? makeR2Client({ endpoint: cfg.endpoint }) : makeB2Client({ endpoint: cfg.endpoint });
+              const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+              const resp = await storageClient.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: rawKey }));
+              const bodyStream = resp.Body as any;
+              const ws = fs.createWriteStream(tmpPath);
+              await new Promise<void>((resolve, reject) => {
+                bodyStream.pipe(ws);
+                ws.on("finish", resolve);
+                ws.on("error", reject);
+              });
+            }
             const quals = video.qualities?.length ? video.qualities : [720, 480, 360];
             await transcodeAndStoreHls(video.id, tmpPath, quals);
             try { fs.unlinkSync(tmpPath); } catch {}
@@ -1427,8 +1507,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const uniqueId = nanoid(12);
       const bucketKey = `assets/videos/${video.id}/thumbnail/${uniqueId}${ext}`;
 
-      const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
-      await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(file.path), file.mimetype, cfg.endpoint);
+      if (conn.provider === "bunny_net") {
+        await bunnyUploadFile(cfg.storageZoneName, bucketKey, fs.readFileSync(file.path), file.mimetype, cfg.storageRegion);
+      } else {
+        const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
+        await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(file.path), file.mimetype, cfg.endpoint);
+      }
       try { fs.unlinkSync(file.path); } catch {}
 
       const asset = await storage.createMediaAsset({
@@ -1508,8 +1592,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const uniqueId = nanoid(12);
       const bucketKey = `assets/videos/${id}/${assetType}/${uniqueId}${ext}`;
 
-      const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
-      await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
+      if (conn.provider === "bunny_net") {
+        await bunnyUploadFile(cfg.storageZoneName, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.storageRegion);
+      } else {
+        const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
+        await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
+      }
 
       const asset = await storage.createMediaAsset({
         type: `player_${assetType}`,
@@ -1579,15 +1667,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
       const conn = await storage.getActiveStorageConnection();
-      if (!conn || (conn.provider !== "backblaze_b2" && conn.provider !== "cloudflare_r2")) return res.status(400).json({ message: "No active B2/R2 storage connection" });
+      if (!conn || (conn.provider !== "backblaze_b2" && conn.provider !== "cloudflare_r2" && conn.provider !== "bunny_net")) return res.status(400).json({ message: "No active B2/R2/Bunny storage connection" });
 
       const cfg = conn.config as any;
       const ext = path.extname(req.file.originalname) || ".png";
       const uniqueId = nanoid(12);
       const bucketKey = `assets/${assetType}s/${uniqueId}${ext}`;
 
-      const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
-      await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
+      if (conn.provider === "bunny_net") {
+        await bunnyUploadFile(cfg.storageZoneName, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.storageRegion);
+      } else {
+        const assetUploadFn = conn.provider === "cloudflare_r2" ? r2UploadFile : b2UploadFile;
+        await assetUploadFn(cfg.bucket, bucketKey, fs.readFileSync(req.file.path), req.file.mimetype, cfg.endpoint);
+      }
 
       const asset = await storage.createMediaAsset({
         type: assetType,
@@ -1616,11 +1708,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const conn = asset.storageConnectionId
         ? await storage.getStorageConnectionById(asset.storageConnectionId)
         : await storage.getActiveStorageConnection();
-      if (!conn || (conn.provider !== "backblaze_b2" && conn.provider !== "cloudflare_r2")) return res.status(500).json({ message: "Storage not available" });
+      if (!conn || (conn.provider !== "backblaze_b2" && conn.provider !== "cloudflare_r2" && conn.provider !== "bunny_net")) return res.status(500).json({ message: "Storage not available" });
 
       const cfg = conn.config as any;
-      const presignFn = conn.provider === "backblaze_b2" ? b2PresignGetObject : r2PresignGetObject;
-      const signedUrl = await presignFn(cfg.bucket, asset.bucketKey, cfg.endpoint, 60);
+      let signedUrl: string;
+      if (conn.provider === "bunny_net") {
+        signedUrl = bunnyCdnUrl(cfg.pullZoneUrl, asset.bucketKey, 60);
+      } else {
+        const presignFn = conn.provider === "backblaze_b2" ? b2PresignGetObject : r2PresignGetObject;
+        signedUrl = await presignFn(cfg.bucket, asset.bucketKey, cfg.endpoint, 60);
+      }
       const fetchRes = await fetch(signedUrl);
       if (!fetchRes.ok) return res.status(404).json({ message: "File not found in storage" });
 
@@ -1838,7 +1935,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Returns null if not stealth or if we can't resolve a variant (caller
       // falls back to the legacy /hls/* manifestUrl path).
       async function resolveStealthVariant(
-        provider: "backblaze_b2" | "cloudflare_r2" | "s3",
+        provider: "backblaze_b2" | "cloudflare_r2" | "s3" | "bunny_net",
         cfg: any,
       ): Promise<string | null> {
         if (!hardening.stealthModeEnabled) return null;
@@ -1849,6 +1946,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             originUrl = await b2PresignGetObject(cfg.bucket, masterKey, cfg.endpoint, 30);
           } else if (provider === "cloudflare_r2") {
             originUrl = await r2PresignGetObject(cfg.bucket, masterKey, cfg.endpoint, 30);
+          } else if (provider === "bunny_net") {
+            originUrl = bunnyCdnUrl(cfg.pullZoneUrl, masterKey, 30);
           } else {
             const c = await getS3Client();
             if (!c) return null;
@@ -1881,6 +1980,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             linkIntegrationSessionId = dec.integrationSessionId;
           }
         } catch {}
+      }
+
+      if (conn?.provider === "bunny_net") {
+        const cfg = conn.config as any;
+        const sid = createSession(video.publicId, hlsPrefix, "bunny_net", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        if (linkIntegrationSessionId) setIntegrationSessionId(sid, linkIntegrationSessionId);
+        const sessTtls = getSessionTokenTTL(sid);
+        const proxyBase = `/hls/${video.publicId}/master.m3u8`;
+        const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
+        const variantSub = await resolveStealthVariant("bunny_net", cfg);
+        const stealth = variantSub
+          ? { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, sid, variantSub, sessTtls.manifest) }
+          : { enabled: false };
+        return res.json({ manifestUrl, sourceType: "bunny_net_proxy", sessionId: sid, videoId: video.id, videoDuration: video.duration || null, heartbeat: heartbeatHint, stealth, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
 
       if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
@@ -2001,6 +2114,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         originUrl = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
       } else if (storageProvider === "cloudflare_r2") {
         originUrl = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
+      } else if (storageProvider === "bunny_net") {
+        originUrl = bunnyCdnUrl(storageConfig.pullZoneUrl, fileKey, 30);
       } else {
         const client = await getS3Client();
         const s3cfg = await getS3Config();
@@ -2189,6 +2304,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         b2Url = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
       } else if (storageProvider === "cloudflare_r2") {
         b2Url = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
+      } else if (storageProvider === "bunny_net") {
+        b2Url = bunnyCdnUrl(storageConfig.pullZoneUrl, fileKey, 20);
       } else {
         const client = await getS3Client();
         const s3cfg = await getS3Config();
@@ -2197,7 +2314,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         b2Url = await getSignedUrl(client, cmd, { expiresIn: 20 });
       }
 
-      // Never redirect to origin — proxy bytes so B2/R2/S3 URLs stay server-side.
+      // Never redirect to origin — proxy bytes so B2/R2/S3/Bunny URLs stay server-side.
       log(`SEGMENT_PROXY: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
       try {
         const range = req.headers["range"];
@@ -2297,6 +2414,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         originUrl = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
       } else if (storageProvider === "cloudflare_r2") {
         originUrl = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 30);
+      } else if (storageProvider === "bunny_net") {
+        originUrl = bunnyCdnUrl(storageConfig.pullZoneUrl, fileKey, 30);
       } else {
         const c = await getS3Client();
         const s3cfg = await getS3Config();
