@@ -115,35 +115,107 @@ export interface OpaquePayload {
   n?: string;     // optional nonce
 }
 
+// Deterministic IV derived from a keyed hash of the payload + a server-side
+// secret. Two crucial properties:
+//   1. Same payload  →  same IV  →  same ciphertext  →  same opaque URL.
+//      This is what we want: the sliding-window playlist refetches every few
+//      seconds and re-mints chunk/key URLs. With a random IV each mint produced
+//      a different URL for the same segment, and hls.js would xhr.abort() the
+//      in-flight load and re-request — the cancellation storm + 1-2s black
+//      screen every ~30-45s the user reported. Deterministic IV makes the URL
+//      stable across playlist reloads, so in-flight loads complete naturally.
+//   2. Different payloads (different sid / path / exp) produce different IVs,
+//      so the AES-GCM "never reuse (key, IV) for different plaintext" invariant
+//      still holds. Safe under standard GCM threat model.
+// The IV is also keyed by SECRET so it isn't predictable from the plaintext
+// alone — an attacker can't pre-compute IV/ciphertext mappings without SECRET.
+// Build a canonical byte representation of the payload with a FIXED field
+// order. This is critical for AES-GCM safety: the deterministic IV is derived
+// from this exact byte sequence, AND the same byte sequence is the plaintext.
+// If we let callers' object-literal key order drift, two payloads with
+// identical semantic values could produce the same IV but different plaintext
+// bytes — a textbook AES-GCM nonce-reuse failure. Canonicalizing both inputs
+// from the same source eliminates that risk by construction.
+function canonicalizePayload(payload: OpaquePayload): Buffer {
+  const canonical = {
+    s: payload.s,
+    t: payload.t,
+    v: payload.v ?? "",
+    p: payload.p ?? "",
+    e: payload.e,
+    n: payload.n ?? "",
+  };
+  return Buffer.from(JSON.stringify(canonical), "utf8");
+}
+
+function deriveDeterministicIv(canonicalBytes: Buffer): Buffer {
+  return crypto
+    .createHmac("sha256", SECRET + "::stealth-iv-v1")
+    .update(canonicalBytes)
+    .digest()
+    .subarray(0, 12);
+}
+
 export function mintOpaqueId(payload: OpaquePayload): string {
-  const iv = crypto.randomBytes(12);
+  const pt = canonicalizePayload(payload);
+  const iv = deriveDeterministicIv(pt);
   const cipher = crypto.createCipheriv("aes-256-gcm", stealthAesKey, iv);
-  const pt = Buffer.from(JSON.stringify(payload), "utf8");
   const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
   const tag = cipher.getAuthTag();
   return Buffer.concat([iv, ct, tag]).toString("hex");
 }
 
-export function verifyOpaqueId(id: string): OpaquePayload | null {
+// Result of opaque-ID verification. `reason` distinguishes the specific failure
+// for structured logging (OPAQUE_ID_EXPIRED, OPAQUE_ID_MALFORMED, OPAQUE_ID_TAMPERED).
+// The verify path used to return null for every failure mode, making it
+// impossible to tell "natural TTL rollover" apart from "tampered/forged URL".
+export type OpaqueVerifyFailure = "OPAQUE_ID_MALFORMED" | "OPAQUE_ID_TAMPERED" | "OPAQUE_ID_EXPIRED";
+
+export function verifyOpaqueIdDetailed(id: string): { payload?: OpaquePayload; failure?: OpaqueVerifyFailure } {
+  if (typeof id !== "string" || id.length < 60 || !/^[0-9a-f]+$/i.test(id)) {
+    return { failure: "OPAQUE_ID_MALFORMED" };
+  }
+  let parsed: OpaquePayload;
   try {
-    if (typeof id !== "string" || id.length < 60 || !/^[0-9a-f]+$/i.test(id)) return null;
     const buf = Buffer.from(id, "hex");
-    if (buf.length < 12 + 16 + 1) return null;
+    if (buf.length < 12 + 16 + 1) return { failure: "OPAQUE_ID_MALFORMED" };
     const iv = buf.subarray(0, 12);
     const tag = buf.subarray(buf.length - 16);
     const ct = buf.subarray(12, buf.length - 16);
     const decipher = crypto.createDecipheriv("aes-256-gcm", stealthAesKey, iv);
     decipher.setAuthTag(tag);
     const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
-    const parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
-    if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") return null;
-    if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k") return null;
-    const now = Math.floor(Date.now() / 1000);
-    if (parsed.e + 3 < now) return null; // 3s clock skew tolerance
-    return parsed;
+    parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
   } catch {
-    return null;
+    return { failure: "OPAQUE_ID_TAMPERED" };
   }
+  if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") {
+    return { failure: "OPAQUE_ID_TAMPERED" };
+  }
+  if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k") {
+    return { failure: "OPAQUE_ID_TAMPERED" };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (parsed.e + 3 < now) return { failure: "OPAQUE_ID_EXPIRED" };
+  return { payload: parsed };
+}
+
+export function verifyOpaqueId(id: string): OpaquePayload | null {
+  return verifyOpaqueIdDetailed(id).payload || null;
+}
+
+// Snap an absolute expiry to a bucket boundary so successive mints within the
+// same wall-clock bucket produce the SAME `exp` field — and therefore the same
+// deterministic IV → same opaque URL. Without this, exp would increment every
+// second and every playlist refetch would still produce a fresh URL.
+//
+// We round UP to the next bucket boundary, so the resulting exp is always
+// >= (now + ttlSec). Practical effect: tokens live for `[ttlSec, ttlSec + BUCKET)`
+// instead of exactly ttlSec. BUCKET=60s means at worst 1 extra minute, which is
+// negligible compared to the 300s/3600s TTLs in use.
+export function bucketExp(ttlSec: number, bucketSec: number = 60): number {
+  const target = Math.floor(Date.now() / 1000) + Math.max(1, ttlSec);
+  return Math.ceil(target / bucketSec) * bucketSec;
 }
 
 export interface ParsedSegment {

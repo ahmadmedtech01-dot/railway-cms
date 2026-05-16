@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, getSessionAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings
 function buildHardening(s: any): SessionHardeningConfig {
@@ -61,18 +61,24 @@ function buildHardening(s: any): SessionHardeningConfig {
 //   Level/playlist: 5-minute floor — hls.js reloads every 2s (targetDuration).
 //                   5 min matches the heartbeat extend cycle with margin.
 //   Chunk/key: 2-minute floor — segments are fetched once then never re-requested.
+// `bucketExp` snaps `exp` to a 60s wall-clock bucket so successive playlist
+// refetches within the same minute compute the SAME exp. Combined with the
+// deterministic-IV mintOpaqueId, this means the sliding-window playlist returns
+// IDENTICAL opaque chunk/key URLs across reloads — eliminating the xhr.abort()
+// storm and 1-2s black screens that came from hls.js seeing "new" URLs for the
+// same segment every few seconds.
 function buildStealthLevelUrl(publicId: string, sid: string, variantSubPath: string, ttlSec: number): string {
-  const exp = Math.floor(Date.now() / 1000) + Math.max(300, ttlSec);
+  const exp = bucketExp(Math.max(300, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "l", v: variantSubPath.replace(/^\//, ""), e: exp });
   return `/api/player/${publicId}/stream/window/${id}`;
 }
 function buildStealthChunkUrl(publicId: string, sid: string, segSubPath: string, ttlSec: number): string {
-  const exp = Math.floor(Date.now() / 1000) + Math.max(120, ttlSec);
+  const exp = bucketExp(Math.max(120, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "c", p: segSubPath.replace(/^\//, ""), e: exp });
   return `/api/player/${publicId}/stream/chunk/${id}`;
 }
 function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): string {
-  const exp = Math.floor(Date.now() / 1000) + Math.max(120, ttlSec);
+  const exp = bucketExp(Math.max(120, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "k", e: exp });
   return `/api/player/${publicId}/stream/secret/${id}`;
 }
@@ -2448,9 +2454,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //   IDs and whose key URI is an opaque /stream/secret ID.
   app.get("/api/player/:publicId/stream/window/:opaqueId", async (req: any, res: any) => {
     const opaqueId = String(req.params.opaqueId || "");
-    const decoded = verifyOpaqueId(opaqueId);
+    const verifyRes = verifyOpaqueIdDetailed(opaqueId);
+    const decoded = verifyRes.payload;
     if (!decoded || decoded.t !== "l" || !decoded.v) {
-      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid stream window token", signal: "token_expired" });
+      const failure = verifyRes.failure || (decoded ? "OPAQUE_ID_TAMPERED" : "OPAQUE_ID_MALFORMED");
+      const code = failure === "OPAQUE_ID_EXPIRED" ? "WINDOW_EXPIRED" : "PLAYBACK_DENIED";
+      log(`stealth window verify failed: ${failure} pub=${req.params.publicId} idLen=${opaqueId.length}`);
+      return res.status(403).json({ code, error: failure, message: "Invalid stream window token", signal: "token_expired" });
     }
     const sid = decoded.s;
     await getSessionAsync(sid);
@@ -2551,9 +2561,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //   (UA, window, abuse, velocity), and redirects to the presigned origin.
   app.get("/api/player/:publicId/stream/chunk/:opaqueId", async (req: any, res: any) => {
     const opaqueId = String(req.params.opaqueId || "");
-    const decoded = verifyOpaqueId(opaqueId);
+    const verifyRes = verifyOpaqueIdDetailed(opaqueId);
+    const decoded = verifyRes.payload;
     if (!decoded || decoded.t !== "c" || !decoded.p) {
-      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid chunk token", signal: "token_expired" });
+      const failure = verifyRes.failure || (decoded ? "OPAQUE_ID_TAMPERED" : "OPAQUE_ID_MALFORMED");
+      const code = failure === "OPAQUE_ID_EXPIRED" ? "OPAQUE_ID_EXPIRED" : "PLAYBACK_DENIED";
+      log(`stealth chunk verify failed: ${failure} pub=${req.params.publicId} idLen=${opaqueId.length}`);
+      return res.status(403).json({ code, error: failure, message: "Invalid chunk token", signal: "token_expired" });
     }
     const sid = decoded.s;
     await getSessionAsync(sid);
@@ -2660,9 +2674,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //   + UA + key rate limits, then returns the AES master key bytes.
   app.get("/api/player/:publicId/stream/secret/:opaqueId", async (req: any, res: any) => {
     const opaqueId = String(req.params.opaqueId || "");
-    const decoded = verifyOpaqueId(opaqueId);
+    const verifyRes = verifyOpaqueIdDetailed(opaqueId);
+    const decoded = verifyRes.payload;
     if (!decoded || decoded.t !== "k") {
-      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid secret token", signal: "token_expired" });
+      const failure = verifyRes.failure || (decoded ? "OPAQUE_ID_TAMPERED" : "OPAQUE_ID_MALFORMED");
+      const code = failure === "OPAQUE_ID_EXPIRED" ? "SECRET_EXPIRED" : "PLAYBACK_DENIED";
+      log(`stealth secret verify failed: ${failure} pub=${req.params.publicId} idLen=${opaqueId.length}`);
+      return res.status(403).json({ code, error: failure, message: "Invalid secret token", signal: "token_expired" });
     }
     const sid = decoded.s;
     await getSessionAsync(sid);
