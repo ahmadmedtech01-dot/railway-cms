@@ -67,6 +67,13 @@ export interface SessionHardeningConfig {
   heartbeatIntervalSec: number;
   downloadAheadLimit: number;
   stealthModeEnabled: boolean;
+  // ── Security-profile tuning (time-based, admin-configurable) ─────────────
+  // Used to scale abuse thresholds per-session so a single global preset
+  // can serve 700-1000 concurrent students across different LMS network
+  // conditions without false revocations or black screens.
+  maxPrebufferSec: number;        // → ABUSE_THRESHOLDS.windowSize (segments)
+  maxDownloadAheadSec: number;    // → velocity-scoring burst budget (sec/5s)
+  windowOverlapGraceSec: number;  // → out-of-window grace (sec)
 }
 
 export const defaultHardening: SessionHardeningConfig = {
@@ -85,15 +92,18 @@ export const defaultHardening: SessionHardeningConfig = {
   // session lifetime, abuse detection, and window validation — not by token
   // TTL. 90s is well under SESSION_MAX_AGE_MS so signed URLs still rotate
   // through the natural session lifecycle.
-  tokenTtlPlaylistSec: 300,
-  tokenTtlSegmentSec: 300,
-  tokenTtlKeySec: 300,
-  heartbeatIntervalSec: 12,
-  // Allow hls.js to prefetch ~2 min ahead (60 segs @ 2s) without false abuse.
-  // Real bulk-download scrapers request hundreds in seconds and still get caught
-  // by velocity/segments-per-sec checks.
-  downloadAheadLimit: 60,
+  tokenTtlPlaylistSec: 60,
+  tokenTtlSegmentSec: 30,
+  tokenTtlKeySec: 30,
+  heartbeatIntervalSec: 15,
+  // Allow hls.js to prefetch without false abuse. Real bulk-download scrapers
+  // request hundreds in seconds and still get caught by velocity checks.
+  downloadAheadLimit: 30,
   stealthModeEnabled: true,
+  // Balanced-profile defaults
+  maxPrebufferSec: 45,
+  maxDownloadAheadSec: 60,
+  windowOverlapGraceSec: 30,
 };
 
 // ── Stealth Mode opaque ID encoding ──────────────────────────────────────────
@@ -991,11 +1001,26 @@ export function updateProgress(sid: string, segmentIndex: number): boolean {
   return true;
 }
 
+// Assume ~2s per HLS segment (matches ffmpeg HLS output throughout this codebase).
+const SEG_DURATION_SEC = 2;
+
+// Single source of truth for the segment-window budget. Admin sets
+// maxPrebufferSec via the Security Profile; we convert to segments here.
+// A 2-segment safety minimum keeps hls.js from stalling if a misconfigured
+// profile passes a near-zero value.
+export function getWindowSegs(s: { hardening: SessionHardeningConfig }): number {
+  return Math.max(2, Math.ceil((s.hardening.maxPrebufferSec || 0) / SEG_DURATION_SEC));
+}
+
+function oowGraceSegsFor(s: VideoSession): number {
+  return Math.max(2, Math.ceil((s.hardening.windowOverlapGraceSec || 0) / SEG_DURATION_SEC));
+}
+
 export function getWindowRange(sid: string): { start: number; end: number } {
   const s = sessions.get(sid);
   if (!s) return { start: 0, end: ABUSE_THRESHOLDS.windowSize };
   const start = Math.max(0, s.currentSegmentIndex - 1);
-  const end = s.currentSegmentIndex + ABUSE_THRESHOLDS.windowSize;
+  const end = s.currentSegmentIndex + getWindowSegs(s);
   return { start, end };
 }
 
@@ -1011,8 +1036,9 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
   // patterns (clear scraper behaviour) score abuse points.
   if (s.hardening.serverGatedWindowEnabled) {
     // Widen the upstream window so seeks + buffer prefetch don't constantly trip it.
+    // Window size is driven by admin-configured maxPrebufferSec (single source of truth).
     const start = Math.max(0, s.currentSegmentIndex - 5);
-    const end = s.currentSegmentIndex + Math.max(2, s.hardening.downloadAheadLimit);
+    const end = s.currentSegmentIndex + getWindowSegs(s);
     if (segIndex < start || segIndex > end) {
       s.outOfWindowCount += 1;
 
@@ -1028,7 +1054,8 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
       };
 
       // Grace: first N out-of-window denials per session score 0 abuse points.
-      if (s.outOfWindowCount <= ABUSE_THRESHOLDS.outOfWindowGrace) {
+      // N is admin-configurable via windowOverlapGraceSec (converted to segs).
+      if (s.outOfWindowCount <= oowGraceSegsFor(s)) {
         return { allowed: false, reason };
       }
 
@@ -1060,15 +1087,16 @@ export function trackSegmentVelocity(sid: string): { abused: boolean; reason?: A
   const now = Date.now();
   s.velocityLog = s.velocityLog.filter(t => t > now - 5000);
   s.velocityLog.push(now);
-  // > downloadAheadLimit segments in 5 seconds = bulk download.
-  // Now that downloadAheadLimit=60, this catches real scrapers (100+ segs in 5s)
-  // without firing on quality-switch / seek bursts.
-  if (s.velocityLog.length > s.hardening.downloadAheadLimit) {
+  // Bulk-download budget driven by admin-configured maxDownloadAheadSec
+  // (single source of truth; downloadAheadLimit is derived from it in
+  // buildHardening so they can't disagree).
+  const burstBudget = Math.max(5, Math.ceil((s.hardening.maxDownloadAheadSec || 0) / SEG_DURATION_SEC));
+  if (s.velocityLog.length > burstBudget) {
     const reason: AbuseReason = {
       signal: "velocity_abuse",
-      detail: `${s.velocityLog.length} segments in 5s exceeds downloadAheadLimit=${s.hardening.downloadAheadLimit} | publicId=${s.publicId}`,
+      detail: `${s.velocityLog.length} segments in 5s exceeds burst=${burstBudget} | publicId=${s.publicId}`,
     };
-    console.log(`[video-session] SECURITY_VELOCITY_ABUSE: sid=${sid} segs_5s=${s.velocityLog.length} limit=${s.hardening.downloadAheadLimit}`);
+    console.log(`[video-session] SECURITY_VELOCITY_ABUSE: sid=${sid} segs_5s=${s.velocityLog.length} burst=${burstBudget}`);
     return addAbuse(s, 8, reason);
   }
   return { abused: false };

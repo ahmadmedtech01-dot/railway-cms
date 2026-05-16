@@ -21,10 +21,21 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, getSessionAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
-// Build hardening config from effective security settings
+// Build hardening config from effective security settings.
+// Admin-controlled values from the Security Profile (or Custom override) are
+// passed through directly. A small safety floor (15s) prevents zero/invalid
+// stored values from making URLs expire before a single heartbeat completes.
+// The Strict preset uses 15s segment/key TTLs, so the floor matches that.
+//
+// `downloadAheadLimit` (segment-count) is DERIVED from `maxDownloadAheadSec`
+// (time-based) at runtime so the two values can never disagree. The schema
+// column is retained for legacy callers but admin only ever edits the
+// time-based field via the profile UI.
 function buildHardening(s: any): SessionHardeningConfig {
+  const ttlFloor = 15;
+  const maxDownloadAheadSec = Math.max(10, s?.maxDownloadAheadSec ?? defaultHardening.maxDownloadAheadSec);
   return {
     mediaSourceGuardEnabled: s?.mediaSourceGuardEnabled ?? defaultHardening.mediaSourceGuardEnabled,
     velocityScoringEnabled: s?.velocityScoringEnabled ?? defaultHardening.velocityScoringEnabled,
@@ -32,23 +43,18 @@ function buildHardening(s: any): SessionHardeningConfig {
     heartbeatV2Enabled: s?.heartbeatV2Enabled ?? defaultHardening.heartbeatV2Enabled,
     serverGatedWindowEnabled: s?.serverGatedWindowEnabled ?? defaultHardening.serverGatedWindowEnabled,
     shortTokenTtlEnabled: s?.shortTokenTtlEnabled ?? defaultHardening.shortTokenTtlEnabled,
-    // Floor TTLs at 90s. The persisted security-settings defaults are 25/12/12
-    // but those values cause stealth chunk opaque IDs to expire before hls.js
-    // reaches deep segments in the sliding-window playlist (false "invalid
-    // chunk token" → fragment-retry storm → video stops). Real security is
-    // enforced by SID/UA/session/abuse layers, not by token TTL.
-    // Floor at 300s (5 min). Stored DB values can be 0 or a tiny legacy
-    // number (e.g. 12) which causes the variant-playlist opaque URL to
-    // expire every 30s and chain rotation storms every ~21s (30s − retries).
-    // Real security is provided by SID-binding, session lifetime, UA hash,
-    // and abuse detection. The TTL only needs to outlive one heartbeat
-    // interval (12s) with a large margin.
-    tokenTtlPlaylistSec: Math.max(300, s?.tokenTtlPlaylistSec ?? defaultHardening.tokenTtlPlaylistSec),
-    tokenTtlSegmentSec: Math.max(300, s?.tokenTtlSegmentSec ?? defaultHardening.tokenTtlSegmentSec),
-    tokenTtlKeySec: Math.max(300, s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec),
-    heartbeatIntervalSec: s?.heartbeatIntervalSec ?? defaultHardening.heartbeatIntervalSec,
-    downloadAheadLimit: s?.downloadAheadLimit ?? defaultHardening.downloadAheadLimit,
+    tokenTtlPlaylistSec: Math.max(ttlFloor, s?.tokenTtlPlaylistSec ?? defaultHardening.tokenTtlPlaylistSec),
+    tokenTtlSegmentSec: Math.max(ttlFloor, s?.tokenTtlSegmentSec ?? defaultHardening.tokenTtlSegmentSec),
+    tokenTtlKeySec: Math.max(ttlFloor, s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec),
+    heartbeatIntervalSec: Math.max(5, s?.heartbeatIntervalSec ?? defaultHardening.heartbeatIntervalSec),
+    // Derive segment-count budget from time-based admin value (2s segments).
+    // Persisted `downloadAheadLimit` is ignored to prevent stale legacy values
+    // from overriding the profile.
+    downloadAheadLimit: Math.max(5, Math.ceil(maxDownloadAheadSec / 2)),
     stealthModeEnabled: s?.stealthModeEnabled ?? defaultHardening.stealthModeEnabled,
+    maxPrebufferSec: Math.max(10, s?.maxPrebufferSec ?? defaultHardening.maxPrebufferSec),
+    maxDownloadAheadSec,
+    windowOverlapGraceSec: Math.max(5, s?.windowOverlapGraceSec ?? defaultHardening.windowOverlapGraceSec),
   };
 }
 
@@ -67,18 +73,23 @@ function buildHardening(s: any): SessionHardeningConfig {
 // IDENTICAL opaque chunk/key URLs across reloads — eliminating the xhr.abort()
 // storm and 1-2s black screens that came from hls.js seeing "new" URLs for the
 // same segment every few seconds.
+// Stealth URL builders. TTL floor lowered to 15s (matches Strict preset
+// segment/key TTL) so the admin's Security Profile is actually honored in
+// stealth mode. `bucketExp` still snaps exp to a wall-clock bucket so
+// successive playlist refetches within the same window produce identical
+// opaque URLs (eliminates xhr.abort() storms and black screens).
 function buildStealthLevelUrl(publicId: string, sid: string, variantSubPath: string, ttlSec: number): string {
-  const exp = bucketExp(Math.max(300, ttlSec));
+  const exp = bucketExp(Math.max(15, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "l", v: variantSubPath.replace(/^\//, ""), e: exp });
   return `/api/player/${publicId}/stream/window/${id}`;
 }
 function buildStealthChunkUrl(publicId: string, sid: string, segSubPath: string, ttlSec: number): string {
-  const exp = bucketExp(Math.max(120, ttlSec));
+  const exp = bucketExp(Math.max(15, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "c", p: segSubPath.replace(/^\//, ""), e: exp });
   return `/api/player/${publicId}/stream/chunk/${id}`;
 }
 function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): string {
-  const exp = bucketExp(Math.max(120, ttlSec));
+  const exp = bucketExp(Math.max(15, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "k", e: exp });
   return `/api/player/${publicId}/stream/secret/${id}`;
 }
@@ -2216,10 +2227,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const dh = session.deviceHash;
         const gated = session.hardening.serverGatedWindowEnabled;
 
-        // Compute window when gated mode is on: [currentIdx-2, currentIdx+downloadAheadLimit]
+        // Compute window when gated mode is on: [currentIdx-2, currentIdx+prebufferSegs]
+        // Window size driven by admin-configured maxPrebufferSec via getWindowSegs().
         const windowStart = gated ? Math.max(0, session.currentSegmentIndex - 2) : 0;
         const windowEnd = gated
-          ? Math.min(totalSegs - 1, session.currentSegmentIndex + Math.max(2, session.hardening.downloadAheadLimit))
+          ? Math.min(totalSegs - 1, session.currentSegmentIndex + getWindowSegs(session))
           : totalSegs - 1;
         const isFinalWindow = windowEnd >= totalSegs - 1;
 
@@ -2516,7 +2528,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const gated = session.hardening.serverGatedWindowEnabled;
       const windowStart = gated ? Math.max(0, session.currentSegmentIndex - 2) : 0;
       const windowEnd = gated
-        ? Math.min(totalSegs - 1, session.currentSegmentIndex + Math.max(2, session.hardening.downloadAheadLimit))
+        ? Math.min(totalSegs - 1, session.currentSegmentIndex + getWindowSegs(session))
         : totalSegs - 1;
       const isFinalWindow = windowEnd >= totalSegs - 1;
 

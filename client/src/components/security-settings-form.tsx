@@ -3,7 +3,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState } from "react";
+import {
+  SECURITY_PROFILES,
+  SECURITY_PROFILE_LABELS,
+  SECURITY_PROFILE_DESCRIPTIONS,
+  DEFAULT_SECURITY_PROFILE,
+  detectProfile,
+  type SecurityProfileId,
+} from "@shared/securityProfiles";
 
 export type ClientSecuritySettings = {
   blockVideoRecording: boolean;
@@ -30,7 +39,14 @@ export type ClientSecuritySettings = {
   tokenTtlKeySec?: number;
   heartbeatIntervalSec?: number;
   downloadAheadLimit?: number;
+  // Security Profile (preset + time-based tuning)
+  securityProfile?: SecurityProfileId;
+  maxPrebufferSec?: number;
+  maxDownloadAheadSec?: number;
+  windowOverlapGraceSec?: number;
 };
+
+const BALANCED = SECURITY_PROFILES.balanced;
 
 export const defaultClientSecuritySettings: ClientSecuritySettings = {
   blockVideoRecording: false,
@@ -41,7 +57,7 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   disableDownloads: false,
   requireFullscreen: false,
   antiScreenSharing: false,
-  violationLimit: 3,
+  violationLimit: BALANCED.violationLimit,
   allowedBrowsers: [],
   suspiciousDetectionEnabled: true,
   mediaSourceGuardEnabled: true,
@@ -50,11 +66,16 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   heartbeatV2Enabled: true,
   serverGatedWindowEnabled: false,
   shortTokenTtlEnabled: false,
-  tokenTtlPlaylistSec: 25,
-  tokenTtlSegmentSec: 12,
-  tokenTtlKeySec: 12,
-  heartbeatIntervalSec: 12,
-  downloadAheadLimit: 25,
+  tokenTtlPlaylistSec: BALANCED.playlistTtlSec,
+  tokenTtlSegmentSec: BALANCED.segmentTtlSec,
+  tokenTtlKeySec: BALANCED.keyTtlSec,
+  heartbeatIntervalSec: BALANCED.heartbeatIntervalSec,
+  downloadAheadLimit: Math.ceil(BALANCED.maxDownloadAheadSec / 2),
+  stealthModeEnabled: false,
+  securityProfile: DEFAULT_SECURITY_PROFILE,
+  maxPrebufferSec: BALANCED.maxPrebufferSec,
+  maxDownloadAheadSec: BALANCED.maxDownloadAheadSec,
+  windowOverlapGraceSec: BALANCED.windowOverlapGraceSec,
 };
 
 function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
@@ -100,11 +121,53 @@ interface SecuritySettingsFormProps {
   isPending?: boolean;
 }
 
+// Keys whose values define the active profile. Editing any of these flips the
+// profile to "custom" automatically so the admin's tuning isn't silently
+// overwritten on the next save.
+const PROFILE_TUNED_KEYS: (keyof ClientSecuritySettings)[] = [
+  "heartbeatIntervalSec",
+  "tokenTtlPlaylistSec",
+  "tokenTtlSegmentSec",
+  "tokenTtlKeySec",
+  "maxPrebufferSec",
+  "maxDownloadAheadSec",
+  "windowOverlapGraceSec",
+  "violationLimit",
+];
+
 export function SecuritySettingsForm({ value, onChange, disabled, onSave, showSaveButton, isPending }: SecuritySettingsFormProps) {
   const [browserInput, setBrowserInput] = useState("");
 
   const set = <K extends keyof ClientSecuritySettings>(key: K, val: ClientSecuritySettings[K]) => {
-    onChange({ ...value, [key]: val });
+    const next = { ...value, [key]: val };
+    // Auto-flip to custom when a tuned value is edited directly.
+    if (PROFILE_TUNED_KEYS.includes(key) && (value.securityProfile ?? DEFAULT_SECURITY_PROFILE) !== "custom") {
+      next.securityProfile = "custom";
+    }
+    onChange(next);
+  };
+
+  const applyProfile = (id: SecurityProfileId) => {
+    if (id === "custom") {
+      onChange({ ...value, securityProfile: "custom" });
+      return;
+    }
+    const p = SECURITY_PROFILES[id];
+    onChange({
+      ...value,
+      securityProfile: id,
+      heartbeatIntervalSec: p.heartbeatIntervalSec,
+      tokenTtlPlaylistSec: p.playlistTtlSec,
+      tokenTtlSegmentSec: p.segmentTtlSec,
+      tokenTtlKeySec: p.keyTtlSec,
+      maxPrebufferSec: p.maxPrebufferSec,
+      maxDownloadAheadSec: p.maxDownloadAheadSec,
+      windowOverlapGraceSec: p.windowOverlapGraceSec,
+      violationLimit: p.violationLimit,
+      // Keep downloadAheadLimit (segments) in sync with maxDownloadAheadSec
+      // assuming ~2s segments — matches server-side derivation.
+      downloadAheadLimit: Math.ceil(p.maxDownloadAheadSec / 2),
+    });
   };
 
   const addBrowser = () => {
@@ -114,9 +177,47 @@ export function SecuritySettingsForm({ value, onChange, disabled, onSave, showSa
     setBrowserInput("");
   };
 
+  const activeProfile: SecurityProfileId = value.securityProfile
+    ?? detectProfile({
+      heartbeatIntervalSec: value.heartbeatIntervalSec,
+      playlistTtlSec: value.tokenTtlPlaylistSec,
+      segmentTtlSec: value.tokenTtlSegmentSec,
+      keyTtlSec: value.tokenTtlKeySec,
+      maxPrebufferSec: value.maxPrebufferSec,
+      maxDownloadAheadSec: value.maxDownloadAheadSec,
+      windowOverlapGraceSec: value.windowOverlapGraceSec,
+      violationLimit: value.violationLimit,
+    });
+
   return (
     <div className="space-y-1">
-      <div className="pb-2">
+      {/* ── Security Profile (preset selector) ────────────────────────────── */}
+      <div className="pb-3">
+        <p className="text-sm font-semibold text-foreground">Security Profile</p>
+        <p className="text-xs text-muted-foreground mb-3">
+          Choose a preset tuned for your LMS concurrency and network conditions. Switch to
+          <span className="font-medium text-foreground"> Custom </span>
+          to edit every value below independently.
+        </p>
+        <Select
+          value={activeProfile}
+          onValueChange={(v) => applyProfile(v as SecurityProfileId)}
+          disabled={disabled}
+        >
+          <SelectTrigger className="w-full max-w-md" data-testid="select-security-profile">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="compatibility" data-testid="option-profile-compatibility">{SECURITY_PROFILE_LABELS.compatibility}</SelectItem>
+            <SelectItem value="balanced" data-testid="option-profile-balanced">{SECURITY_PROFILE_LABELS.balanced} (Recommended)</SelectItem>
+            <SelectItem value="strict" data-testid="option-profile-strict">{SECURITY_PROFILE_LABELS.strict}</SelectItem>
+            <SelectItem value="custom" data-testid="option-profile-custom">{SECURITY_PROFILE_LABELS.custom}</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground mt-2">{SECURITY_PROFILE_DESCRIPTIONS[activeProfile]}</p>
+      </div>
+
+      <div className="pt-4 pb-2 border-t border-border">
         <p className="text-sm font-semibold text-foreground">Advanced Hardening</p>
         <p className="text-xs text-muted-foreground">Anti-downloader defenses. Safe defaults are on; gated playlist + short TTLs are optional.</p>
       </div>
@@ -132,29 +233,39 @@ export function SecuritySettingsForm({ value, onChange, disabled, onSave, showSa
       ))}
 
       <SettingRow label="Heartbeat Interval (sec)" description="How often the player pings the server. Lower = faster revocation but more traffic.">
-        <Input type="number" min={5} max={60} value={value.heartbeatIntervalSec ?? 12}
-          onChange={e => set("heartbeatIntervalSec", parseInt(e.target.value) || 12)}
-          disabled={disabled} className="w-20 text-center" data-testid="input-heartbeat-interval" />
+        <Input type="number" min={5} max={120} value={value.heartbeatIntervalSec ?? BALANCED.heartbeatIntervalSec}
+          onChange={e => set("heartbeatIntervalSec", parseInt(e.target.value) || BALANCED.heartbeatIntervalSec)}
+          disabled={disabled} className="w-24 text-center" data-testid="input-heartbeat-interval" />
       </SettingRow>
-      <SettingRow label="Download-Ahead Limit" description="Max segments fetchable in 5s before velocity scoring trips.">
-        <Input type="number" min={5} max={200} value={value.downloadAheadLimit ?? 25}
-          onChange={e => set("downloadAheadLimit", parseInt(e.target.value) || 25)}
-          disabled={disabled} className="w-20 text-center" data-testid="input-download-ahead" />
+      <SettingRow label="Max Prebuffer (sec)" description="How far ahead the player may prefetch. Higher = smoother on slow networks; lower = tighter window.">
+        <Input type="number" min={10} max={300} value={value.maxPrebufferSec ?? BALANCED.maxPrebufferSec}
+          onChange={e => set("maxPrebufferSec", parseInt(e.target.value) || BALANCED.maxPrebufferSec)}
+          disabled={disabled} className="w-24 text-center" data-testid="input-max-prebuffer" />
       </SettingRow>
-      <SettingRow label="Token TTL — Playlist (sec)" description="Only used when Short Token TTLs is on.">
-        <Input type="number" min={10} max={300} value={value.tokenTtlPlaylistSec ?? 25}
-          onChange={e => set("tokenTtlPlaylistSec", parseInt(e.target.value) || 25)}
-          disabled={disabled} className="w-20 text-center" data-testid="input-ttl-playlist" />
+      <SettingRow label="Max Download-Ahead (sec)" description="Max seconds of video fetchable in a 5s burst before velocity scoring trips.">
+        <Input type="number" min={10} max={600} value={value.maxDownloadAheadSec ?? BALANCED.maxDownloadAheadSec}
+          onChange={e => set("maxDownloadAheadSec", parseInt(e.target.value) || BALANCED.maxDownloadAheadSec)}
+          disabled={disabled} className="w-24 text-center" data-testid="input-max-download-ahead" />
       </SettingRow>
-      <SettingRow label="Token TTL — Segment (sec)" description="Only used when Short Token TTLs is on.">
-        <Input type="number" min={5} max={120} value={value.tokenTtlSegmentSec ?? 12}
-          onChange={e => set("tokenTtlSegmentSec", parseInt(e.target.value) || 12)}
-          disabled={disabled} className="w-20 text-center" data-testid="input-ttl-segment" />
+      <SettingRow label="Window Overlap Grace (sec)" description="Grace period where out-of-window segment requests don't score abuse (covers seeks + quality switches).">
+        <Input type="number" min={5} max={300} value={value.windowOverlapGraceSec ?? BALANCED.windowOverlapGraceSec}
+          onChange={e => set("windowOverlapGraceSec", parseInt(e.target.value) || BALANCED.windowOverlapGraceSec)}
+          disabled={disabled} className="w-24 text-center" data-testid="input-window-overlap-grace" />
       </SettingRow>
-      <SettingRow label="Token TTL — Key (sec)" description="Only used when Short Token TTLs is on.">
-        <Input type="number" min={5} max={120} value={value.tokenTtlKeySec ?? 12}
-          onChange={e => set("tokenTtlKeySec", parseInt(e.target.value) || 12)}
-          disabled={disabled} className="w-20 text-center" data-testid="input-ttl-key" />
+      <SettingRow label="Token TTL — Playlist (sec)" description="Lifetime of signed playlist URLs.">
+        <Input type="number" min={15} max={600} value={value.tokenTtlPlaylistSec ?? BALANCED.playlistTtlSec}
+          onChange={e => set("tokenTtlPlaylistSec", parseInt(e.target.value) || BALANCED.playlistTtlSec)}
+          disabled={disabled} className="w-24 text-center" data-testid="input-ttl-playlist" />
+      </SettingRow>
+      <SettingRow label="Token TTL — Segment (sec)" description="Lifetime of signed segment (.ts) URLs.">
+        <Input type="number" min={15} max={600} value={value.tokenTtlSegmentSec ?? BALANCED.segmentTtlSec}
+          onChange={e => set("tokenTtlSegmentSec", parseInt(e.target.value) || BALANCED.segmentTtlSec)}
+          disabled={disabled} className="w-24 text-center" data-testid="input-ttl-segment" />
+      </SettingRow>
+      <SettingRow label="Token TTL — Key (sec)" description="Lifetime of signed AES-128 key URLs.">
+        <Input type="number" min={15} max={600} value={value.tokenTtlKeySec ?? BALANCED.keyTtlSec}
+          onChange={e => set("tokenTtlKeySec", parseInt(e.target.value) || BALANCED.keyTtlSec)}
+          disabled={disabled} className="w-24 text-center" data-testid="input-ttl-key" />
       </SettingRow>
 
       <div className="pt-4 pb-2 border-t border-border">
@@ -171,15 +282,15 @@ export function SecuritySettingsForm({ value, onChange, disabled, onSave, showSa
         </SettingRow>
       ))}
 
-      <SettingRow label="Violation Limit" description="Number of violations before playback is blocked">
+      <SettingRow label="Violation Limit" description="Number of client-side violations before playback is blocked.">
         <Input
           type="number"
           min={1}
-          max={20}
+          max={50}
           value={value.violationLimit}
-          onChange={e => set("violationLimit", parseInt(e.target.value) || 3)}
+          onChange={e => set("violationLimit", parseInt(e.target.value) || BALANCED.violationLimit)}
           disabled={disabled}
-          className="w-20 text-center"
+          className="w-24 text-center"
           data-testid="input-violation-limit"
         />
       </SettingRow>

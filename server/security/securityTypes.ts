@@ -1,3 +1,5 @@
+import { SECURITY_PROFILES, DEFAULT_SECURITY_PROFILE, type SecurityProfileId } from "@shared/securityProfiles";
+
 export type ClientSecuritySettings = {
   blockVideoRecording: boolean;
   blockScreenshots: boolean;
@@ -29,7 +31,15 @@ export type ClientSecuritySettings = {
   heartbeatIntervalSec?: number;
   downloadAheadLimit?: number;
   stealthModeEnabled?: boolean;
+
+  // ── Security Profile (preset selector + time-based tuning) ────────────────
+  securityProfile?: SecurityProfileId;
+  maxPrebufferSec?: number;
+  maxDownloadAheadSec?: number;
+  windowOverlapGraceSec?: number;
 };
+
+const BALANCED = SECURITY_PROFILES.balanced;
 
 export const defaultClientSecuritySettings: ClientSecuritySettings = {
   blockVideoRecording: false,
@@ -40,7 +50,7 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   disableDownloads: false,
   requireFullscreen: false,
   antiScreenSharing: false,
-  violationLimit: 3,
+  violationLimit: BALANCED.violationLimit,
   allowedBrowsers: [],
   suspiciousDetectionEnabled: true,
 
@@ -50,10 +60,16 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   heartbeatV2Enabled: true,
   serverGatedWindowEnabled: false,
   shortTokenTtlEnabled: false,
-  tokenTtlPlaylistSec: 25,
-  tokenTtlSegmentSec: 12,
-  tokenTtlKeySec: 12,
-  heartbeatIntervalSec: 12,
-  downloadAheadLimit: 25,
+  tokenTtlPlaylistSec: BALANCED.playlistTtlSec,
+  tokenTtlSegmentSec: BALANCED.segmentTtlSec,
+  tokenTtlKeySec: BALANCED.keyTtlSec,
+  heartbeatIntervalSec: BALANCED.heartbeatIntervalSec,
+  // downloadAheadLimit is segment-based; derived from maxDownloadAheadSec (60s @ ~2s/seg = 30).
+  downloadAheadLimit: Math.ceil(BALANCED.maxDownloadAheadSec / 2),
   stealthModeEnabled: false,
+
+  securityProfile: DEFAULT_SECURITY_PROFILE,
+  maxPrebufferSec: BALANCED.maxPrebufferSec,
+  maxDownloadAheadSec: BALANCED.maxDownloadAheadSec,
+  windowOverlapGraceSec: BALANCED.windowOverlapGraceSec,
 };

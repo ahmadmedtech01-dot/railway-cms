@@ -235,11 +235,26 @@ export const videoClientSecurity = pgTable("video_client_security", {
   serverGatedWindowEnabled: boolean("server_gated_window_enabled").notNull().default(false),
   shortTokenTtlEnabled: boolean("short_token_ttl_enabled").notNull().default(false),
   // Configurable values
-  tokenTtlPlaylistSec: integer("token_ttl_playlist_sec").notNull().default(25),
-  tokenTtlSegmentSec: integer("token_ttl_segment_sec").notNull().default(12),
-  tokenTtlKeySec: integer("token_ttl_key_sec").notNull().default(12),
-  heartbeatIntervalSec: integer("heartbeat_interval_sec").notNull().default(12),
-  downloadAheadLimit: integer("download_ahead_limit").notNull().default(25),
+  tokenTtlPlaylistSec: integer("token_ttl_playlist_sec").notNull().default(60),
+  tokenTtlSegmentSec: integer("token_ttl_segment_sec").notNull().default(30),
+  tokenTtlKeySec: integer("token_ttl_key_sec").notNull().default(30),
+  heartbeatIntervalSec: integer("heartbeat_interval_sec").notNull().default(15),
+  downloadAheadLimit: integer("download_ahead_limit").notNull().default(30),
+  // ── Security Profile (preset selector) ───────────────────────────────────
+  // One of: 'compatibility' | 'balanced' | 'strict' | 'custom'. When a preset
+  // is selected, the values above + the *Sec fields below are populated from
+  // SECURITY_PROFILES. 'custom' means admin-tuned values.
+  securityProfile: text("security_profile").notNull().default("balanced"),
+  // ── Time-based scalability tuning (admin-configurable) ───────────────────
+  // maxPrebufferSec  — How far ahead (sec) the player may prefetch. Controls
+  //                    the segment-window range used by validateSegmentWindow.
+  // maxDownloadAheadSec — How many seconds of video may be fetched in a 5s
+  //                       burst before velocity scoring trips.
+  // windowOverlapGraceSec — Grace period (sec) where out-of-window denials
+  //                         don't score abuse (covers seeks + quality switches).
+  maxPrebufferSec: integer("max_prebuffer_sec").notNull().default(45),
+  maxDownloadAheadSec: integer("max_download_ahead_sec").notNull().default(60),
+  windowOverlapGraceSec: integer("window_overlap_grace_sec").notNull().default(30),
   // Stealth Protected Playback Mode — opt-in. Replaces /hls, /seg, /key with
   // opaque routes (/stream/window, /stream/chunk, /stream/secret). Hides
   // master.m3u8 / index.m3u8 / seg_*.ts / .key names from the Network tab.

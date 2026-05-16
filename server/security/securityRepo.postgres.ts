@@ -60,12 +60,16 @@ export class PostgresSecurityRepo implements SecurityRepo {
       heartbeatV2Enabled: (row as any).heartbeatV2Enabled ?? true,
       serverGatedWindowEnabled: (row as any).serverGatedWindowEnabled ?? false,
       shortTokenTtlEnabled: (row as any).shortTokenTtlEnabled ?? false,
-      tokenTtlPlaylistSec: (row as any).tokenTtlPlaylistSec ?? 25,
-      tokenTtlSegmentSec: (row as any).tokenTtlSegmentSec ?? 12,
-      tokenTtlKeySec: (row as any).tokenTtlKeySec ?? 12,
-      heartbeatIntervalSec: (row as any).heartbeatIntervalSec ?? 12,
-      downloadAheadLimit: (row as any).downloadAheadLimit ?? 25,
+      tokenTtlPlaylistSec: (row as any).tokenTtlPlaylistSec ?? defaultClientSecuritySettings.tokenTtlPlaylistSec,
+      tokenTtlSegmentSec: (row as any).tokenTtlSegmentSec ?? defaultClientSecuritySettings.tokenTtlSegmentSec,
+      tokenTtlKeySec: (row as any).tokenTtlKeySec ?? defaultClientSecuritySettings.tokenTtlKeySec,
+      heartbeatIntervalSec: (row as any).heartbeatIntervalSec ?? defaultClientSecuritySettings.heartbeatIntervalSec,
+      downloadAheadLimit: (row as any).downloadAheadLimit ?? defaultClientSecuritySettings.downloadAheadLimit,
       stealthModeEnabled: (row as any).stealthModeEnabled ?? false,
+      securityProfile: (row as any).securityProfile ?? defaultClientSecuritySettings.securityProfile,
+      maxPrebufferSec: (row as any).maxPrebufferSec ?? defaultClientSecuritySettings.maxPrebufferSec,
+      maxDownloadAheadSec: (row as any).maxDownloadAheadSec ?? defaultClientSecuritySettings.maxDownloadAheadSec,
+      windowOverlapGraceSec: (row as any).windowOverlapGraceSec ?? defaultClientSecuritySettings.windowOverlapGraceSec,
     };
   }
 
@@ -93,12 +97,16 @@ export class PostgresSecurityRepo implements SecurityRepo {
       heartbeatV2Enabled: settings.heartbeatV2Enabled ?? true,
       serverGatedWindowEnabled: settings.serverGatedWindowEnabled ?? false,
       shortTokenTtlEnabled: settings.shortTokenTtlEnabled ?? false,
-      tokenTtlPlaylistSec: settings.tokenTtlPlaylistSec ?? 25,
-      tokenTtlSegmentSec: settings.tokenTtlSegmentSec ?? 12,
-      tokenTtlKeySec: settings.tokenTtlKeySec ?? 12,
-      heartbeatIntervalSec: settings.heartbeatIntervalSec ?? 12,
-      downloadAheadLimit: settings.downloadAheadLimit ?? 25,
+      tokenTtlPlaylistSec: settings.tokenTtlPlaylistSec ?? defaultClientSecuritySettings.tokenTtlPlaylistSec!,
+      tokenTtlSegmentSec: settings.tokenTtlSegmentSec ?? defaultClientSecuritySettings.tokenTtlSegmentSec!,
+      tokenTtlKeySec: settings.tokenTtlKeySec ?? defaultClientSecuritySettings.tokenTtlKeySec!,
+      heartbeatIntervalSec: settings.heartbeatIntervalSec ?? defaultClientSecuritySettings.heartbeatIntervalSec!,
+      downloadAheadLimit: settings.downloadAheadLimit ?? defaultClientSecuritySettings.downloadAheadLimit!,
       stealthModeEnabled: settings.stealthModeEnabled ?? false,
+      securityProfile: settings.securityProfile ?? defaultClientSecuritySettings.securityProfile!,
+      maxPrebufferSec: settings.maxPrebufferSec ?? defaultClientSecuritySettings.maxPrebufferSec!,
+      maxDownloadAheadSec: settings.maxDownloadAheadSec ?? defaultClientSecuritySettings.maxDownloadAheadSec!,
+      windowOverlapGraceSec: settings.windowOverlapGraceSec ?? defaultClientSecuritySettings.windowOverlapGraceSec!,
     };
 
     if (existing.length > 0) {
