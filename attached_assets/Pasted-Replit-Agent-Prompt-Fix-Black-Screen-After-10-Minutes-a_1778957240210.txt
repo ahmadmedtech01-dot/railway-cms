@@ -1,0 +1,247 @@
+Replit Agent Prompt — Fix Black Screen After 10 Minutes and Make Playback Smooth
+
+Problem:
+Playback request count improved, but now video becomes black/stops after around 10 minutes. In LMS playback I see 403 failed media requests. Shareable link is smoother but LMS/share flows must both play continuously without black screen, network error, or stuck player.
+
+Goal:
+Video must play smoothly for full duration with no black screen, no fatal playback error, and no visible interruption, while keeping all existing security.
+
+Do NOT remove or weaken:
+- short clean share links
+- no token in URL
+- server-side bootstrap
+- LMS iframe postMessage flow
+- admin preview
+- stealth protected playback
+- opaque chunk/secret routes
+- AES-HLS
+- HMAC signing
+- server-gated playlist
+- strong heartbeat
+- key binding
+- MediaSource guard
+- watermark
+- abuse detection
+- session revocation
+- raw B2/R2/S3 hiding
+- Cloudflare Worker compatibility
+
+Main issue to fix:
+The player/session/stream token or key/window expires or rotates around 10 minutes, causing /stream/chunk or /stream/secret to return 403 while hls.js is still playing. The frontend does not silently renew/recover, so the player goes black.
+
+Required fixes:
+
+1. Add silent session renewal before expiry
+
+For every playback session, backend must return:
+- sessionExpiresAt
+- tokenExpiresAt
+- streamWindowExpiresAt
+- nextRefreshAt
+- heartbeatIntervalSec
+- renewalGraceSec
+
+Frontend must silently renew before expiry:
+- renew at 70–80% of session/token lifetime
+- never wait until expiry
+- do not destroy hls.js during renewal
+- keep playback position and buffer
+
+Example:
+If session max age is 10 minutes, renew at 7–8 minutes.
+If stream window TTL is 60 sec, refresh at 40–45 sec.
+
+2. Do not let active playback session expire while heartbeat is valid
+
+If heartbeat is active and valid:
+- extend/rotate session safely
+- keep same logical playbackSessionId or map old → new session
+- do not invalidate current chunk/key URLs immediately
+- keep old session tokens valid during overlap grace
+
+If heartbeat is missing/stale:
+- then apply strict security and block after grace period.
+
+3. Add overlap grace for session rotation
+
+When token/session/window rotates:
+- old chunk IDs remain valid for in-flight requests for overlapGraceSec
+- old key/secret IDs remain valid for overlapGraceSec
+- old playback token remains accepted only for current in-flight media requests during grace
+- new requests should use new token/window
+
+Recommended defaults:
+- overlapGraceSec: 45 sec
+- heartbeatGraceSec: 45–60 sec
+- windowRefreshBeforeExpirySec: 15–20 sec
+- sessionRefreshBeforeExpirySec: 120 sec
+
+Admin can configure these values globally/per-video.
+
+4. Fix 403 handling
+
+Do not show black screen immediately on first 403.
+
+Frontend behavior:
+- If /stream/chunk or /stream/secret returns 403:
+  - check session status endpoint
+  - if session is revoked/security-blocked → show proper “Access revoked/security blocked”
+  - if session expired/rotated → silently renew session/window and retry once
+  - if token expired → refresh token/window and retry once
+  - only show fatal error after repeated failures
+
+Backend should return machine-readable minimal error code in JSON or header:
+- X-Playback-Error: SESSION_REVOKED
+- X-Playback-Error: TOKEN_EXPIRED
+- X-Playback-Error: WINDOW_EXPIRED
+- X-Playback-Error: SECRET_EXPIRED
+- X-Playback-Error: OUT_OF_WINDOW
+- X-Playback-Error: HEARTBEAT_STALE
+
+Do not expose secrets or internal paths.
+
+5. Fix hls.js recovery
+
+Configure hls.js recovery properly:
+
+On:
+- FRAG_LOAD_ERROR
+- KEY_LOAD_ERROR
+- LEVEL_LOAD_ERROR
+- MANIFEST_LOAD_ERROR
+- BUFFER_STALLED_ERROR
+- NETWORK_ERROR
+
+Do:
+- pause fatal error display
+- refresh stream window once
+- renew token/session if needed
+- retry failed chunk/key once
+- call hls.recoverMediaError() only for media errors
+- do not destroy/recreate hls unless absolutely needed
+- if hls must be recreated, resume from previous currentTime
+
+6. Keep buffer ahead before renewal
+
+Before token/window renewal:
+- ensure player has safe buffer
+- do not flush buffer
+- do not clear MediaSource
+- do not reset video src unless fatal recovery fails
+
+Target:
+- maintain 20–40 sec buffer ahead if network allows
+- avoid buffer dropping to 0 during renewal
+
+7. Unify LMS and shareable link renewal
+
+Share link and LMS must use same secure renewal pipeline.
+
+Create shared function:
+renewPlaybackSession({
+  playbackSessionId,
+  publicId,
+  authMode: "share" | "lms" | "adminPreview" | "public",
+  currentTime,
+  lastSequence,
+  nonce
+})
+
+This must:
+- validate session
+- validate auth mode
+- validate LMS origin/client if LMS
+- validate share link if share
+- extend/rotate token
+- return new stream window and expiry info
+- preserve security settings
+
+LMS must not use a weaker or separate renewal path.
+
+8. Fix session tracking for LMS
+
+Your LMS sessions must update:
+- watch time
+- completion %
+- last ping
+- currentTime
+- status
+
+If LMS session shows active but watch time remains 0s, server-gated playlist logic may think user has not watched and reject chunks. Fix heartbeat/progress mapping for LMS sessions.
+
+9. Reduce unnecessary requests but keep smoothness
+
+Current:
+- LMS: 667 requests / 10 min
+- Share: 278 requests / 11 min
+
+Target:
+- LMS should ideally be closer to 300–500 requests / 10 min depending on segment duration.
+- Progress/heartbeat should not duplicate.
+- Only one heartbeat timer.
+- Only one progress timer.
+- Only one renewal timer.
+- Only one window refresh in-flight.
+
+Do not over-optimize by breaking security.
+
+10. Admin-configurable, no hard-coded values
+
+Add/ensure settings:
+- Session Max Age Minutes
+- Renew Session Before Expiry Seconds
+- Heartbeat Interval Seconds
+- Heartbeat Grace Seconds
+- Window TTL Seconds
+- Window Refresh Before Expiry Seconds
+- Segment/Chunk TTL Seconds
+- Key/Secret TTL Seconds
+- Overlap Grace Seconds
+- Max Retry Count
+- Retry Backoff
+
+Use current admin settings as defaults, but allow override globally/per-video.
+
+11. Server logs for black screen cause
+
+Add audit/debug logs for:
+- SESSION_EXPIRED_DURING_PLAYBACK
+- SESSION_RENEWED
+- TOKEN_RENEWED
+- WINDOW_REFRESHED
+- SECRET_EXPIRED
+- CHUNK_EXPIRED
+- HLS_RECOVERY_ATTEMPTED
+- HLS_RECOVERY_SUCCESS
+- HLS_RECOVERY_FAILED
+- LMS_PROGRESS_NOT_UPDATING
+- HEARTBEAT_STALE
+- MEDIA_ROUTE_403
+
+Admin session page should show last reject reason.
+
+12. Acceptance criteria
+
+Must pass:
+- LMS playback runs 20 minutes without black screen.
+- Share link playback runs 20 minutes without black screen.
+- No black screen at 10-minute mark.
+- No fatal “Network unstable” unless real network failure.
+- 403 due to normal expiry triggers silent renewal + retry, not black screen.
+- Real revoked session still blocks immediately.
+- Download-ahead abuse still blocks.
+- MediaSource/appendBuffer tamper still blocks.
+- LMS session watch time and completion update correctly.
+- Session renewal does not expose token in URL.
+- Opaque chunk/secret routes remain short.
+- Raw B2/R2/S3 URLs remain hidden.
+- No .m3u8/.ts/mp2t exposure.
+- Admin preview works.
+- LMS iframe works.
+- Share links work.
+- No TypeScript errors.
+- No upload/transcode/storage breakage.
+
+Important:
+Do not solve this by setting token TTL to 600 seconds only.
+The correct fix is silent renewal, overlap grace, hls.js retry recovery, and correct LMS heartbeat/progress tracking.
