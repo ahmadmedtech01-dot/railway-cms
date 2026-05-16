@@ -37,9 +37,15 @@ function buildHardening(s: any): SessionHardeningConfig {
     // reaches deep segments in the sliding-window playlist (false "invalid
     // chunk token" → fragment-retry storm → video stops). Real security is
     // enforced by SID/UA/session/abuse layers, not by token TTL.
-    tokenTtlPlaylistSec: Math.max(90, s?.tokenTtlPlaylistSec ?? defaultHardening.tokenTtlPlaylistSec),
-    tokenTtlSegmentSec: Math.max(90, s?.tokenTtlSegmentSec ?? defaultHardening.tokenTtlSegmentSec),
-    tokenTtlKeySec: Math.max(90, s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec),
+    // Floor at 300s (5 min). Stored DB values can be 0 or a tiny legacy
+    // number (e.g. 12) which causes the variant-playlist opaque URL to
+    // expire every 30s and chain rotation storms every ~21s (30s − retries).
+    // Real security is provided by SID-binding, session lifetime, UA hash,
+    // and abuse detection. The TTL only needs to outlive one heartbeat
+    // interval (12s) with a large margin.
+    tokenTtlPlaylistSec: Math.max(300, s?.tokenTtlPlaylistSec ?? defaultHardening.tokenTtlPlaylistSec),
+    tokenTtlSegmentSec: Math.max(300, s?.tokenTtlSegmentSec ?? defaultHardening.tokenTtlSegmentSec),
+    tokenTtlKeySec: Math.max(300, s?.tokenTtlKeySec ?? defaultHardening.tokenTtlKeySec),
     heartbeatIntervalSec: s?.heartbeatIntervalSec ?? defaultHardening.heartbeatIntervalSec,
     downloadAheadLimit: s?.downloadAheadLimit ?? defaultHardening.downloadAheadLimit,
     stealthModeEnabled: s?.stealthModeEnabled ?? defaultHardening.stealthModeEnabled,
@@ -47,18 +53,26 @@ function buildHardening(s: any): SessionHardeningConfig {
 }
 
 // ── Stealth Mode helper: mint an opaque level URL for a given variant path ──
+// Hard floors prevent a broken or un-migrated DB value (e.g. tokenTtlPlaylistSec=0)
+// from causing the variant playlist URL to expire every 30s and trigger a
+// session-rotation storm. Even with shortTokenTtlEnabled=true and a zero/tiny
+// persisted TTL, the floor keeps the URL alive long enough for normal playback.
+// SESSION_MAX_AGE_MS is the ceiling enforced by the session expiry itself.
+//   Level/playlist: 5-minute floor — hls.js reloads every 2s (targetDuration).
+//                   5 min matches the heartbeat extend cycle with margin.
+//   Chunk/key: 2-minute floor — segments are fetched once then never re-requested.
 function buildStealthLevelUrl(publicId: string, sid: string, variantSubPath: string, ttlSec: number): string {
-  const exp = Math.floor(Date.now() / 1000) + Math.max(30, ttlSec);
+  const exp = Math.floor(Date.now() / 1000) + Math.max(300, ttlSec);
   const id = mintOpaqueId({ s: sid, t: "l", v: variantSubPath.replace(/^\//, ""), e: exp });
   return `/api/player/${publicId}/stream/window/${id}`;
 }
 function buildStealthChunkUrl(publicId: string, sid: string, segSubPath: string, ttlSec: number): string {
-  const exp = Math.floor(Date.now() / 1000) + Math.max(10, ttlSec);
+  const exp = Math.floor(Date.now() / 1000) + Math.max(120, ttlSec);
   const id = mintOpaqueId({ s: sid, t: "c", p: segSubPath.replace(/^\//, ""), e: exp });
   return `/api/player/${publicId}/stream/chunk/${id}`;
 }
 function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): string {
-  const exp = Math.floor(Date.now() / 1000) + Math.max(10, ttlSec);
+  const exp = Math.floor(Date.now() / 1000) + Math.max(120, ttlSec);
   const id = mintOpaqueId({ s: sid, t: "k", e: exp });
   return `/api/player/${publicId}/stream/secret/${id}`;
 }

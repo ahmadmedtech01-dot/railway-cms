@@ -82,9 +82,9 @@ export const defaultHardening: SessionHardeningConfig = {
   // session lifetime, abuse detection, and window validation — not by token
   // TTL. 90s is well under SESSION_MAX_AGE_MS so signed URLs still rotate
   // through the natural session lifecycle.
-  tokenTtlPlaylistSec: 90,
-  tokenTtlSegmentSec: 90,
-  tokenTtlKeySec: 90,
+  tokenTtlPlaylistSec: 300,
+  tokenTtlSegmentSec: 300,
+  tokenTtlKeySec: 300,
   heartbeatIntervalSec: 12,
   // Allow hls.js to prefetch ~2 min ahead (60 segs @ 2s) without false abuse.
   // Real bulk-download scrapers request hundreds in seconds and still get caught
