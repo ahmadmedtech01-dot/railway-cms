@@ -1,0 +1,112 @@
+7. Unify LMS and shareable link renewal
+
+Share link and LMS must use same secure renewal pipeline.
+
+Create shared function:
+renewPlaybackSession({
+  playbackSessionId,
+  publicId,
+  authMode: "share" | "lms" | "adminPreview" | "public",
+  currentTime,
+  lastSequence,
+  nonce
+})
+
+This must:
+- validate session
+- validate auth mode
+- validate LMS origin/client if LMS
+- validate share link if share
+- extend/rotate token
+- return new stream window and expiry info
+- preserve security settings
+
+LMS must not use a weaker or separate renewal path.
+
+8. Fix session tracking for LMS
+
+Your LMS sessions must update:
+- watch time
+- completion %
+- last ping
+- currentTime
+- status
+
+If LMS session shows active but watch time remains 0s, server-gated playlist logic may think user has not watched and reject chunks. Fix heartbeat/progress mapping for LMS sessions.
+
+9. Reduce unnecessary requests but keep smoothness
+
+Current:
+- LMS: 667 requests / 10 min
+- Share: 278 requests / 11 min
+
+Target:
+- LMS should ideally be closer to 300–500 requests / 10 min depending on segment duration.
+- Progress/heartbeat should not duplicate.
+- Only one heartbeat timer.
+- Only one progress timer.
+- Only one renewal timer.
+- Only one window refresh in-flight.
+
+Do not over-optimize by breaking security.
+
+10. Admin-configurable, no hard-coded values
+
+Add/ensure settings:
+- Session Max Age Minutes
+- Renew Session Before Expiry Seconds
+- Heartbeat Interval Seconds
+- Heartbeat Grace Seconds
+- Window TTL Seconds
+- Window Refresh Before Expiry Seconds
+- Segment/Chunk TTL Seconds
+- Key/Secret TTL Seconds
+- Overlap Grace Seconds
+- Max Retry Count
+- Retry Backoff
+
+Use current admin settings as defaults, but allow override globally/per-video.
+
+11. Server logs for black screen cause
+
+Add audit/debug logs for:
+- SESSION_EXPIRED_DURING_PLAYBACK
+- SESSION_RENEWED
+- TOKEN_RENEWED
+- WINDOW_REFRESHED
+- SECRET_EXPIRED
+- CHUNK_EXPIRED
+- HLS_RECOVERY_ATTEMPTED
+- HLS_RECOVERY_SUCCESS
+- HLS_RECOVERY_FAILED
+- LMS_PROGRESS_NOT_UPDATING
+- HEARTBEAT_STALE
+- MEDIA_ROUTE_403
+
+Admin session page should show last reject reason.
+
+12. Acceptance criteria
+
+Must pass:
+- LMS playback runs 20 minutes without black screen.
+- Share link playback runs 20 minutes without black screen.
+- No black screen at 10-minute mark.
+- No fatal “Network unstable” unless real network failure.
+- 403 due to normal expiry triggers silent renewal + retry, not black screen.
+- Real revoked session still blocks immediately.
+- Download-ahead abuse still blocks.
+- MediaSource/appendBuffer tamper still blocks.
+- LMS session watch time and completion update correctly.
+- Session renewal does not expose token in URL.
+- Opaque chunk/secret routes remain short.
+- Raw B2/R2/S3 URLs remain hidden.
+- No .m3u8/.ts/mp2t exposure.
+- Admin preview works.
+- LMS iframe works.
+- Share links work.
+- No TypeScript errors.
+- No upload/transcode/storage breakage.
+
+Important:
+Do not solve this by setting token TTL to 600 seconds only.
+The correct fix is silent renewal, overlap grace, hls.js retry recovery, and correct LMS heartbeat/progress tracking.

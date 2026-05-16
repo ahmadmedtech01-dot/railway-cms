@@ -181,7 +181,7 @@ export function mintOpaqueId(payload: OpaquePayload): string {
 // impossible to tell "natural TTL rollover" apart from "tampered/forged URL".
 export type OpaqueVerifyFailure = "OPAQUE_ID_MALFORMED" | "OPAQUE_ID_TAMPERED" | "OPAQUE_ID_EXPIRED";
 
-export function verifyOpaqueIdDetailed(id: string): { payload?: OpaquePayload; failure?: OpaqueVerifyFailure } {
+export function verifyOpaqueIdDetailed(id: string, overlapGraceSec: number = 3): { payload?: OpaquePayload; failure?: OpaqueVerifyFailure } {
   if (typeof id !== "string" || id.length < 60 || !/^[0-9a-f]+$/i.test(id)) {
     return { failure: "OPAQUE_ID_MALFORMED" };
   }
@@ -206,12 +206,48 @@ export function verifyOpaqueIdDetailed(id: string): { payload?: OpaquePayload; f
     return { failure: "OPAQUE_ID_TAMPERED" };
   }
   const now = Math.floor(Date.now() / 1000);
-  if (parsed.e + 3 < now) return { failure: "OPAQUE_ID_EXPIRED" };
+  // Admin-configurable overlap grace (default 3s). With windowOverlapGraceSec=30
+  // an expired bucket-rounded opaque ID still passes for 30s, so in-flight
+  // segment/chunk/key fetches that hls.js scheduled BEFORE the playlist
+  // refetched the new opaque IDs still succeed — no black screen at the
+  // bucket boundary (~10 min into long sessions).
+  const grace = Math.max(3, Math.floor(overlapGraceSec || 3));
+  if (parsed.e + grace < now) return { failure: "OPAQUE_ID_EXPIRED" };
   return { payload: parsed };
 }
 
 export function verifyOpaqueId(id: string): OpaquePayload | null {
   return verifyOpaqueIdDetailed(id).payload || null;
+}
+
+// Decode an opaque ID and return its payload + exp without rejecting on
+// expiry. Used by stealth media routes that need to look up the session's
+// per-session `windowOverlapGraceSec` BEFORE deciding whether the exp is
+// still acceptable. Returns null if the ID is malformed or tampered.
+export function decodeOpaqueIdSkipExpiry(id: string): OpaquePayload | null {
+  if (typeof id !== "string" || id.length < 60 || !/^[0-9a-f]+$/i.test(id)) return null;
+  try {
+    const buf = Buffer.from(id, "hex");
+    if (buf.length < 12 + 16 + 1) return null;
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(buf.length - 16);
+    const ct = buf.subarray(12, buf.length - 16);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", stealthAesKey, iv);
+    decipher.setAuthTag(tag);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    const parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
+    if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") return null;
+    if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function isOpaqueExpired(payload: OpaquePayload, graceSec: number): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  const grace = Math.max(3, Math.floor(graceSec || 3));
+  return payload.e + grace < now;
 }
 
 // Snap an absolute expiry to a bucket boundary so successive mints within the
@@ -250,6 +286,11 @@ export interface VideoSession {
   expiresAt: number;
   revoked: boolean;
   revokeReason: AbuseReason | null;
+  // Wall-clock timestamp when the session was revoked. Used by media routes
+  // (chunk/secret/window) to allow in-flight requests with the old SID to
+  // succeed for `windowOverlapGraceSec` seconds after a *rotation* (signal
+  // === "rotated"). Hard revokes (abuse, manual) are NOT graced.
+  revokedAt: number | null;
   abuseScore: number;
   breachEvents: number;
   blockedUntil: number | null;
@@ -564,6 +605,7 @@ export function createSession(
     expiresAt: Date.now() + SESSION_MAX_AGE_MS,
     revoked: false,
     revokeReason: null,
+    revokedAt: null,
     abuseScore: 0,
     breachEvents: 0,
     blockedUntil: null,
@@ -648,6 +690,7 @@ export function rotateSession(oldSid: string): string | null {
     expiresAt: Date.now() + SESSION_MAX_AGE_MS,
     revoked: false,
     revokeReason: null,
+    revokedAt: null,
     abuseScore: 0,
     breachEvents: 0,
     blockedUntil: null,
@@ -675,7 +718,12 @@ export function rotateSession(oldSid: string): string | null {
   });
 
   old.revoked = true;
-  old.revokeReason = { signal: "rate_limit", detail: "Session rotated" };
+  // signal="rotated" — distinguishes a benign rotation from a real abuse
+  // revocation. Media routes (chunk/secret/window) check for this signal
+  // and allow in-flight requests with the old SID to succeed for the
+  // overlap-grace window, so HLS.js never sees a 403 during the transition.
+  old.revokeReason = { signal: "rotated" as any, detail: "Session rotated" };
+  old.revokedAt = Date.now();
 
   // Persist both: new session for cross-instance hydration, old as revoked so
   // any other instance that still has it cached will reject on next access.
@@ -684,6 +732,127 @@ export function rotateSession(oldSid: string): string | null {
 
   console.log(`[video-session] SESSION_ROTATED: oldSid=${oldSid} → newSid=${newSid}, publicId=${old.publicId}`);
   return newSid;
+}
+
+/**
+ * Media-route session lookup that tolerates a *rotation* during the overlap
+ * grace window. Used ONLY by stealth chunk/secret/window handlers so in-flight
+ * segment fetches scheduled against the old SID succeed for `graceSec` seconds
+ * after rotateSession() flips the old SID to revoked. Returns null if the
+ * session was hard-revoked (abuse, manual, expired) or if the grace expired.
+ *
+ * IMPORTANT: This does NOT bypass abuse-detection revocations or expiry —
+ * only rotation-revocations within the grace window.
+ */
+export function getSessionAllowingRotationGrace(sid: string, graceSec: number): VideoSession | undefined {
+  const s = sessions.get(sid);
+  if (!s) return undefined;
+  if (Date.now() > s.expiresAt) {
+    s.revoked = true;
+    s.revokeReason = { signal: "rate_limit", detail: "Session expired" };
+    return undefined;
+  }
+  if (s.revoked) {
+    const isRotation = (s.revokeReason as any)?.signal === "rotated";
+    const within = s.revokedAt != null && (Date.now() - s.revokedAt) < Math.max(0, graceSec) * 1000;
+    if (isRotation && within) return s;
+    return undefined;
+  }
+  return s;
+}
+
+/**
+ * Cross-instance-safe rotation-grace lookup. The synchronous variant above
+ * only checks the in-memory `sessions` map, which on a fresh instance (after
+ * a Vercel function cold start, or when the rotation happened on a sibling
+ * instance behind a non-sticky LB) will be empty for the OLD SID. The old
+ * SID's row is persisted with `revoked=true`, so `loadSessionFromDb()`
+ * refuses to hydrate it. This function bypasses that filter when (and only
+ * when) the row's revoke-reason signal is "rotated" AND the row's
+ * `revokedAt` (read from the serialized blob) is within the grace window.
+ *
+ * Also returns a precise status (`kind`) so the caller can distinguish
+ * recoverable expiry/not-found from a genuine abuse/manual revocation
+ * for accurate response codes.
+ */
+export type RotationGraceStatus =
+  | { kind: "active"; session: VideoSession }
+  | { kind: "rotation_grace"; session: VideoSession }
+  | { kind: "not_found" }
+  | { kind: "expired"; expiresAt: number }
+  | { kind: "revoked"; signal: string };
+
+export async function getSessionAllowingRotationGraceAsync(
+  sid: string,
+  graceSec: number,
+): Promise<RotationGraceStatus> {
+  // Cheap fast path — already in memory (active OR rotation-revoked recently).
+  let s = sessions.get(sid);
+  if (s) {
+    // Periodic revalidation so revokes done on another instance are seen.
+    const last = lastDbRevalidateAt.get(sid) || 0;
+    if (Date.now() - last >= REVALIDATE_INTERVAL_MS) {
+      await revalidateFromDb(sid, s);
+    }
+  } else {
+    // Not cached — hydrate from DB. loadSessionFromDb skips revoked rows,
+    // so do a raw read here that does NOT filter on revoked, then decide.
+    try {
+      const rows = await db
+        .select()
+        .from(videoSessions)
+        .where(eq(videoSessions.sid, sid))
+        .limit(1);
+      if (!rows.length) return { kind: "not_found" };
+      const row = rows[0];
+      const expMs = row.expiresAt.getTime();
+      if (expMs < Date.now()) return { kind: "expired", expiresAt: expMs };
+      const hydrated = deserializeSession(row.data);
+      hydrated.expiresAt = expMs;
+      hydrated.revoked = row.revoked;
+      hydrated.integrationSessionId = row.integrationSessionId ?? hydrated.integrationSessionId ?? undefined;
+      if (!row.revoked) {
+        // Healthy — cache it normally and return active.
+        sessions.set(sid, hydrated);
+        lastDbRevalidateAt.set(sid, Date.now());
+        s = hydrated;
+      } else {
+        // Revoked row — only allow if rotation grace + within window.
+        const reason = (hydrated.revokeReason as any) || {};
+        const isRotation = reason.signal === "rotated";
+        const revokedAt = hydrated.revokedAt;
+        const within = isRotation && revokedAt != null
+          && (Date.now() - revokedAt) < Math.max(0, graceSec) * 1000;
+        if (within) {
+          // Cache so subsequent in-flight requests for the SAME old SID can
+          // reuse without another DB round-trip during the brief grace
+          // window. The row will become unreachable as soon as grace
+          // expires; periodic cleanup will purge eventually.
+          sessions.set(sid, hydrated);
+          lastDbRevalidateAt.set(sid, Date.now());
+          return { kind: "rotation_grace", session: hydrated };
+        }
+        return { kind: "revoked", signal: reason.signal || "rate_limit" };
+      }
+    } catch (err: any) {
+      console.error(`[video-session] grace-lookup failed sid=${sid}:`, err?.message || err);
+      return { kind: "not_found" };
+    }
+  }
+  // Reach here with s defined from cache or fresh hydrate.
+  if (Date.now() > s.expiresAt) {
+    s.revoked = true;
+    s.revokeReason = s.revokeReason || { signal: "rate_limit", detail: "Session expired" };
+    return { kind: "expired", expiresAt: s.expiresAt };
+  }
+  if (s.revoked) {
+    const reason = (s.revokeReason as any) || {};
+    const isRotation = reason.signal === "rotated";
+    const within = s.revokedAt != null && (Date.now() - s.revokedAt) < Math.max(0, graceSec) * 1000;
+    if (isRotation && within) return { kind: "rotation_grace", session: s };
+    return { kind: "revoked", signal: reason.signal || "rate_limit" };
+  }
+  return { kind: "active", session: s };
 }
 
 /**

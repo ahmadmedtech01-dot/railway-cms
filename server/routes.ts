@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, getSessionAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings.
 // Admin-controlled values from the Security Profile (or Custom override) are
@@ -2439,10 +2439,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // The legacy /hls, /seg, /key routes remain fully functional so existing
   // playback paths and admin previews are unaffected.
 
+  // X-Playback-Error response header — short opaque token consumed by the
+  // embed player to distinguish recoverable expiry from real abuse without
+  // having to parse the JSON body (hls.js doesn't always surface body text
+  // on 403, especially when the request was aborted by an in-flight rotation).
+  //
+  // Recoverable (player silently renews + retries):
+  //   TOKEN_EXPIRED       — opaque ID exp passed (chunk/secret/window)
+  //   WINDOW_EXPIRED      — playlist (level) opaque ID exp passed
+  //   SECRET_EXPIRED      — key opaque ID exp passed
+  //   OUT_OF_WINDOW       — server-gated playlist window doesn't include this seg
+  //   HEARTBEAT_STALE     — session expired/heartbeat too old
+  //   SESSION_ROTATED     — old SID still inside overlap grace but rotation done
+  // Fatal (player shows denial overlay, no retry):
+  //   SESSION_REVOKED     — abuse-detection or manual revocation
+  //   PLAYBACK_DENIED     — generic deny (mismatch, malformed, etc.)
+  //   BLOCKED_SUSPICIOUS_ACTIVITY — breach threshold reached
+  function setPlaybackErrorHeader(res: any, code: string) {
+    try { res.setHeader("X-Playback-Error", code); } catch {}
+  }
+
   function stealthDeny(res: any, sid: string, message: string, signal?: string, status = 403) {
     const bi = getBreachInfo(sid);
     // Recoverable signals — silent retry on client. NOT marked as abuse breach.
-    const recoverable = new Set(["token_expired", "signed_url_expired", "out_of_window", "heartbeat_invalid"]);
+    const recoverable = new Set(["token_expired", "signed_url_expired", "out_of_window", "heartbeat_invalid", "rotated"]);
     const isRecoverable = signal ? recoverable.has(signal) : false;
     let code = "PLAYBACK_DENIED";
     let error: string;
@@ -2451,13 +2471,81 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       error = "VIDEO_BLOCKED";
     } else if (isRecoverable) {
       code = signal === "out_of_window" ? "SEGMENT_WINDOW_VIOLATION" :
-             signal === "heartbeat_invalid" ? "SESSION_EXPIRED" : "TOKEN_EXPIRED";
-      error = signal === "out_of_window" ? "OUT_OF_WINDOW" : "TOKEN_EXPIRED";
+             signal === "heartbeat_invalid" ? "HEARTBEAT_STALE" :
+             signal === "rotated" ? "SESSION_ROTATED" : "TOKEN_EXPIRED";
+      error = signal === "out_of_window" ? "OUT_OF_WINDOW" :
+              signal === "heartbeat_invalid" ? "HEARTBEAT_STALE" :
+              signal === "rotated" ? "SESSION_ROTATED" : "TOKEN_EXPIRED";
     } else {
       code = "BLOCKED_SUSPICIOUS_ACTIVITY";
       error = "SECURITY_BREACH";
     }
+    setPlaybackErrorHeader(res, code);
     return res.status(status).json({ code, error, breach: `${bi.breachCount}/${bi.violationLimit}`, blockSecondsRemaining: bi.blockSecondsRemaining, message, signal });
+  }
+
+  // Small helper used by the three stealth media routes (window/chunk/secret)
+  // to (a) decode the opaque ID without expiry-checking, (b) look up the
+  // session honoring rotation overlap grace, and (c) re-check expiry against
+  // the per-session windowOverlapGraceSec. Returns either a 403-emitted
+  // response or a {session, payload} pair on success.
+  async function loadStealthCtx(
+    req: any,
+    res: any,
+    opaqueId: string,
+    expectedType: "l" | "c" | "k",
+    expiredCode: "WINDOW_EXPIRED" | "OPAQUE_ID_EXPIRED" | "SECRET_EXPIRED",
+  ): Promise<{ session: any; payload: OpaquePayload } | null> {
+    const decoded = decodeOpaqueIdSkipExpiry(opaqueId);
+    if (!decoded || decoded.t !== expectedType) {
+      setPlaybackErrorHeader(res, "PLAYBACK_DENIED");
+      log(`stealth ${expectedType} decode failed pub=${req.params.publicId} idLen=${opaqueId.length}`);
+      res.status(403).json({ code: "PLAYBACK_DENIED", error: decoded ? "OPAQUE_ID_TAMPERED" : "OPAQUE_ID_MALFORMED", message: "Invalid stream token", signal: "token_expired" });
+      return null;
+    }
+    const sid = decoded.s;
+    // DB-aware rotation grace lookup — works across instances. We use a
+    // generous fallback (60s) for the cross-instance check so we can THEN
+    // re-apply the precise per-session windowOverlapGraceSec from hardening.
+    const status = await getSessionAllowingRotationGraceAsync(sid, 60);
+    if (status.kind === "not_found" || status.kind === "expired") {
+      // RECOVERABLE — the player should silently renew. Map to
+      // HEARTBEAT_STALE so the frontend's smart-403 path triggers token
+      // refresh instead of the terminal denial overlay.
+      setPlaybackErrorHeader(res, "HEARTBEAT_STALE");
+      log(`MEDIA_ROUTE_403: code=HEARTBEAT_STALE kind=${status.kind} sid=${sid} pub=${req.params.publicId}`);
+      res.status(403).json({ code: "HEARTBEAT_STALE", error: "SESSION_EXPIRED", message: "Session expired — please refresh", signal: "heartbeat_invalid" });
+      return null;
+    }
+    if (status.kind === "revoked") {
+      // TERMINAL — abuse/manual revoke. Player must show denial overlay.
+      setPlaybackErrorHeader(res, "SESSION_REVOKED");
+      log(`MEDIA_ROUTE_403: code=SESSION_REVOKED signal=${status.signal} sid=${sid} pub=${req.params.publicId}`);
+      res.status(403).json({ code: "SESSION_REVOKED", error: "SESSION_REVOKED", message: "Session was revoked", signal: status.signal });
+      return null;
+    }
+    const session = status.session;
+    if (status.kind === "rotation_grace") {
+      // Recoverable — the player has already rotated to a new SID; this is
+      // an in-flight request from the old manifest. Allow this fetch but
+      // signal SESSION_ROTATED so any subsequent error after grace ends
+      // routes to renewal cleanly. We DON'T 403 here — we let the request
+      // succeed and just stamp the header for observability.
+      setPlaybackErrorHeader(res, "SESSION_ROTATED");
+    }
+    if (session.publicId !== req.params.publicId) {
+      setPlaybackErrorHeader(res, "PLAYBACK_DENIED");
+      res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session mismatch" });
+      return null;
+    }
+    const graceSec = Math.max(3, session.hardening?.windowOverlapGraceSec || 3);
+    if (isOpaqueExpired(decoded, graceSec)) {
+      setPlaybackErrorHeader(res, expiredCode);
+      log(`MEDIA_ROUTE_403: code=${expiredCode} sid=${sid} pub=${req.params.publicId} grace=${graceSec}s`);
+      res.status(403).json({ code: expiredCode, error: "OPAQUE_ID_EXPIRED", message: "Stream token expired", signal: "token_expired" });
+      return null;
+    }
+    return { session, payload: decoded };
   }
 
   // GET /api/player/:publicId/stream/window/:opaqueId
@@ -2466,19 +2554,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //   IDs and whose key URI is an opaque /stream/secret ID.
   app.get("/api/player/:publicId/stream/window/:opaqueId", async (req: any, res: any) => {
     const opaqueId = String(req.params.opaqueId || "");
-    const verifyRes = verifyOpaqueIdDetailed(opaqueId);
-    const decoded = verifyRes.payload;
-    if (!decoded || decoded.t !== "l" || !decoded.v) {
-      const failure = verifyRes.failure || (decoded ? "OPAQUE_ID_TAMPERED" : "OPAQUE_ID_MALFORMED");
-      const code = failure === "OPAQUE_ID_EXPIRED" ? "WINDOW_EXPIRED" : "PLAYBACK_DENIED";
-      log(`stealth window verify failed: ${failure} pub=${req.params.publicId} idLen=${opaqueId.length}`);
-      return res.status(403).json({ code, error: failure, message: "Invalid stream window token", signal: "token_expired" });
-    }
+    // loadStealthCtx is async and handles cross-instance DB hydration +
+    // rotation-grace lookup internally — no separate pre-hydrate needed.
+    const ctx = await loadStealthCtx(req, res, opaqueId, "l", "WINDOW_EXPIRED");
+    if (!ctx) return; // headers + 403 already sent
+    const { session, payload: decoded } = ctx;
     const sid = decoded.s;
-    await getSessionAsync(sid);
-    const session = getSession(sid);
-    if (!session || session.revoked) return stealthDeny(res, sid, "Session expired or revoked");
-    if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
+    if (!decoded.v) { setPlaybackErrorHeader(res, "PLAYBACK_DENIED"); return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid window payload" }); }
     if (!session.hardening.stealthModeEnabled) {
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Stealth mode not active for this session" });
     }
@@ -2573,19 +2655,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //   (UA, window, abuse, velocity), and redirects to the presigned origin.
   app.get("/api/player/:publicId/stream/chunk/:opaqueId", async (req: any, res: any) => {
     const opaqueId = String(req.params.opaqueId || "");
-    const verifyRes = verifyOpaqueIdDetailed(opaqueId);
-    const decoded = verifyRes.payload;
-    if (!decoded || decoded.t !== "c" || !decoded.p) {
-      const failure = verifyRes.failure || (decoded ? "OPAQUE_ID_TAMPERED" : "OPAQUE_ID_MALFORMED");
-      const code = failure === "OPAQUE_ID_EXPIRED" ? "OPAQUE_ID_EXPIRED" : "PLAYBACK_DENIED";
-      log(`stealth chunk verify failed: ${failure} pub=${req.params.publicId} idLen=${opaqueId.length}`);
-      return res.status(403).json({ code, error: failure, message: "Invalid chunk token", signal: "token_expired" });
-    }
+    const ctx = await loadStealthCtx(req, res, opaqueId, "c", "OPAQUE_ID_EXPIRED");
+    if (!ctx) return;
+    const { session, payload: decoded } = ctx;
     const sid = decoded.s;
-    await getSessionAsync(sid);
-    const session = getSession(sid);
-    if (!session || session.revoked) return stealthDeny(res, sid, "Session expired or revoked");
-    if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
+    if (!decoded.p) { setPlaybackErrorHeader(res, "PLAYBACK_DENIED"); return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid chunk payload" }); }
     if (!session.hardening.stealthModeEnabled) {
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Stealth mode not active for this session" });
     }
@@ -2686,19 +2760,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //   + UA + key rate limits, then returns the AES master key bytes.
   app.get("/api/player/:publicId/stream/secret/:opaqueId", async (req: any, res: any) => {
     const opaqueId = String(req.params.opaqueId || "");
-    const verifyRes = verifyOpaqueIdDetailed(opaqueId);
-    const decoded = verifyRes.payload;
-    if (!decoded || decoded.t !== "k") {
-      const failure = verifyRes.failure || (decoded ? "OPAQUE_ID_TAMPERED" : "OPAQUE_ID_MALFORMED");
-      const code = failure === "OPAQUE_ID_EXPIRED" ? "SECRET_EXPIRED" : "PLAYBACK_DENIED";
-      log(`stealth secret verify failed: ${failure} pub=${req.params.publicId} idLen=${opaqueId.length}`);
-      return res.status(403).json({ code, error: failure, message: "Invalid secret token", signal: "token_expired" });
-    }
+    const ctx = await loadStealthCtx(req, res, opaqueId, "k", "SECRET_EXPIRED");
+    if (!ctx) return;
+    const { session, payload: decoded } = ctx;
     const sid = decoded.s;
-    await getSessionAsync(sid);
-    const session = getSession(sid);
-    if (!session || session.revoked) return stealthDeny(res, sid, "Session revoked");
-    if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
     if (!session.hardening.stealthModeEnabled) {
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Stealth mode not active for this session" });
     }
@@ -2798,7 +2863,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           stealth = { enabled: true, streamUrl: buildStealthLevelUrl(req.params.publicId, newSid, variantSub, ttls.manifest) };
         }
       }
-      return res.json({ manifestUrl, sessionId: newSid, rotationIntervalMs: SESSION_ROTATION_MS, stealth });
+      const overlapGraceSec = newSession.hardening.windowOverlapGraceSec;
+      const heartbeatIntervalSec = newSession.hardening.heartbeatIntervalSec;
+      const sessionExpiresAt = newSession.expiresAt;
+      // Schedule next renewal at ~70% of the heartbeat interval so the
+      // client renews well before the server-side TTL bucket flips. Floor
+      // at 5s to prevent runaway request rates on misconfigured intervals.
+      const nextRefreshInMs = Math.max(5000, Math.floor(heartbeatIntervalSec * 0.7 * 1000));
+      console.log(`[playback] SESSION_RENEWED: oldSid=${sid} newSid=${newSid} pub=${req.params.publicId} expiresIn=${Math.round((sessionExpiresAt - Date.now())/1000)}s`);
+      return res.json({
+        manifestUrl, sessionId: newSid, rotationIntervalMs: SESSION_ROTATION_MS, stealth,
+        sessionExpiresAt, heartbeatIntervalSec, overlapGraceSec,
+        nextRefreshAt: Date.now() + nextRefreshInMs,
+        renewalGraceSec: overlapGraceSec,
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -2809,6 +2887,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // The player calls this every SESSION_ROTATION_MS and never reloads the HLS
   // source, completely eliminating the MSE SourceBuffer flush and resulting
   // 1-2s black screen that full session rotation caused.
+  // ── Cheap session-status probe ────────────────────────────────────────────
+  // The embed player calls this when it receives a 403 from a media route to
+  // decide whether to silently renew (recoverable expiry) or trigger the
+  // denial overlay (real revocation). Returns the minimum info needed without
+  // exposing internals. Public — no auth required, but only reveals data
+  // about a session the caller already has the SID for.
+  app.get("/api/player/:publicId/session-status", async (req: any, res: any) => {
+    try {
+      const sid = String(req.query.sid || "");
+      if (!sid) return res.status(400).json({ active: false, reason: "MISSING_SID" });
+      await getSessionAsync(sid);
+      const s = getSession(sid);
+      if (!s) return res.json({ active: false, reason: "NOT_FOUND" });
+      if (s.publicId !== req.params.publicId) return res.json({ active: false, reason: "MISMATCH" });
+      const now = Date.now();
+      if (now > s.expiresAt) {
+        console.log(`[playback] SESSION_EXPIRED_DURING_PLAYBACK: sid=${sid} pub=${req.params.publicId}`);
+        return res.json({ active: false, reason: "EXPIRED", expiresAt: s.expiresAt });
+      }
+      if (s.revoked) {
+        const sig = (s.revokeReason as any)?.signal || "rate_limit";
+        const isRotation = sig === "rotated";
+        const inGrace = isRotation && s.revokedAt != null && (now - s.revokedAt) < (s.hardening.windowOverlapGraceSec || 30) * 1000;
+        if (inGrace) {
+          return res.json({ active: true, reason: "ROTATED_GRACE", expiresAt: s.expiresAt, revokedAt: s.revokedAt, signal: sig });
+        }
+        return res.json({ active: false, reason: isRotation ? "ROTATED" : "REVOKED", signal: sig, revokedAt: s.revokedAt });
+      }
+      const hardening = s.hardening;
+      return res.json({
+        active: true,
+        expiresAt: s.expiresAt,
+        heartbeatIntervalSec: hardening.heartbeatIntervalSec,
+        overlapGraceSec: hardening.windowOverlapGraceSec,
+        nextRefreshAt: now + Math.max(5000, Math.floor(hardening.heartbeatIntervalSec * 0.7 * 1000)),
+      });
+    } catch (e: any) {
+      res.status(500).json({ active: false, reason: "ERROR", message: e.message });
+    }
+  });
+
   app.post("/api/player/:publicId/extend-session", async (req: any, res: any) => {
     try {
       const { sid } = req.body;
@@ -2822,7 +2941,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ok = extendSession(sid);
       if (!ok) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session extend failed" });
 
-      return res.json({ ok: true, rotationIntervalMs: SESSION_ROTATION_MS });
+      const hardening = session.hardening;
+      const overlapGraceSec = hardening.windowOverlapGraceSec;
+      const heartbeatIntervalSec = hardening.heartbeatIntervalSec;
+      const nextRefreshInMs = Math.max(5000, Math.floor(heartbeatIntervalSec * 0.7 * 1000));
+      return res.json({
+        ok: true,
+        rotationIntervalMs: SESSION_ROTATION_MS,
+        intervalSec: heartbeatIntervalSec,
+        heartbeatIntervalSec,
+        overlapGraceSec,
+        renewalGraceSec: overlapGraceSec,
+        sessionExpiresAt: session.expiresAt,
+        nextRefreshAt: Date.now() + nextRefreshInMs,
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -2864,10 +2996,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       extendSession(sid);
 
       const hardening = session.hardening;
+      const overlapGraceSec = hardening.windowOverlapGraceSec;
+      const heartbeatIntervalSec = hardening.heartbeatIntervalSec;
+      const nextRefreshInMs = Math.max(5000, Math.floor(heartbeatIntervalSec * 0.7 * 1000));
+      // Compact audit log — only print periodically to avoid log spam from
+      // the 15s heartbeat × hundreds of concurrent sessions.
+      if (Math.random() < 0.02) {
+        console.log(`[playback] HEARTBEAT_OK: sid=${sid} pub=${req.params.publicId} t=${Number(currentTime)||0}s expiresIn=${Math.round((session.expiresAt - Date.now())/1000)}s`);
+      }
       return res.json({
         ok: true,
         rotationIntervalMs: SESSION_ROTATION_MS,
-        intervalSec: hardening.heartbeatIntervalSec,
+        intervalSec: heartbeatIntervalSec,
+        heartbeatIntervalSec,
+        overlapGraceSec,
+        renewalGraceSec: overlapGraceSec,
+        sessionExpiresAt: session.expiresAt,
+        nextRefreshAt: Date.now() + nextRefreshInMs,
         windowStart: result.windowStart,
         windowEnd: result.windowEnd,
         segmentIndex: result.newSegmentIndex,
@@ -3041,7 +3186,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } as any);
 
       log(`TOKEN_MINT_SUCCESS: userId=${userId} videoId=${video.id} sessionId=${dbToken.id} source=${identitySource}`);
-      res.json({ token: tokenValue, expiresAt: expiresAt.toISOString(), tokenId: dbToken.id });
+      // Renewal hints — the player uses these to schedule a silent refresh
+      // at ~70% of the token lifetime. Backend remains source of truth.
+      const renewBeforeExpirySec = Math.min(120, Math.max(30, Math.floor((ttlMs / 1000) * 0.2)));
+      const nextRefreshAt = expiresAt.getTime() - renewBeforeExpirySec * 1000;
+      res.json({
+        token: tokenValue,
+        expiresAt: expiresAt.toISOString(),
+        sessionExpiresAt: expiresAt.getTime(),
+        tokenExpiresAt: expiresAt.getTime(),
+        nextRefreshAt,
+        renewBeforeExpirySec,
+        tokenId: dbToken.id,
+      });
     } catch (e: any) {
       log(`TOKEN_MINT_DENIED: reason=server_error publicId=${req.params.publicId} error=${e.message}`);
       res.status(500).json({ message: e.message });
@@ -3370,7 +3527,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       log(`TOKEN_REFRESH_SUCCESS: userId=${userId} videoId=${video.id} oldTokenId=${oldDbToken?.id} newTokenId=${newDbToken.id}`);
-      res.json({ token: newTokenValue, expiresAt: expiresAt.toISOString(), manifestUrl, stealth });
+      console.log(`[playback] TOKEN_RENEWED: userId=${userId} pub=${req.params.publicId} expiresIn=${Math.round(ttlMs/1000)}s`);
+      const renewBeforeExpirySec = Math.min(120, Math.max(30, Math.floor((ttlMs / 1000) * 0.2)));
+      const nextRefreshAt = expiresAt.getTime() - renewBeforeExpirySec * 1000;
+      res.json({
+        token: newTokenValue,
+        expiresAt: expiresAt.toISOString(),
+        sessionExpiresAt: expiresAt.getTime(),
+        tokenExpiresAt: expiresAt.getTime(),
+        nextRefreshAt,
+        renewBeforeExpirySec,
+        overlapGraceSec: hardening2.windowOverlapGraceSec,
+        heartbeatIntervalSec: hardening2.heartbeatIntervalSec,
+        manifestUrl,
+        stealth,
+      });
     } catch (e: any) {
       log(`TOKEN_REFRESH_FAIL: reason=server_error publicId=${req.params.publicId} error=${e.message}`);
       res.status(500).json({ message: e.message });

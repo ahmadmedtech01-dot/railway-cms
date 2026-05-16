@@ -885,27 +885,53 @@ export default function EmbedPlayerPage(props: any = {}) {
                 // session expired, transient rate spikes. These happen during normal HLS
                 // playback (seeks, quality switches, hls.js retries) and must NOT show the
                 // suspicious-activity overlay.
+                // Try to read X-Playback-Error header — set by the server on
+                // every 403 from stealth media routes. hls.js doesn't expose
+                // headers directly in the error event, but the loader's
+                // underlying XHR is reachable for our custom loader path.
+                let headerCode = "";
+                try {
+                  const xhr = (d as any)?.frag?.loader?.loader || (d as any)?.context?.loader?.loader || (d as any)?.networkDetails;
+                  if (xhr && typeof xhr.getResponseHeader === "function") {
+                    headerCode = xhr.getResponseHeader("X-Playback-Error") || "";
+                  }
+                } catch {}
+                const finalCode = headerCode || errorCode;
                 const isExpiry =
-                  errorCode === "TOKEN_EXPIRED" ||
-                  errorCode === "SIGNED_URL_EXPIRED" ||
-                  errorCode === "SEGMENT_WINDOW_VIOLATION" ||
-                  errorCode === "SESSION_EXPIRED" ||
+                  finalCode === "TOKEN_EXPIRED" ||
+                  finalCode === "SIGNED_URL_EXPIRED" ||
+                  finalCode === "SEGMENT_WINDOW_VIOLATION" ||
+                  finalCode === "SESSION_EXPIRED" ||
+                  finalCode === "WINDOW_EXPIRED" ||
+                  finalCode === "SECRET_EXPIRED" ||
+                  finalCode === "OPAQUE_ID_EXPIRED" ||
+                  finalCode === "SESSION_ROTATED" ||
+                  finalCode === "HEARTBEAT_STALE" ||
+                  finalCode === "OUT_OF_WINDOW" ||
                   signal === "token_expired" ||
                   signal === "signed_url_expired" ||
                   signal === "out_of_window" ||
                   signal === "heartbeat_invalid" ||
+                  signal === "rotated" ||
                   signal === "rate_limit";
                 // True abuse: only show the denial overlay for these signals/codes.
                 const isTrueAbuse =
-                  errorCode === "BLOCKED_SUSPICIOUS_ACTIVITY" ||
-                  errorCode === "VIDEO_BLOCKED" ||
-                  errorCode === "SECURITY_BULK_DOWNLOAD" ||
+                  finalCode === "BLOCKED_SUSPICIOUS_ACTIVITY" ||
+                  finalCode === "VIDEO_BLOCKED" ||
+                  finalCode === "SECURITY_BULK_DOWNLOAD" ||
+                  finalCode === "SESSION_REVOKED" ||
                   signal === "bulk_download" ||
                   signal === "velocity_abuse" ||
                   signal === "key_abuse" ||
                   signal === "hook_detected" ||
                   signal === "concurrent" ||
                   signal === "playlist_abuse";
+                // SESSION_REVOKED beats everything — never silently retry an
+                // abuse-revoked or admin-revoked session.
+                if (finalCode === "SESSION_REVOKED") {
+                  triggerDenial(signal || "rate_limit");
+                  return;
+                }
                 const canRefresh = activeTokenRef.current && isExpiry && !isTrueAbuse;
 
                 if (canRefresh) {
@@ -1054,7 +1080,13 @@ export default function EmbedPlayerPage(props: any = {}) {
     };
   }, [publicId, token, retryKey]);
 
-  // Ping interval
+  // Ping interval — analytics-only, throttled to 60s (was 30s).
+  // The 10-second /api/stream/:publicId/progress timer below already extends
+  // the server-side sliding-window and reports currentTime. This /ping call
+  // exists ONLY to record session-level analytics (sessionCode + total
+  // secondsWatched). Reducing it from 30s → 60s halves the per-session
+  // request rate without losing meaningful analytics resolution. Kills one
+  // of the duplicated request paths the user flagged in the LMS profile.
   useEffect(() => {
     if (!sessionCode) return;
     pingIntervalRef.current = setInterval(() => {
@@ -1063,7 +1095,7 @@ export default function EmbedPlayerPage(props: any = {}) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionCode, secondsWatched }),
       }).catch(() => {});
-    }, 30000);
+    }, 60000);
     return () => { if (pingIntervalRef.current) clearInterval(pingIntervalRef.current); };
   }, [sessionCode, secondsWatched, publicId]);
 
