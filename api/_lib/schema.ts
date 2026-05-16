@@ -449,3 +449,32 @@ export const insertVideoShareLinkSchema = createInsertSchema(videoShareLinks).om
 });
 export type VideoShareLink = typeof videoShareLinks.$inferSelect;
 export type InsertVideoShareLink = z.infer<typeof insertVideoShareLinkSchema>;
+
+// ────────────────────────────────────────────────────────────────────────────
+// videoSessions — durable HLS playback session store. Shared across all
+// Railway/Vercel instances so that any instance can serve any segment/playlist
+// request without "session not found" 403s from sticky-routing failures.
+// Each instance still keeps an in-memory L1 cache; this table is the source of
+// truth for cross-instance hydration on cache miss. Counter-only mutations
+// (abuseScore, requestLog, etc.) stay in the in-memory cache for performance —
+// only identity/config/revocation state needs to be globally consistent.
+// ────────────────────────────────────────────────────────────────────────────
+export const videoSessions = pgTable(
+  "video_sessions",
+  {
+    sid: text("sid").primaryKey(),
+    publicId: text("public_id").notNull(),
+    data: jsonb("data").notNull(),
+    revoked: boolean("revoked").notNull().default(false),
+    expiresAt: timestamp("expires_at").notNull(),
+    integrationSessionId: text("integration_session_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    expiresIdx: index("video_sessions_expires_idx").on(t.expiresAt),
+    integrationIdx: index("video_sessions_integration_idx").on(t.integrationSessionId),
+    publicIdIdx: index("video_sessions_public_id_idx").on(t.publicId),
+  }),
+);
+export type VideoSessionRow = typeof videoSessions.$inferSelect;

@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings
 function buildHardening(s: any): SessionHardeningConfig {
@@ -2093,6 +2093,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     if (!sid || !st || !exp) return res.status(401).json({ code: "PLAYBACK_DENIED", message: "Missing auth params" });
 
+    // Lazy-hydrate from Postgres if this instance doesn't have the session
+    // in its local L1 cache. No-op on cache hit.
+    await getSessionAsync(sid);
     const session = getSession(sid);
     if (!session || session.revoked) {
       const bi = getBreachInfo(sid);
@@ -2268,6 +2271,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     if (!sid || !st || !exp) return res.status(401).json({ code: "PLAYBACK_DENIED", message: "Missing auth params" });
 
+    await getSessionAsync(sid);
     const session = getSession(sid);
     if (!session || session.revoked) {
       const bi = getBreachInfo(sid);
@@ -2449,6 +2453,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid stream window token", signal: "token_expired" });
     }
     const sid = decoded.s;
+    await getSessionAsync(sid);
     const session = getSession(sid);
     if (!session || session.revoked) return stealthDeny(res, sid, "Session expired or revoked");
     if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
@@ -2551,6 +2556,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid chunk token", signal: "token_expired" });
     }
     const sid = decoded.s;
+    await getSessionAsync(sid);
     const session = getSession(sid);
     if (!session || session.revoked) return stealthDeny(res, sid, "Session expired or revoked");
     if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
@@ -2659,6 +2665,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Invalid secret token", signal: "token_expired" });
     }
     const sid = decoded.s;
+    await getSessionAsync(sid);
     const session = getSession(sid);
     if (!session || session.revoked) return stealthDeny(res, sid, "Session revoked");
     if (session.publicId !== req.params.publicId) return stealthDeny(res, sid, "Session mismatch");
@@ -2700,6 +2707,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { sid, segmentIndex, currentTime } = req.body;
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
+      await getSessionAsync(sid);
       const session = getSession(sid);
       if (!session || session.revoked) return res.status(403).json({ message: "Session invalid" });
       if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
@@ -2731,6 +2739,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { sid } = req.body;
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
+      await getSessionAsync(sid);
       const session = getSession(sid);
       if (!session || session.revoked) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session invalid or expired" });
       if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
@@ -2775,6 +2784,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { sid } = req.body;
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
+      await getSessionAsync(sid);
       const session = getSession(sid);
       if (!session || session.revoked) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session invalid or expired" });
       if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
@@ -2799,6 +2809,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { sid, seq, nonce, currentTime, segmentIndex } = req.body || {};
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
+      await getSessionAsync(sid);
       const session = getSession(sid);
       if (!session || session.revoked) {
         return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session invalid or expired" });
@@ -2870,6 +2881,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let revoked = false;
       let score = 0;
       if (sid && typeof sid === "string") {
+        await getSessionAsync(sid);
         const session = getSession(sid);
         if (session && session.publicId === publicId) {
           const r = recordSecurityEvent(sid, eventType);
@@ -3411,6 +3423,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { sid, st, exp, dh } = req.query as Record<string, string>;
     if (!sid || !st || !exp) return res.status(401).json({ code: "PLAYBACK_DENIED", message: "Missing auth" });
 
+    await getSessionAsync(sid);
     const session = getSession(sid);
     if (!session || session.revoked) {
       const bi = getBreachInfo(sid);

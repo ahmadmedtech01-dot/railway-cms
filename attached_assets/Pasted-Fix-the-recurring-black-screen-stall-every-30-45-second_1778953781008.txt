@@ -1,0 +1,68 @@
+Fix the recurring black screen/stall every 30–45 seconds in stealth protected playback.
+
+Cause:
+The stream window/chunk/key rotation is too aggressive. hls.js still tries to load old chunk/key URLs while the backend has already expired or replaced them, causing cancelled XHRs, buffer starvation, 1–2 sec black screen, then recovery. This repeats every token/window cycle.
+
+Do not disable existing security. Keep stealth mode, signed URLs, server-gated playlist, heartbeat, key binding, abuse detection, watermark, LMS flow, share links, admin preview, and storage protection.
+
+Required fixes:
+
+1. Add window overlap grace
+- When a new stream window is generated, keep the previous window’s chunk and key/secret IDs valid for 30–45 seconds.
+- Do not instantly invalidate old in-flight chunk/key URLs.
+- Only expire old IDs after they are outside safe playback range plus grace.
+
+2. Stabilize TTLs
+Use configurable stable defaults:
+- playlist/window TTL: 60 sec
+- chunk/segment TTL: 30 sec
+- key/secret TTL: 30 sec
+- heartbeat interval: 15 sec
+- heartbeat grace: 45 sec
+- max prebuffer ahead: 45 sec
+- max download ahead: 60 sec
+
+Do not hard-code; admin can edit globally/per-video.
+
+3. Stop rebuilding hls.js repeatedly
+- Do not destroy/recreate hls.js on every heartbeat or window refresh.
+- Do not recreate the blob playlist unless needed.
+- Refresh the next stream window in the background before current window expires.
+- Keep playback buffer continuous.
+
+4. Add retry recovery
+On FRAG_LOAD_ERROR, KEY_LOAD_ERROR, LEVEL_LOAD_ERROR, or NETWORK_ERROR:
+- check if session is revoked
+- if not revoked, refresh stream window once
+- retry failed chunk/key once
+- do not immediately show “Network unstable”
+- show error only after repeated failure within 10–15 sec
+
+5. Add server tolerance
+- Do not reject normal hls.js prebuffering.
+- Allow current verified time + maxPrebufferAhead.
+- Allow small heartbeat delay tolerance.
+- Do not revoke for one boundary request.
+- Revoke only for clear download-ahead abuse.
+
+6. Debug exact failure reason
+For every failed chunk/key/window request, log:
+- OPAQUE_ID_EXPIRED
+- SECRET_EXPIRED
+- WINDOW_EXPIRED
+- HEARTBEAT_STALE
+- OUT_OF_WINDOW
+- DOWNLOAD_AHEAD
+- SESSION_REVOKED
+- TOKEN_INVALID
+- STORAGE_ERROR
+
+Acceptance:
+- Video plays continuously for 5 minutes without black screen.
+- No repeated request cancellation storm.
+- Old in-flight chunk/key requests complete during grace period.
+- Expired chunk/key triggers silent refresh + retry, not black screen.
+- Revoked sessions still block immediately.
+- Download-ahead abuse still blocks.
+- LMS, share link, admin preview all still work.
+- No TypeScript errors.

@@ -1,4 +1,7 @@
 import crypto from "crypto";
+import { db } from "./db";
+import { videoSessions } from "../api/_lib/schema";
+import { eq, lt, and } from "drizzle-orm";
 
 function resolveSecret(): string {
   const s = process.env.SIGNING_SECRET;
@@ -235,6 +238,220 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
+// ────────────────────────────────────────────────────────────────────────────
+// Cross-instance session persistence (Postgres-backed)
+// ────────────────────────────────────────────────────────────────────────────
+// Why this exists:
+//   Railway / Vercel auto-scale to multiple instances under load. The in-memory
+//   `sessions` Map above is per-instance, so a session created on Instance A
+//   isn't visible to Instance B. The load balancer is not sticky for HLS
+//   segment fetches, so the same player's requests fan out across instances.
+//   That caused intermittent "Session invalid or expired" 403s in production.
+//
+// Design:
+//   • Postgres `video_sessions` table is the durable source of truth.
+//   • Each instance keeps the in-memory Map as a hot L1 cache.
+//   • On createSession / rotateSession / revokeSession / extendSession /
+//     setIntegrationSessionId we write through to Postgres.
+//   • On any cross-instance request, getSessionAsync() lazily loads the row
+//     into the local Map. After that one read, all subsequent sync code paths
+//     work unchanged (sessions.get(sid) returns the hydrated session).
+//   • Counter-only mutations (abuseScore, requestLog, segment progress) stay
+//     in the local Map for performance — abuse detection works per-instance,
+//     and revocation propagates globally via the durable layer.
+//   • A periodic sweeper deletes expired rows.
+//
+// What we serialize:
+//   All scalar/array fields directly. `variantCache` (Map) is omitted (rebuilt
+//   on demand from the upstream playlist). Buffers are base64-encoded.
+// ────────────────────────────────────────────────────────────────────────────
+
+function serializeSession(s: VideoSession): Record<string, any> {
+  const { variantCache: _vc, ephemeralKey, ephemeralIV, ...rest } = s;
+  return {
+    ...rest,
+    ephemeralKey: ephemeralKey.toString("base64"),
+    ephemeralIV: ephemeralIV.toString("base64"),
+  };
+}
+
+function deserializeSession(raw: any): VideoSession {
+  return {
+    ...raw,
+    variantCache: new Map(),
+    ephemeralKey: Buffer.from(raw.ephemeralKey, "base64"),
+    ephemeralIV: Buffer.from(raw.ephemeralIV, "base64"),
+    // Defensive defaults — these arrays/scalars must exist for sync code paths.
+    requestLog: raw.requestLog || [],
+    playlistFetchLog: raw.playlistFetchLog || [],
+    keyHitLog: raw.keyHitLog || [],
+    segmentFetchLog: raw.segmentFetchLog || [],
+    velocityLog: raw.velocityLog || [],
+    lastHeartbeatNonces: raw.lastHeartbeatNonces || [],
+    concurrentSegments: raw.concurrentSegments ?? 0,
+    abuseScore: raw.abuseScore ?? 0,
+    breachEvents: raw.breachEvents ?? 0,
+    outOfWindowCount: raw.outOfWindowCount ?? 0,
+    keyIssuedCount: raw.keyIssuedCount ?? 0,
+    clientSecurityEvents: raw.clientSecurityEvents ?? 0,
+  } as VideoSession;
+}
+
+// Per-sid serialized write queue. Without this, two fire-and-forget upserts
+// for the same sid can race and the older one can clobber the newer state
+// (e.g. createSession() then setIntegrationSessionId() — if create lands last
+// it would wipe integrationSessionId back to null).
+const writeQueues = new Map<string, Promise<void>>();
+
+async function doPersist(sid: string): Promise<void> {
+  // Re-read live state at the moment this write actually runs, so the queued
+  // write always reflects the current in-memory truth (not a snapshot from
+  // when persistSession was called).
+  const s = sessions.get(sid);
+  if (!s) return;
+  const data = serializeSession(s);
+  await db
+    .insert(videoSessions)
+    .values({
+      sid,
+      publicId: s.publicId,
+      data: data as any,
+      revoked: s.revoked,
+      expiresAt: new Date(s.expiresAt),
+      integrationSessionId: s.integrationSessionId ?? null,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: videoSessions.sid,
+      set: {
+        data: data as any,
+        revoked: s.revoked,
+        expiresAt: new Date(s.expiresAt),
+        integrationSessionId: s.integrationSessionId ?? null,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+// Fire-and-forget write-through, serialized per sid. Errors are logged but
+// never thrown — playback must not fail because Postgres hiccuped.
+function persistSession(sid: string): void {
+  const prev = writeQueues.get(sid) || Promise.resolve();
+  const next = prev
+    .catch(() => {}) // don't propagate prior failures to the new write
+    .then(() => doPersist(sid))
+    .catch((err: any) => {
+      console.error(`[video-session] persist failed sid=${sid}:`, err?.message || err);
+    });
+  writeQueues.set(sid, next);
+  next.finally(() => {
+    if (writeQueues.get(sid) === next) writeQueues.delete(sid);
+  });
+}
+
+async function loadSessionFromDb(sid: string): Promise<VideoSession | undefined> {
+  try {
+    const rows = await db
+      .select()
+      .from(videoSessions)
+      .where(eq(videoSessions.sid, sid))
+      .limit(1);
+    if (!rows.length) return undefined;
+    const row = rows[0];
+    // Hard expiry / revocation gate at load time so an instance never serves
+    // a stale row that another instance already invalidated.
+    if (row.revoked) return undefined;
+    if (row.expiresAt.getTime() < Date.now()) return undefined;
+    const s = deserializeSession(row.data);
+    // CRITICAL: prefer authoritative column values over JSON blob fields.
+    // `extendSession` writes only the expires_at column (cheap fast path), so
+    // the JSON `expiresAt` can lag behind by many minutes. Same for `revoked`.
+    s.expiresAt = row.expiresAt.getTime();
+    s.revoked = row.revoked;
+    s.integrationSessionId = row.integrationSessionId ?? s.integrationSessionId ?? undefined;
+    lastDbRevalidateAt.set(sid, Date.now());
+    sessions.set(sid, s);
+    return s;
+  } catch (err: any) {
+    console.error(`[video-session] load failed sid=${sid}:`, err?.message || err);
+    return undefined;
+  }
+}
+
+// Tracks the last time we re-checked Postgres for revocation/expiry on a
+// cache-hit. Without this, an instance that already cached a session would
+// never see a revoke/rotate done on a different instance and could serve
+// playback until its own expiry. Revalidation TTL of 5s caps the staleness
+// window without crushing the DB (1 lightweight SELECT per session per 5s).
+const lastDbRevalidateAt = new Map<string, number>();
+const REVALIDATE_INTERVAL_MS = 5_000;
+
+async function revalidateFromDb(sid: string, local: VideoSession): Promise<void> {
+  try {
+    const rows = await db
+      .select({
+        revoked: videoSessions.revoked,
+        expiresAt: videoSessions.expiresAt,
+        integrationSessionId: videoSessions.integrationSessionId,
+      })
+      .from(videoSessions)
+      .where(eq(videoSessions.sid, sid))
+      .limit(1);
+    lastDbRevalidateAt.set(sid, Date.now());
+    if (!rows.length) return; // row deleted by cleanup — leave local copy alone
+    const row = rows[0];
+    if (row.revoked && !local.revoked) {
+      local.revoked = true;
+      local.revokeReason = local.revokeReason || { signal: "rate_limit", detail: "Revoked on another instance" };
+    }
+    // Trust DB expiry only if it's newer than what we have locally — never
+    // shorten a session that this instance just extended.
+    const dbExp = row.expiresAt.getTime();
+    if (dbExp > local.expiresAt) local.expiresAt = dbExp;
+    if (row.integrationSessionId && !local.integrationSessionId) {
+      local.integrationSessionId = row.integrationSessionId;
+    }
+  } catch (err: any) {
+    // Soft-fail: if DB is unreachable, keep serving from local cache.
+    console.error(`[video-session] revalidate failed sid=${sid}:`, err?.message || err);
+  }
+}
+
+/**
+ * Async-aware session lookup. Use this at the start of any request handler
+ * that needs the session — it hydrates the local Map from Postgres on a cache
+ * miss, and periodically revalidates revoke/expiry state on a cache hit.
+ * After this returns, the rest of the handler can use the synchronous
+ * `getSession(sid)` / `sessions.get(sid)` paths unchanged.
+ *
+ * Returns undefined if the session doesn't exist (anywhere), is revoked, or
+ * is past its expiry.
+ */
+export async function getSessionAsync(sid: string): Promise<VideoSession | undefined> {
+  const local = sessions.get(sid);
+  if (local) {
+    const last = lastDbRevalidateAt.get(sid) || 0;
+    if (Date.now() - last >= REVALIDATE_INTERVAL_MS) {
+      await revalidateFromDb(sid, local);
+    }
+    if (Date.now() > local.expiresAt) {
+      local.revoked = true;
+      local.revokeReason = local.revokeReason || { signal: "rate_limit", detail: "Session expired" };
+    }
+    return local;
+  }
+  return await loadSessionFromDb(sid);
+}
+
+// Periodic cleanup of expired rows. Runs every 5 min on every instance — the
+// DELETE is idempotent so concurrent sweeps are safe. unref() so it doesn't
+// keep Node alive on shutdown.
+setInterval(() => {
+  db.delete(videoSessions)
+    .where(lt(videoSessions.expiresAt, new Date()))
+    .catch((err) => console.error("[video-session] cleanup failed:", err?.message || err));
+}, 5 * 60 * 1000).unref();
+
 export function computeDeviceHash(ua: string): string {
   return crypto.createHash("sha256").update(ua || "unknown-ua").digest("hex").slice(0, 16);
 }
@@ -299,6 +516,7 @@ export function createSession(
     clientSecurityEvents: 0,
     integrationSessionId: undefined,
   });
+  persistSession(sid);
   return sid;
 }
 
@@ -306,18 +524,31 @@ export function setIntegrationSessionId(sid: string, integrationSessionId: strin
   const s = sessions.get(sid);
   if (!s) return false;
   s.integrationSessionId = integrationSessionId;
+  persistSession(sid);
   return true;
 }
 
 export function revokeSessionsByIntegrationId(integrationSessionId: string, reason?: AbuseReason): number {
   let count = 0;
-  for (const s of sessions.values()) {
+  for (const [sid, s] of sessions) {
     if (s.integrationSessionId === integrationSessionId && !s.revoked) {
       s.revoked = true;
       if (reason) s.revokeReason = reason;
+      persistSession(sid);
       count++;
     }
   }
+  // Also revoke on other instances by writing through to Postgres directly for
+  // any rows that aren't currently hydrated locally.
+  db.update(videoSessions)
+    .set({ revoked: true, updatedAt: new Date() })
+    .where(
+      and(
+        eq(videoSessions.integrationSessionId, integrationSessionId),
+        eq(videoSessions.revoked, false),
+      ),
+    )
+    .catch((err) => console.error("[video-session] revokeByIntegrationId write-through failed:", err?.message || err));
   return count;
 }
 
@@ -364,6 +595,11 @@ export function rotateSession(oldSid: string): string | null {
   old.revoked = true;
   old.revokeReason = { signal: "rate_limit", detail: "Session rotated" };
 
+  // Persist both: new session for cross-instance hydration, old as revoked so
+  // any other instance that still has it cached will reject on next access.
+  persistSession(newSid);
+  persistSession(oldSid);
+
   console.log(`[video-session] SESSION_ROTATED: oldSid=${oldSid} → newSid=${newSid}, publicId=${old.publicId}`);
   return newSid;
 }
@@ -378,6 +614,12 @@ export function extendSession(sid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.revoked) return false;
   s.expiresAt = Date.now() + SESSION_MAX_AGE_MS;
+  // Cheap write — just updates expires_at so other instances see the new TTL
+  // when they hydrate. Failure here doesn't break playback on this instance.
+  db.update(videoSessions)
+    .set({ expiresAt: new Date(s.expiresAt), updatedAt: new Date() })
+    .where(eq(videoSessions.sid, sid))
+    .catch((err) => console.error(`[video-session] extend write-through failed sid=${sid}:`, err?.message || err));
   console.log(`[video-session] SESSION_EXTENDED: sid=${sid}, publicId=${s.publicId}, newExpiry=${new Date(s.expiresAt).toISOString()}`);
   return true;
 }
@@ -398,6 +640,7 @@ export function revokeSession(sid: string, reason?: AbuseReason): void {
   if (s) {
     s.revoked = true;
     if (reason) s.revokeReason = reason;
+    persistSession(sid);
     // Propagate to integration session row (LMS API flow)
     if (s.integrationSessionId && integrationRevokeNotifier) {
       try {
@@ -406,6 +649,13 @@ export function revokeSession(sid: string, reason?: AbuseReason): void {
         console.error("[video-session] integration revoke notifier failed:", e);
       }
     }
+  } else {
+    // Session not in this instance's L1 cache — still revoke in Postgres so
+    // any other instance that holds it will see revoked=true on next hydrate.
+    db.update(videoSessions)
+      .set({ revoked: true, updatedAt: new Date() })
+      .where(eq(videoSessions.sid, sid))
+      .catch((err) => console.error(`[video-session] revoke write-through failed sid=${sid}:`, err?.message || err));
   }
 }
 
