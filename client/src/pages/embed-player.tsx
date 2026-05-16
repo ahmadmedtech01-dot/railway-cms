@@ -915,24 +915,27 @@ export default function EmbedPlayerPage(props: any = {}) {
                   signal === "rotated" ||
                   signal === "rate_limit";
                 // True abuse: only show the denial overlay for these signals/codes.
+                // NOTE: SESSION_REVOKED is intentionally NOT here — on a multi-instance
+                // backend the old SID can briefly read as "revoked" from a sibling
+                // instance during/after rotation. Treat it as recoverable and let
+                // /refresh-token attempt to mint a new session. If refresh ALSO
+                // fails (truly revoked), the existing failure path shows the overlay.
                 const isTrueAbuse =
                   finalCode === "BLOCKED_SUSPICIOUS_ACTIVITY" ||
                   finalCode === "VIDEO_BLOCKED" ||
                   finalCode === "SECURITY_BULK_DOWNLOAD" ||
-                  finalCode === "SESSION_REVOKED" ||
                   signal === "bulk_download" ||
                   signal === "velocity_abuse" ||
                   signal === "key_abuse" ||
                   signal === "hook_detected" ||
                   signal === "concurrent" ||
                   signal === "playlist_abuse";
-                // SESSION_REVOKED beats everything — never silently retry an
-                // abuse-revoked or admin-revoked session.
-                if (finalCode === "SESSION_REVOKED") {
-                  triggerDenial(signal || "rate_limit");
-                  return;
-                }
-                const canRefresh = activeTokenRef.current && isExpiry && !isTrueAbuse;
+                // Allow refresh attempt for SESSION_REVOKED — recoverable in
+                // most cases (cross-instance rotation race, fresh-session
+                // misread). Real revocation is caught when refresh fails.
+                const recoverFromRevoke =
+                  finalCode === "SESSION_REVOKED" || finalCode === "HEARTBEAT_STALE";
+                const canRefresh = activeTokenRef.current && (isExpiry || recoverFromRevoke) && !isTrueAbuse;
 
                 if (canRefresh) {
                   const savedTime = videoRef.current?.currentTime || 0;
