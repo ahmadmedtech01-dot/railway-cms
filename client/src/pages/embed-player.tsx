@@ -194,18 +194,23 @@ export default function EmbedPlayerPage(props: any = {}) {
   const lastPausedAtRef = useRef<number>(-1);
   const isRotatingRef = useRef(false);
   const rotationOpIdRef = useRef(0);
-  // Circuit breaker for hls.startLoad() recovery — caps restart-storm if the
-  // upstream is flapping. Max 5 startLoad() calls per 30s rolling window.
-  const startLoadLogRef = useRef<number[]>([]);
-  const guardedStartLoad = (hls: any, time?: number) => {
+  // Circuit breaker — ONLY guards the fatal NETWORK_ERROR recovery path
+  // (where hls.js has already exhausted its own retries and we'd otherwise
+  // call startLoad() in an unbounded loop on a flapping upstream).
+  // Non-fatal network errors are NOT counted here — those are normal hls.js
+  // behavior (canceled XHRs on seek, transient fragment retries, etc) and
+  // calling startLoad() on them is harmless.
+  // Limit: 8 fatal-recovery restarts per 60s rolling window.
+  const fatalRecoveryLogRef = useRef<number[]>([]);
+  const guardedFatalRestart = (hls: any) => {
     const now = Date.now();
-    startLoadLogRef.current = startLoadLogRef.current.filter(t => t > now - 30_000);
-    if (startLoadLogRef.current.length >= 5) {
-      if (import.meta.env.DEV) console.warn("[player] startLoad circuit-breaker tripped — pausing recovery for 30s");
+    fatalRecoveryLogRef.current = fatalRecoveryLogRef.current.filter(t => t > now - 60_000);
+    if (fatalRecoveryLogRef.current.length >= 8) {
+      if (import.meta.env.DEV) console.warn("[player] fatal-recovery circuit-breaker tripped");
       return false;
     }
-    startLoadLogRef.current.push(now);
-    if (typeof time === "number") hls.startLoad(time); else hls.startLoad();
+    fatalRecoveryLogRef.current.push(now);
+    hls.startLoad();
     return true;
   };
   const effectiveSecurityRef = useRef<Record<string, any>>({ blockDevTools: true });
@@ -741,7 +746,7 @@ export default function EmbedPlayerPage(props: any = {}) {
             // Suppress during rotation — old cancelled requests produce noise here and
             // calling startLoad() while the new source is loading would cancel it.
             if (!d.fatal) {
-              if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !isRotatingRef.current) guardedStartLoad(hls);
+              if (d.type === Hls.ErrorTypes.NETWORK_ERROR && !isRotatingRef.current) hls.startLoad();
               return;
             }
 
@@ -895,8 +900,9 @@ export default function EmbedPlayerPage(props: any = {}) {
                   setErrorMsg("Stream error");
                 }
             } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                // Fatal network error — try to restart the load (rate-limited)
-                if (!guardedStartLoad(hls)) {
+                // Fatal network error — try to restart the load (rate-limited
+                // ONLY against unbounded recovery loops, not normal retries)
+                if (!guardedFatalRestart(hls)) {
                   setStatus("error");
                   setErrorMsg("Network unstable. Please refresh to retry.");
                 }
