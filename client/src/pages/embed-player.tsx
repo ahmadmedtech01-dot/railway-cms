@@ -713,9 +713,9 @@ export default function EmbedPlayerPage(props: any = {}) {
           const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            backBufferLength: 30,
+            maxBufferLength: 60,
+            maxMaxBufferLength: 120,
+            backBufferLength: 60,
             // Retry counts reduced from 4 → 2 to prevent client-side retry
             // storms. With 4 retries × ~6 prefetched fragments × cascading
             // failures, a single transient error could create 20+ doomed
@@ -948,6 +948,16 @@ export default function EmbedPlayerPage(props: any = {}) {
                     const rd = await r.json();
                     if (rd.token) activeTokenRef.current = rd.token;
                     if (rd.manifestUrl) {
+                      // The server mints a brand-new playback session on
+                      // refresh-token. The new SID lives in the new manifest
+                      // URL, but heartbeat / progress / security-event calls
+                      // all use streamSidRef.current — without this swap they
+                      // keep hammering the dead old SID and the player freezes
+                      // ~7-8 min in once the old SID's idle TTL bucket flips.
+                      if (rd.sessionId) {
+                        streamSidRef.current = rd.sessionId;
+                        heartbeatSeqRef.current = 0;
+                      }
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
                       const nextUrl = (rd.stealth && rd.stealth.enabled && rd.stealth.streamUrl) ? rd.stealth.streamUrl : rd.manifestUrl;

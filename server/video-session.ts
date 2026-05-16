@@ -1504,7 +1504,13 @@ export function getBreachInfo(sid: string): { breachCount: number; violationLimi
   // a recoverable "session not found" and retry, not see the abuse overlay.
   if (!s) return { breachCount: 0, violationLimit: DEFAULT_VIOLATION_LIMIT, blocked: false, blockSecondsRemaining: 0 };
   const remaining = s.blockedUntil ? Math.max(0, Math.ceil((s.blockedUntil - Date.now()) / 1000)) : 0;
-  return { breachCount: s.breachEvents, violationLimit: s.violationLimit, blocked: s.revoked, blockSecondsRemaining: remaining };
+  // A rotated session is benign — the SID was replaced by a fresh one. The
+  // client should be able to recover via /refresh-token or /rotate-session
+  // instead of seeing the suspicious-activity overlay. Only flag as blocked
+  // when revoked for a real abuse signal.
+  const sig = (s.revokeReason as any)?.signal;
+  const blocked = s.revoked && sig !== "rotated";
+  return { breachCount: s.breachEvents, violationLimit: s.violationLimit, blocked, blockSecondsRemaining: remaining };
 }
 
 export function getAbuseThresholds() {

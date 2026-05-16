@@ -3457,6 +3457,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const oldDbToken = await storage.getTokenByValue(oldTokenValue);
       let userId: string | null = null;
+      // integrationSessionId lives only in the JWT payload (not the DB row),
+      // so always decode the old token to forward it onto the refreshed
+      // session. Without this, admin/abuse-revoke by integration session can
+      // no longer kill the refreshed SID — see prior reviewer finding.
+      let oldIntegrationSessionId: string | null = null;
+      try {
+        const decodedOld: any = verifyToken(oldTokenValue);
+        if (decodedOld?.integrationSessionId && typeof decodedOld.integrationSessionId === "string") {
+          oldIntegrationSessionId = decodedOld.integrationSessionId;
+        }
+      } catch {}
 
       if (oldDbToken) {
         if (oldDbToken.revoked) {
@@ -3492,7 +3503,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const secSettings = await storage.getSecuritySettings(video.id);
       const ttlMs = (secSettings?.tokenTtl || 3600) * 1000;
       const expiresAt = new Date(Date.now() + ttlMs);
-      const newTokenValue = generateToken({ videoId: video.id, publicId: video.publicId, userId }, Math.floor(ttlMs / 1000));
+      const newTokenPayload: any = { videoId: video.id, publicId: video.publicId, userId };
+      if (oldIntegrationSessionId) newTokenPayload.integrationSessionId = oldIntegrationSessionId;
+      const newTokenValue = generateToken(newTokenPayload, Math.floor(ttlMs / 1000));
       const newDbToken = await storage.createEmbedToken({
         videoId: video.id,
         token: newTokenValue,
@@ -3519,28 +3532,84 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const suspiciousEnabled = effectiveClientSec2.suspiciousDetectionEnabled !== false;
       const effectiveViolationLimit2 = effectiveClientSec2.violationLimit ?? 10;
       const hardening2 = buildHardening(effectiveClientSec2);
+
+      // Preserve LMS integration session linkage across refresh so admin/abuse
+      // revoke can still kill the new SID via integrationSessionId. Derived
+      // from the OLD token (only place it lives) and forwarded into both the
+      // new token payload (above) and setIntegrationSessionId on the new SID.
+      const linkIntegrationSessionId2: string | null = oldIntegrationSessionId;
+
+      // Mint a brand-new playback session on the appropriate provider —
+      // mirrors /manifest so refresh works for ALL storage backends, not just
+      // B2/R2. Without this branch, bunny_net and s3 videos silently return
+      // a null manifestUrl and the client never swaps SID → 7-8 min freeze.
       let manifestUrl: string | null = null;
       let stealth: { enabled: boolean; streamUrl?: string } = { enabled: false };
-      if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
+      let newSid: string | null = null;
+      const hlsPrefix = video.hlsS3Prefix!;
+
+      if (conn?.provider === "bunny_net") {
         const cfg = conn.config as any;
-        const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
-        const newSid = createSession(video.publicId, video.hlsS3Prefix!, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+        newSid = createSession(video.publicId, hlsPrefix, "bunny_net", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+        if (linkIntegrationSessionId2) setIntegrationSessionId(newSid, linkIntegrationSessionId2);
         const ttls = getSessionTokenTTL(newSid);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
         if (hardening2.stealthModeEnabled) {
-          const variantSub = await resolveStealthVariantForSession(video.hlsS3Prefix!, providerType, cfg);
+          const variantSub = await resolveStealthVariantForSession(hlsPrefix, "bunny_net", cfg);
           if (variantSub) {
             stealth = { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, newSid, variantSub, ttls.manifest) };
           }
         }
+      } else if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
+        const cfg = conn.config as any;
+        const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
+        newSid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+        if (linkIntegrationSessionId2) setIntegrationSessionId(newSid, linkIntegrationSessionId2);
+        const ttls = getSessionTokenTTL(newSid);
+        manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
+        if (hardening2.stealthModeEnabled) {
+          const variantSub = await resolveStealthVariantForSession(hlsPrefix, providerType, cfg);
+          if (variantSub) {
+            stealth = { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, newSid, variantSub, ttls.manifest) };
+          }
+        }
+      } else {
+        // S3 (or null connection → legacy S3 config) fallback
+        try {
+          const client = await getS3Client();
+          const s3cfg = await getS3Config();
+          if (client && s3cfg.bucket) {
+            newSid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+            if (linkIntegrationSessionId2) setIntegrationSessionId(newSid, linkIntegrationSessionId2);
+            const ttls = getSessionTokenTTL(newSid);
+            manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
+            if (hardening2.stealthModeEnabled) {
+              const variantSub = await resolveStealthVariantForSession(hlsPrefix, "s3", s3cfg);
+              if (variantSub) {
+                stealth = { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, newSid, variantSub, ttls.manifest) };
+              }
+            }
+          }
+        } catch (e: any) {
+          log(`TOKEN_REFRESH_S3_FALLBACK_FAIL: ${e?.message || e}`);
+        }
       }
 
-      log(`TOKEN_REFRESH_SUCCESS: userId=${userId} videoId=${video.id} oldTokenId=${oldDbToken?.id} newTokenId=${newDbToken.id}`);
-      console.log(`[playback] TOKEN_RENEWED: userId=${userId} pub=${req.params.publicId} expiresIn=${Math.round(ttlMs/1000)}s`);
+      // If no provider was matched, no playback session was minted and the
+      // client would receive a null manifestUrl and never recover. Fail loudly
+      // rather than issuing a useless refreshed token.
+      if (!newSid || !manifestUrl) {
+        log(`TOKEN_REFRESH_FAIL: reason=no_session_minted videoId=${video.id} provider=${conn?.provider || "none"}`);
+        return res.status(503).json({ code: "PLAYBACK_DENIED", message: "Could not mint playback session for this storage provider" });
+      }
+
+      log(`TOKEN_REFRESH_SUCCESS: userId=${userId} videoId=${video.id} oldTokenId=${oldDbToken?.id} newTokenId=${newDbToken.id} newSid=${newSid}`);
+      console.log(`[playback] TOKEN_RENEWED: userId=${userId} pub=${req.params.publicId} expiresIn=${Math.round(ttlMs/1000)}s newSid=${newSid}`);
       const renewBeforeExpirySec = Math.min(120, Math.max(30, Math.floor((ttlMs / 1000) * 0.2)));
       const nextRefreshAt = expiresAt.getTime() - renewBeforeExpirySec * 1000;
       res.json({
         token: newTokenValue,
+        sessionId: newSid,
         expiresAt: expiresAt.toISOString(),
         sessionExpiresAt: expiresAt.getTime(),
         tokenExpiresAt: expiresAt.getTime(),
