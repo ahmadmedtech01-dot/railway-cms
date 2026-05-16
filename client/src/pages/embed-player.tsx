@@ -197,17 +197,27 @@ export default function EmbedPlayerPage(props: any = {}) {
   // Circuit breaker — ONLY guards the fatal NETWORK_ERROR recovery path
   // (where hls.js has already exhausted its own retries and we'd otherwise
   // call startLoad() in an unbounded loop on a flapping upstream).
-  // Non-fatal network errors are NOT counted here — those are normal hls.js
-  // behavior (canceled XHRs on seek, transient fragment retries, etc) and
-  // calling startLoad() on them is harmless.
-  // Limit: 8 fatal-recovery restarts per 60s rolling window.
+  // Non-fatal network errors and hls.js-internal canceled XHRs are NOT
+  // counted here.
+  // Resets to 0 on every FRAG_LOADED (proof playback is healthy).
+  // Limit: 8 fatal-recovery restarts per 60s, with one final deferred retry
+  // before declaring failure.
   const fatalRecoveryLogRef = useRef<number[]>([]);
+  const deferredRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const guardedFatalRestart = (hls: any) => {
     const now = Date.now();
     fatalRecoveryLogRef.current = fatalRecoveryLogRef.current.filter(t => t > now - 60_000);
     if (fatalRecoveryLogRef.current.length >= 8) {
-      if (import.meta.env.DEV) console.warn("[player] fatal-recovery circuit-breaker tripped");
-      return false;
+      // Budget exhausted — schedule ONE final deferred retry after 5s.
+      // If it also fails (next fatal arrives), THEN we show the error.
+      if (deferredRetryTimerRef.current) return false; // already pending fatal
+      if (import.meta.env.DEV) console.warn("[player] fatal-recovery budget exhausted — deferring final retry");
+      deferredRetryTimerRef.current = setTimeout(() => {
+        deferredRetryTimerRef.current = null;
+        fatalRecoveryLogRef.current = []; // give the deferred retry a clean budget
+        try { hls.startLoad(); } catch {}
+      }, 5000);
+      return true; // suppress the user-facing error for now
     }
     fatalRecoveryLogRef.current.push(now);
     hls.startLoad();
@@ -737,6 +747,16 @@ export default function EmbedPlayerPage(props: any = {}) {
           hls.on(Hls.Events.LEVEL_LOADED, (_, d) => {
             const total = d.details?.totalduration;
             if (total && isFinite(total) && total > 0) setDuration(prev => prev > 0 ? prev : total);
+          });
+          // Healthy playback resets the fatal-recovery budget. As long as
+          // fragments keep arriving, transient blips never accumulate to the
+          // point of triggering the "Network unstable" error.
+          hls.on(Hls.Events.FRAG_LOADED, () => {
+            if (fatalRecoveryLogRef.current.length > 0) fatalRecoveryLogRef.current = [];
+            if (deferredRetryTimerRef.current) {
+              clearTimeout(deferredRetryTimerRef.current);
+              deferredRetryTimerRef.current = null;
+            }
           });
           hls.on(Hls.Events.ERROR, (_, d) => {
             const code = (d as any).response?.code;

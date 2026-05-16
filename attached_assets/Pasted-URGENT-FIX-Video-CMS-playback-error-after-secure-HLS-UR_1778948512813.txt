@@ -1,0 +1,143 @@
+URGENT FIX: Video CMS playback error after secure HLS URL changes.
+
+Current problem:
+Video is showing:
+
+Playback Error
+Network unstable. Please refresh to retry.
+
+Network shows segment/HLS requests, some 200 and some canceled, but video does not play correctly.
+
+Important:
+Do NOT remove security.
+Do NOT expose B2/R2/Bunny/CDN direct URLs.
+Do NOT make segment URLs public.
+Do NOT disable token/session/LMS/device/origin checks.
+
+Root issue to check:
+After changing long chunk URLs, the manifest/segment route is likely returning invalid HLS content, wrong segment mapping, wrong headers, stale URLs, or hls.js is still trying old /stream/secret URLs.
+
+Fix requirements:
+
+1. Check manifest response first.
+Open the HLS manifest returned to browser.
+It must be valid text m3u8 and contain only playable segment URLs.
+
+Expected:
+#EXTM3U
+#EXTINF:...
+/api/player/:publicId/seg/000001.ts
+/api/player/:publicId/seg/000002.ts
+
+Not allowed:
+- /stream/secret/:longHash
+- /stream/chunk/:longHash
+- direct B2/R2/Bunny URL
+- JSON error body
+- HTML page
+- empty response
+
+2. Fix /api/player/:publicId/seg/:segmentId route.
+This route must:
+- validate session/token/device/origin/LMS context
+- confirm segmentId belongs to this video
+- map segmentId to real storage object internally
+- fetch the correct segment from the correct provider
+- return actual binary video segment bytes
+
+3. Correct response headers.
+For .ts:
+Content-Type: video/mp2t
+
+For .m4s:
+Content-Type: video/iso.segment or application/octet-stream
+
+Always include:
+Accept-Ranges: bytes
+Content-Length
+Content-Range when Range is used
+
+Do not return JSON or error text with HTTP 200.
+
+4. Fix segment mapping.
+For video publicId mjakYG627Y:
+- confirm hlsManifestKey exists
+- confirm hlsBasePath exists
+- confirm segment files exist in storage
+- confirm segmentId 000001.ts maps to the correct real object key
+- confirm active storage provider is not wrongly used for old videos
+- old videos must use their original storageConnectionId/provider
+
+5. Fix frontend hls.js source.
+The player should load the fresh manifest only once.
+Destroy old HLS instance before creating new one.
+
+Before new HLS init:
+hls.stopLoad()
+hls.detachMedia()
+hls.destroy()
+hlsRef.current = null
+
+Do not create multiple HLS instances.
+
+6. Stop loading old URLs.
+After manifest rewrite, frontend must not keep using old:
+/stream/secret/:longHash
+/stream/chunk/:longHash
+
+Clear stale manifest cache by adding a version query to manifest only:
+?hlsv=<timestamp or session generation>
+
+Do not add long token in URL.
+
+7. Authorization/token handling.
+If using Authorization header, hls.js must attach latest token to every request:
+
+- manifest
+- segment
+- key
+
+Use xhrSetup/fetchSetup and tokenRef.
+Do not put token in segment URL.
+
+8. Error handling.
+Do not show “Network unstable” immediately.
+
+If backend returns:
+TOKEN_EXPIRED → refresh token once and retry
+SESSION_EXPIRED → remint once and retry
+STORAGE_OBJECT_NOT_FOUND → show “Video file unavailable”
+PROVIDER_FETCH_FAILED → show “Video connection error”
+BLOCKED_SUSPICIOUS_ACTIVITY → show suspicious block
+
+Only show “Network unstable” after real network/provider retry fails.
+
+9. Ignore canceled requests.
+Canceled XHR requests are normal in hls.js.
+Do not treat canceled requests as suspicious or fatal.
+
+10. Add debug logs safely.
+For each failed manifest/segment request log:
+- publicId
+- segmentId
+- provider
+- storageConnectionId
+- objectKey hash only
+- status
+- contentType
+- contentLength
+- errorCode
+- range header yes/no
+
+Never log tokens, secrets, full object keys, or signed URLs.
+
+Acceptance:
+- Video plays beyond 10 seconds.
+- Manifest preview is valid m3u8.
+- Segment preview is binary bytes, not JSON/HTML.
+- Segment headers are correct.
+- Network shows clean /seg/000001.ts URLs.
+- No /stream/secret long URLs in newly loaded manifest.
+- Direct copied segment URL fails without valid session/token.
+- LMS embed, share link, and admin preview still work.
+- Security layers remain active.
