@@ -1,0 +1,95 @@
+8:30:05 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1971ms :: {"ok":true,"windowStart":6,"windowEnd":30}
+[video-session] extend write-through failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:08 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:15 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1993ms :: {"ok":true,"windowStart":7,"windowEnd":31}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:15 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:17 PM [express] GET /api/player/mjakYG627Y/stream/chunk/a4d1992b6371fe50a7643952f9dc7bc43fb49cd22b5e689fc6f467d5861cd4d370b3a4cf58d5d3268060dab78b147e135b4b65e7b01e1b9db0a34269a5b453976023979d978380652662780bff913dcde0848bf5b11fea451691f945fafe1ea487b1f1669e24e2b91b63cc2af5a7590ffb3e3b93aba59155795faea486 200 in 31...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:18 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:25 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1944ms :: {"ok":true,"windowStart":9,"windowEnd":33}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:28 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:29 PM [express] GET /api/player/mjakYG627Y/stream/chunk/3bdefc6a696d209aab602cff266bd05d4981f9a3133ad0397af335d8b8014147395bb89d2337705b82479b001ac84e2d07542c1e215b21b6ba67053291383736bcdd02fd7cee7d96cdb73cd0d776142d31a7081df3aaa9f8a2422ad88c8651b4b03809cac666a133035ca4e8a22cbba302f222e7462049a2b2d0319899 200 in 29...
+8:30:30 PM [express] GET /api/player/mjakYG627Y/stream/secret/aab6c9a46df50bff30830ddc093930aadb11bcea0ef0690f6fb538ff8802cfc4ba57f79f43d43385fafb46955302968b398cce92d8c1f6cf6ccf9c2e9faaa45b06ab7bb6b6f23d7864c4611fa5f6ab06c734d422a50d2169e9f8c664063a424998fceafa9b41c5b01bffa80effa28c9e 200 in 3955ms
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:33 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 250ms :: {"ok":true,"windowStart":10,"windowEnd":34}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] SESSION_EXTENDED: sid=9680cf039403bd87c7bb485790c1704b, publicId=mjakYG627Y, newExpiry=2026-05-16T21:30:35.128Z
+8:30:35 PM [express] POST /api/player/mjakYG627Y/heartbeat 200 in 1972ms :: {"ok":true,"rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":1778967035128,"nextRefreshAt":1778963456129,"windowStart":10,"windowEnd":34,"segmentIndex":11}
+[video-session] extend write-through failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:38 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+8:30:39 PM [express] GET /api/player/mjakYG627Y/stream/secret/aab6c9a46df50bff30830ddc093930aadb11bcea0ef0690f6fb538ff8802cfc4ba57f79f43d43385fafb46955302968b398cce92d8c1f6cf6ccf9c2e9faaa45b06ab7bb6b6f23d7864c4611fa5f6ab06c734d422a50d2169e9f8c664063a424998fceafa9b41c5b01bffa80effa28c9e 200 in 3943ms
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:40 PM [express] GET /api/player/mjakYG627Y/stream/chunk/8a6d8ac9b90c494f1e425e45807d7a79ceb5bb8519773268ed2284f7711b5ad4aeae67da9145694a7871020eb8aa08ef371f27542ab3ac8f1a1f82e16333734ac7f2f67cbaf99c3ce058589c4d0dbf95d0ae243c63f924ad0f340cc2368c71f8815fd7f625198dd68bc7629f034afd6467fb4ba6f456ed3e239ff0761c 200 in 12...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:45 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1941ms :: {"ok":true,"windowStart":11,"windowEnd":35}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:48 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:53 PM [express] GET /api/player/mjakYG627Y/stream/chunk/58684eed58dd083868d47c75568eb1ab1e1dc7866339d6db5c5ebcd0b40c4e07e8a34594925235aa638d4ccd7d081d46e1a5aaf8f73f6480e581c40fd23aee37d995db422ec66d25f03a89a6d61e24147f9e8a79aae48d09078d73937987367529455efe2e4e68959ade8bd3c2e21e550c5daefabf550322762926159e 200 in 29...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:55 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1986ms :: {"ok":true,"windowStart":11,"windowEnd":35}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:30:58 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] SESSION_EXTENDED: sid=9680cf039403bd87c7bb485790c1704b, publicId=mjakYG627Y, newExpiry=2026-05-16T21:31:05.308Z
+8:31:05 PM [express] POST /api/player/mjakYG627Y/heartbeat 200 in 1982ms :: {"ok":true,"rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":1778967065308,"nextRefreshAt":1778963486308,"windowStart":11,"windowEnd":35,"segmentIndex":12}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:05 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 2012ms :: {"ok":true,"windowStart":11,"windowEnd":35}
+[video-session] extend write-through failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:08 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+8:31:09 PM [express] GET /api/player/mjakYG627Y/stream/chunk/58684eed58dd083868d47c75568eb1ab1e1dc7866339d6db5c5ebcd0b40c4e07e8a34594925235aa638d4ccd7d081d46e1a5aaf8f73f6480e581c40fd23aee37d995db422ec66d25f03a89a6d61e24147f9e8a79aae48d09078d73937987367529455efe2e4e68959ade8bd3c2e21e550c5daefabf550322762926159e 200 in 30...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:15 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1954ms :: {"ok":true,"windowStart":11,"windowEnd":35}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:17 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:18 PM [express] GET /api/player/mjakYG627Y/stream/chunk/58684eed58dd083868d47c75568eb1ab1e1dc7866339d6db5c5ebcd0b40c4e07e8a34594925235aa638d4ccd7d081d46e1a5aaf8f73f6480e581c40fd23aee37d995db422ec66d25f03a89a6d61e24147f9e8a79aae48d09078d73937987367529455efe2e4e68959ade8bd3c2e21e550c5daefabf550322762926159e 200 in 32...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:19 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:25 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1974ms :: {"ok":true,"windowStart":11,"windowEnd":35}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:29 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:31 PM [express] GET /api/player/mjakYG627Y/stream/secret/481a062a80936b705721c30ca7f1d16f2e91b41d0130e71d2e0315e9e90766c61de0bde1616cb7527957079c4490e59a2a5aebaa257dfa4caefe23da72b5be1b29e4a94675962420612b1cfd4fd1fd132b0545dbc0dca6d6b60c361688e42f289c2f36bcc36daeaa1be84c0d5b0024ed 200 in 3989ms
+8:31:32 PM [express] GET /api/player/mjakYG627Y/stream/chunk/2fc39908ae0293e34f34d54345c55c2a9539179b83eb03ff0423f865017cd98d42093b3cffe2d5ab6a0036f87b856263d8614ecce37cf904060250fde59de9af9f7d54ac04a3344d57ea06bc29f362f28afb6b8ad753182481c2c2aa670f678d912b771218170dc0b2ff163c7aca77398c62a05f5fea119c29c86d5b85 200 in 49...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:33 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 249ms :: {"ok":true,"windowStart":12,"windowEnd":36}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] SESSION_EXTENDED: sid=9680cf039403bd87c7bb485790c1704b, publicId=mjakYG627Y, newExpiry=2026-05-16T21:31:35.132Z
+8:31:35 PM [express] POST /api/player/mjakYG627Y/heartbeat 200 in 1957ms :: {"ok":true,"rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":1778967095132,"nextRefreshAt":1778963516133,"windowStart":12,"windowEnd":36,"segmentIndex":13}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:35 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] extend write-through failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:39 PM [express] GET /api/player/mjakYG627Y/stream/secret/481a062a80936b705721c30ca7f1d16f2e91b41d0130e71d2e0315e9e90766c61de0bde1616cb7527957079c4490e59a2a5aebaa257dfa4caefe23da72b5be1b29e4a94675962420612b1cfd4fd1fd132b0545dbc0dca6d6b60c361688e42f289c2f36bcc36daeaa1be84c0d5b0024ed 200 in 2202ms
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:40 PM [express] GET /api/player/mjakYG627Y/stream/chunk/960dcd0d683610d1fe850ea60c2d7ada1fd7e4b85a8c2c2d411c6892ce59db28ee6b5f3de2894f848e4390202717c779e4588727dc6a61c16f5d04866a9e6aed2937abfe303232fe7891785924c8030eb0120f03895c1b11e05f66adac725a3979082fa2ceb40382ac88b870eff58228281dfae61780b36d5762c994d1 200 in 12...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:44 PM [express] GET /api/player/mjakYG627Y/stream/chunk/547ad670c2d0b2c59959b717a69a2ee72f1eec4b1db581ba13c4654282f28b9b9d39479af8fd75967cf8164b4dbb8e258eb7640b1cf01f865655b5fe6d646ed1f534910358b938a8b9feb6eb03c11d17c7ac1b15237544ccb24431f9c3408cf58a50d007523de9025aac61c80272064cb5bfe86d5a30a456f76104ab9e 200 in 28...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:45 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1977ms :: {"ok":true,"windowStart":13,"windowEnd":37}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:46 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:50 PM [express] GET /api/player/mjakYG627Y/stream/chunk/5f9e2fffdcfb3909c5882de940807a59c8f824d0897bbfc8436b7251d3ff34eba67fdf190aed8a5817cdd668ca079fc8dc290295a7fa32f260432cbf61ad71a3804b6a5b9426185d82b1ddb291edee6f5e9d6abd2eafbb45354feac843df43a3a50dbcbd668efad6606a30926f25b88c97a3c638831924b9423434be7e 200 in 27...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:55 PM [express] POST /api/stream/mjakYG627Y/progress 200 in 1981ms :: {"ok":true,"windowStart":14,"windowEnd":38}
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist
+8:31:56 PM [express] GET /api/player/mjakYG627Y/stream/window/e9f755dfd8ae4ebd9dc86e5496b22bbe41ed95d30399f7a2be45e4aee8817afbc09fb46c04e5f343784933af8939e371291bc473607c2ca4b85805f553b585c517882eafefdd2e9bd3a35078778e2ff2def75cfe2415939186799c05d43247e4147c87a4457f68e85154b9b251efb551b43dd3d96856417b841443e7ed 200 in 1...
+[video-session] revalidate failed sid=9680cf039403bd87c7bb485790c1704b: relation "video_sessions" does not exist

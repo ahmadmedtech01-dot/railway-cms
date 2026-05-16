@@ -427,6 +427,7 @@ function deserializeSession(raw: any): VideoSession {
 const writeQueues = new Map<string, Promise<void>>();
 
 async function doPersist(sid: string): Promise<void> {
+  if (videoSessionsTableMissing) return;
   // Re-read live state at the moment this write actually runs, so the queued
   // write always reflects the current in-memory truth (not a snapshot from
   // when persistSession was called).
@@ -464,7 +465,8 @@ function persistSession(sid: string): void {
     .catch(() => {}) // don't propagate prior failures to the new write
     .then(() => doPersist(sid))
     .catch((err: any) => {
-      console.error(`[video-session] persist failed sid=${sid}:`, err?.message || err);
+      noteDbErr(err);
+      if (!videoSessionsTableMissing) console.error(`[video-session] persist failed sid=${sid}:`, err?.message || err);
     });
   writeQueues.set(sid, next);
   next.finally(() => {
@@ -473,6 +475,7 @@ function persistSession(sid: string): void {
 }
 
 async function loadSessionFromDb(sid: string): Promise<VideoSession | undefined> {
+  if (videoSessionsTableMissing) return undefined;
   try {
     const rows = await db
       .select()
@@ -496,7 +499,8 @@ async function loadSessionFromDb(sid: string): Promise<VideoSession | undefined>
     sessions.set(sid, s);
     return s;
   } catch (err: any) {
-    console.error(`[video-session] load failed sid=${sid}:`, err?.message || err);
+    noteDbErr(err);
+    if (!videoSessionsTableMissing) console.error(`[video-session] load failed sid=${sid}:`, err?.message || err);
     return undefined;
   }
 }
@@ -509,7 +513,34 @@ async function loadSessionFromDb(sid: string): Promise<VideoSession | undefined>
 const lastDbRevalidateAt = new Map<string, number>();
 const REVALIDATE_INTERVAL_MS = 5_000;
 
+// Circuit breaker: if the `video_sessions` table is missing (un-migrated DB),
+// every query throws and adds 1-4 s of latency per request (each chunk fetch,
+// heartbeat, playlist refresh). Once we see "relation ... does not exist" we
+// flip this flag and skip all DB ops for the rest of the process lifetime.
+// In-memory session map continues to work fine on a single instance.
+// Cross-instance revoke/rotate propagation is the only thing lost; that comes
+// back automatically as soon as the operator runs `npm run db:push`.
+let videoSessionsTableMissing = false;
+function isMissingTableError(err: any): boolean {
+  // Postgres SQLSTATE 42P01 = undefined_table. Driver surfaces it as .code
+  // (node-postgres) or err.cause?.code (drizzle wraps). Faster + more robust
+  // than message matching.
+  const code = err?.code || err?.cause?.code || err?.original?.code;
+  if (code === "42P01") return true;
+  const msg = String(err?.message || err || "");
+  return msg.includes('relation "video_sessions" does not exist')
+      || msg.includes('relation \\"video_sessions\\" does not exist')
+      || msg.includes("video_sessions") && msg.includes("does not exist");
+}
+function noteDbErr(err: any): void {
+  if (!videoSessionsTableMissing && isMissingTableError(err)) {
+    videoSessionsTableMissing = true;
+    console.error("[video-session] video_sessions table missing — DB write-through DISABLED for this process. Run `npm run db:push` on the server to enable cross-instance session sync.");
+  }
+}
+
 async function revalidateFromDb(sid: string, local: VideoSession): Promise<void> {
+  if (videoSessionsTableMissing) { lastDbRevalidateAt.set(sid, Date.now()); return; }
   try {
     const rows = await db
       .select({
@@ -536,7 +567,9 @@ async function revalidateFromDb(sid: string, local: VideoSession): Promise<void>
     }
   } catch (err: any) {
     // Soft-fail: if DB is unreachable, keep serving from local cache.
-    console.error(`[video-session] revalidate failed sid=${sid}:`, err?.message || err);
+    noteDbErr(err);
+    lastDbRevalidateAt.set(sid, Date.now()); // prevent tight retry loop
+    if (!videoSessionsTableMissing) console.error(`[video-session] revalidate failed sid=${sid}:`, err?.message || err);
   }
 }
 
@@ -570,9 +603,10 @@ export async function getSessionAsync(sid: string): Promise<VideoSession | undef
 // DELETE is idempotent so concurrent sweeps are safe. unref() so it doesn't
 // keep Node alive on shutdown.
 setInterval(() => {
+  if (videoSessionsTableMissing) return;
   db.delete(videoSessions)
     .where(lt(videoSessions.expiresAt, new Date()))
-    .catch((err) => console.error("[video-session] cleanup failed:", err?.message || err));
+    .catch((err) => { noteDbErr(err); if (!videoSessionsTableMissing) console.error("[video-session] cleanup failed:", err?.message || err); });
 }, 5 * 60 * 1000).unref();
 
 export function computeDeviceHash(ua: string): string {
@@ -664,15 +698,17 @@ export function revokeSessionsByIntegrationId(integrationSessionId: string, reas
   }
   // Also revoke on other instances by writing through to Postgres directly for
   // any rows that aren't currently hydrated locally.
-  db.update(videoSessions)
-    .set({ revoked: true, updatedAt: new Date() })
-    .where(
-      and(
-        eq(videoSessions.integrationSessionId, integrationSessionId),
-        eq(videoSessions.revoked, false),
-      ),
-    )
-    .catch((err) => console.error("[video-session] revokeByIntegrationId write-through failed:", err?.message || err));
+  if (!videoSessionsTableMissing) {
+    db.update(videoSessions)
+      .set({ revoked: true, updatedAt: new Date() })
+      .where(
+        and(
+          eq(videoSessions.integrationSessionId, integrationSessionId),
+          eq(videoSessions.revoked, false),
+        ),
+      )
+      .catch((err) => { noteDbErr(err); if (!videoSessionsTableMissing) console.error("[video-session] revokeByIntegrationId write-through failed:", err?.message || err); });
+  }
   return count;
 }
 
@@ -795,6 +831,7 @@ export async function getSessionAllowingRotationGraceAsync(
       await revalidateFromDb(sid, s);
     }
   } else {
+    if (videoSessionsTableMissing) return { kind: "not_found" };
     // Not cached — hydrate from DB. loadSessionFromDb skips revoked rows,
     // so do a raw read here that does NOT filter on revoked, then decide.
     try {
@@ -835,7 +872,8 @@ export async function getSessionAllowingRotationGraceAsync(
         return { kind: "revoked", signal: reason.signal || "rate_limit" };
       }
     } catch (err: any) {
-      console.error(`[video-session] grace-lookup failed sid=${sid}:`, err?.message || err);
+      noteDbErr(err);
+      if (!videoSessionsTableMissing) console.error(`[video-session] grace-lookup failed sid=${sid}:`, err?.message || err);
       return { kind: "not_found" };
     }
   }
@@ -867,10 +905,12 @@ export function extendSession(sid: string): boolean {
   s.expiresAt = Date.now() + SESSION_MAX_AGE_MS;
   // Cheap write — just updates expires_at so other instances see the new TTL
   // when they hydrate. Failure here doesn't break playback on this instance.
-  db.update(videoSessions)
-    .set({ expiresAt: new Date(s.expiresAt), updatedAt: new Date() })
-    .where(eq(videoSessions.sid, sid))
-    .catch((err) => console.error(`[video-session] extend write-through failed sid=${sid}:`, err?.message || err));
+  if (!videoSessionsTableMissing) {
+    db.update(videoSessions)
+      .set({ expiresAt: new Date(s.expiresAt), updatedAt: new Date() })
+      .where(eq(videoSessions.sid, sid))
+      .catch((err) => { noteDbErr(err); if (!videoSessionsTableMissing) console.error(`[video-session] extend write-through failed sid=${sid}:`, err?.message || err); });
+  }
   console.log(`[video-session] SESSION_EXTENDED: sid=${sid}, publicId=${s.publicId}, newExpiry=${new Date(s.expiresAt).toISOString()}`);
   return true;
 }
@@ -903,10 +943,12 @@ export function revokeSession(sid: string, reason?: AbuseReason): void {
   } else {
     // Session not in this instance's L1 cache — still revoke in Postgres so
     // any other instance that holds it will see revoked=true on next hydrate.
-    db.update(videoSessions)
-      .set({ revoked: true, updatedAt: new Date() })
-      .where(eq(videoSessions.sid, sid))
-      .catch((err) => console.error(`[video-session] revoke write-through failed sid=${sid}:`, err?.message || err));
+    if (!videoSessionsTableMissing) {
+      db.update(videoSessions)
+        .set({ revoked: true, updatedAt: new Date() })
+        .where(eq(videoSessions.sid, sid))
+        .catch((err) => { noteDbErr(err); if (!videoSessionsTableMissing) console.error(`[video-session] revoke write-through failed sid=${sid}:`, err?.message || err); });
+    }
   }
 }
 
