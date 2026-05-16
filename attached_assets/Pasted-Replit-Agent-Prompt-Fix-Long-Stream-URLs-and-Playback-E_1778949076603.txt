@@ -1,0 +1,229 @@
+Replit Agent Prompt — Fix Long Stream URLs and Playback Error
+
+Problem:
+After adding stealth protected playback, my CMS now hides .m3u8/.ts/mp2t names, but the player shows very long URLs like:
+
+/api/player/:publicId/stream/secret/<huge-long-token>
+
+and playback fails with:
+
+Playback Error
+Network unstable. Please refresh to retry.
+
+DevTools shows many failed red requests, especially stream/secret and stream/chunk requests. Response headers sometimes show 0, meaning the request is failing before usable response or validation.
+
+Goal:
+Fix stealth stream URLs and playback without weakening existing security.
+
+Do NOT remove or break:
+- short share links
+- no token in URL
+- server-side bootstrap
+- LMS iframe flow
+- admin preview
+- HMAC security
+- AES-HLS
+- /hls /seg /key fallback
+- B2/R2/S3 hiding
+- session binding
+- heartbeat
+- watermark
+- abuse detection
+- Cloudflare Worker compatibility
+
+Main issue:
+Opaque URL IDs are too long because signed/encrypted metadata is being placed directly in the path. Replace this with short opaque IDs mapped server-side.
+
+Required fix:
+
+1. Replace huge stream IDs with short opaque IDs
+
+Current bad pattern:
+- /api/player/:publicId/stream/secret/<very-long-token>
+- /api/player/:publicId/stream/chunk/<very-long-token>
+
+New desired pattern:
+- /api/player/:publicId/stream/secret/k_x7F9aQ2LmP
+- /api/player/:publicId/stream/chunk/c_8Hd92QaRzT
+
+Rules:
+- opaque ID length: 12–24 chars
+- use nanoid/crypto random
+- no file extension
+- no mp2t
+- no .ts
+- no .m3u8
+- no key
+- no segment index
+- no video ID inside ID
+- no huge JWT or encrypted blob inside URL
+
+2. Store opaque ID mapping server-side
+
+Create in-memory or DB/Redis-backed mapping for active playback sessions:
+
+stream_token_map:
+- opaqueId
+- type: window | chunk | secret
+- publicId
+- videoId
+- playbackSessionId
+- segmentIndex nullable
+- keyGroup nullable
+- rendition nullable
+- realStoragePath or internal segment path
+- expiresAt
+- usedCount
+- createdAt
+
+For production multi-instance Railway, prefer DB/Redis/Upstash or existing session store.
+If using memory first, clearly keep it tied to single instance and add TODO for Redis.
+
+3. Validate using server-side metadata, not URL payload
+
+When request comes:
+
+GET /api/player/:publicId/stream/chunk/:opaqueId
+
+Backend must:
+- lookup opaqueId
+- reject if not found
+- reject if expired
+- reject if type mismatch
+- reject if publicId mismatch
+- reject if session mismatch
+- reject if session revoked
+- reject if heartbeat stale when strict mode is enabled
+- reject if segment outside verified playback window
+- reject if download-ahead exceeded
+- serve the mapped segment
+
+For secret/key:
+GET /api/player/:publicId/stream/secret/:opaqueId
+
+Backend must:
+- lookup opaqueId
+- validate active session
+- validate current key/window access
+- validate TTL
+- return key/secret with no-store headers
+
+4. Fix token TTL race causing playback error
+
+Current TTL may be too short or generated too early.
+
+Use safe defaults:
+- window token TTL: 25 sec
+- chunk token TTL: 15 sec
+- secret/key token TTL: 15 sec
+- clock skew: 3 sec
+
+But important:
+Do not expire key/secret before hls.js has time to request it.
+Generate chunk/secret opaque IDs only when the current playlist/window is generated.
+Refresh window before expiry.
+
+If a token expires normally, player should refresh window, not show fatal playback error.
+
+5. Add clear error logging
+
+When stream/chunk/secret request fails, log the exact backend reason:
+
+- OPAQUE_ID_NOT_FOUND
+- OPAQUE_ID_EXPIRED
+- SESSION_NOT_FOUND
+- SESSION_REVOKED
+- HEARTBEAT_STALE
+- WINDOW_VIOLATION
+- DOWNLOAD_AHEAD_LIMIT
+- PUBLIC_ID_MISMATCH
+- TYPE_MISMATCH
+- KEY_ACCESS_DENIED
+- INTERNAL_STORAGE_ERROR
+
+Do not expose detailed reason to client.
+Client should receive minimal:
+403 Forbidden
+or
+410 Expired
+or
+429 Too Many Requests
+
+But server logs/admin audit should show exact reason.
+
+6. Add frontend recovery
+
+If one chunk/secret URL expires:
+- do not immediately show “Network unstable”
+- refresh stream/window once
+- retry playback once
+- if still failing, then show playback error
+
+For hls.js:
+- on key load error or fragment load error:
+  - call stream/window refresh endpoint
+  - rebuild in-memory playlist/blob
+  - retry once
+- if session revoked, show “Access revoked” not “Network unstable”
+
+7. Fix path length issue
+
+Ensure no route uses giant path params.
+Keep opaque IDs short.
+Do not encode full HMAC/JWT/encrypted metadata into route path.
+If a signature is still needed, use server-side mapping + short ID + session token in Authorization header or memory token, not long path.
+
+8. Response headers for stream routes
+
+For secret/key:
+- Cache-Control: no-store, private
+- Pragma: no-cache
+- Content-Type: application/octet-stream
+
+For chunks:
+- Content-Type: application/octet-stream
+- Cache-Control: no-store, private or very short private max-age only if safe
+- Accept-Ranges: none unless needed
+- no raw storage URL exposure
+
+9. Keep stealth behavior
+
+Network must not show:
+- master.m3u8
+- index.m3u8
+- .ts
+- .m4s
+- mp2t
+- obvious /key
+- huge signed URLs
+
+Network should show only:
+- short opaque stream/window/chunk/secret routes
+- heartbeat
+- progress
+- security-event
+
+10. Acceptance tests
+
+Must pass:
+- video plays normally
+- no Playback Error
+- stream/secret URL is short
+- stream/chunk URL is short
+- raw B2/R2/S3 URL hidden
+- copied chunk URL expires quickly
+- copied secret/key URL expires quickly
+- revoked session makes chunk/secret return 403
+- expired opaque ID triggers window refresh/retry, not immediate black screen
+- share link works
+- LMS iframe works
+- admin preview works
+- upload/transcode/storage not broken
+- no TypeScript errors
+
+Important:
+Do not weaken security.
+Do not expose JWT/token in URL.
+Do not expose file extension or media type in URL.
+Do not implement downloader code.
+This is defensive playback reliability + stealth URL cleanup only.

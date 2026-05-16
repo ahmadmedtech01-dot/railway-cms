@@ -772,17 +772,79 @@ export default function EmbedPlayerPage(props: any = {}) {
 
             if (isRotatingRef.current) return;
 
+            // Parse signal/errorCode from response body if any (used by both
+            // 403/401 branch and the NETWORK_ERROR fallback).
+            let signal = "";
+            let errorCode = "";
+            try {
+              const parsed = JSON.parse(responseText);
+              if (parsed?.signal) signal = parsed.signal;
+              if (parsed?.code) errorCode = parsed.code;
+            } catch {}
+
+            // Hoisted: callable from BOTH the 403/401 path AND the fatal
+            // NETWORK_ERROR escalation path. Many real-world failures
+            // surface as NETWORK_ERROR (no HTTP code reaches hls.js because
+            // the request was aborted/reset) but the underlying cause is
+            // token/session expiry — and the only recovery that actually
+            // works is rotating to a fresh session.
+            const tryRotationRecovery = (fallbackSignal?: string) => {
+              const currentSid = streamSidRef.current;
+              const sig = fallbackSignal || signal || "rate_limit";
+              if (!currentSid) { triggerDenial(sig); return; }
+              const savedTime = videoRef.current?.currentTime || 0;
+              fetch(`/api/player/${publicId}/rotate-session`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sid: currentSid }),
+              }).then(async r => {
+                if (!r.ok) { triggerDenial(sig); return; }
+                const rd = await r.json();
+                if (rd.manifestUrl && rd.sessionId) {
+                  streamSidRef.current = rd.sessionId;
+                  const opId = ++rotationOpIdRef.current;
+                  isRotatingRef.current = true;
+                  const nextUrl = (rd.stealth && rd.stealth.enabled && rd.stealth.streamUrl) ? rd.stealth.streamUrl : rd.manifestUrl;
+                  hls.loadSource(nextUrl);
+                  const vid = videoRef.current;
+                  const safetyTimer = setTimeout(() => {
+                    if (opId !== rotationOpIdRef.current) return;
+                    if (isRotatingRef.current) {
+                      isRotatingRef.current = false;
+                      const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                      if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
+                      if (pendingMessageSeekRef.current !== null) applyPendingSeek();
+                    }
+                  }, 15000);
+                  hls.once(Hls.Events.MANIFEST_PARSED, () => {
+                    clearTimeout(safetyTimer);
+                    if (opId !== rotationOpIdRef.current) return;
+                    isRotatingRef.current = false;
+                    const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                    if (vid) {
+                      hls.startLoad(resumeAt);
+                      vid.currentTime = resumeAt;
+                      vid.play().catch(() => {});
+                    }
+                    if (pendingMessageSeekRef.current !== null) {
+                      applyPendingSeek();
+                    }
+                    fetch(`/api/stream/${publicId}/progress`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt }),
+                    }).catch(() => {});
+                  });
+                } else {
+                  triggerDenial(sig);
+                }
+              }).catch(() => triggerDenial(sig));
+            };
+
             // Fatal 403/401 — security denial or token expiry
             if (code === 403 || code === 401) {
                 hls.stopLoad();
                 videoRef.current?.pause();
-                let signal = "";
-                let errorCode = "";
-                try {
-                  const parsed = JSON.parse(responseText);
-                  if (parsed?.signal) signal = parsed.signal;
-                  if (parsed?.code) errorCode = parsed.code;
-                } catch {}
 
                 // Recoverable (silent retry): token expiry, sliding-window prefetch overshoot,
                 // session expired, transient rate spikes. These happen during normal HLS
@@ -810,58 +872,6 @@ export default function EmbedPlayerPage(props: any = {}) {
                   signal === "concurrent" ||
                   signal === "playlist_abuse";
                 const canRefresh = activeTokenRef.current && isExpiry && !isTrueAbuse;
-
-                const tryRotationRecovery = () => {
-                  const currentSid = streamSidRef.current;
-                  if (!currentSid) { triggerDenial(signal || "rate_limit"); return; }
-                  const savedTime = videoRef.current?.currentTime || 0;
-                  fetch(`/api/player/${publicId}/rotate-session`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ sid: currentSid }),
-                  }).then(async r => {
-                    if (!r.ok) { triggerDenial(signal || "rate_limit"); return; }
-                    const rd = await r.json();
-                    if (rd.manifestUrl && rd.sessionId) {
-                      streamSidRef.current = rd.sessionId;
-                      const opId = ++rotationOpIdRef.current;
-                      isRotatingRef.current = true;
-                      const nextUrl = (rd.stealth && rd.stealth.enabled && rd.stealth.streamUrl) ? rd.stealth.streamUrl : rd.manifestUrl;
-                      hls.loadSource(nextUrl);
-                      const vid = videoRef.current;
-                      const safetyTimer = setTimeout(() => {
-                        if (opId !== rotationOpIdRef.current) return;
-                        if (isRotatingRef.current) {
-                          isRotatingRef.current = false;
-                          const resumeAt = pendingMessageSeekRef.current ?? savedTime;
-                          if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
-                          if (pendingMessageSeekRef.current !== null) applyPendingSeek();
-                        }
-                      }, 15000);
-                      hls.once(Hls.Events.MANIFEST_PARSED, () => {
-                        clearTimeout(safetyTimer);
-                        if (opId !== rotationOpIdRef.current) return;
-                        isRotatingRef.current = false;
-                        const resumeAt = pendingMessageSeekRef.current ?? savedTime;
-                        if (vid) {
-                          hls.startLoad(resumeAt);
-                          vid.currentTime = resumeAt;
-                          vid.play().catch(() => {});
-                        }
-                        if (pendingMessageSeekRef.current !== null) {
-                          applyPendingSeek();
-                        }
-                        fetch(`/api/stream/${publicId}/progress`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt }),
-                        }).catch(() => {});
-                      });
-                    } else {
-                      triggerDenial(signal || "rate_limit");
-                    }
-                  }).catch(() => triggerDenial(signal || "rate_limit"));
-                };
 
                 if (canRefresh) {
                   const savedTime = videoRef.current?.currentTime || 0;
@@ -920,11 +930,31 @@ export default function EmbedPlayerPage(props: any = {}) {
                   setErrorMsg("Stream error");
                 }
             } else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                // Fatal network error — try to restart the load (rate-limited
-                // ONLY against unbounded recovery loops, not normal retries)
-                if (!guardedFatalRestart(hls)) {
-                  setStatus("error");
-                  setErrorMsg("Network unstable. Please refresh to retry.");
+                // Fatal network error escalation ladder:
+                //  - Attempts 1–2: fast hls.startLoad() retry against the same
+                //    URLs. Handles transient blips.
+                //  - Attempts 3+: many "network errors" actually mean token/
+                //    session expiry that surfaced as an aborted request
+                //    (no HTTP code reached hls.js). The only real recovery
+                //    is a full session rotation that mints fresh signed URLs.
+                //  - Budget exhausted: deferred final retry, then fatal.
+                const fastRetryCount = fatalRecoveryLogRef.current.length;
+                if (fastRetryCount < 2) {
+                  if (!guardedFatalRestart(hls)) {
+                    setStatus("error");
+                    setErrorMsg("Network unstable. Please refresh to retry.");
+                  }
+                } else if (streamSidRef.current && !isRotatingRef.current) {
+                  // Escalate to session rotation. Burn one budget slot so
+                  // the breaker still applies if rotation itself fails.
+                  fatalRecoveryLogRef.current.push(Date.now());
+                  hls.stopLoad();
+                  tryRotationRecovery("network_error");
+                } else {
+                  if (!guardedFatalRestart(hls)) {
+                    setStatus("error");
+                    setErrorMsg("Network unstable. Please refresh to retry.");
+                  }
                 }
             } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
                 // Fatal media error — attempt recovery before giving up
