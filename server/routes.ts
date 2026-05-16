@@ -2968,7 +2968,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // When serverGatedWindowEnabled=true the playlist window only advances here.
   app.post("/api/player/:publicId/heartbeat", async (req: any, res: any) => {
     try {
-      const { sid, seq, nonce, currentTime, segmentIndex } = req.body || {};
+      const { sid, seq, nonce, currentTime, segmentIndex, playbackRate } = req.body || {};
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
       await getSessionAsync(sid);
@@ -2988,6 +2988,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         nonce: String(nonce || ""),
         currentTime: Number(currentTime),
         segmentIndex: typeof segmentIndex === "number" ? segmentIndex : undefined,
+        playbackRate: typeof playbackRate === "number" ? playbackRate : undefined,
       });
       if (!result.ok) {
         const bi = getBreachInfo(sid);

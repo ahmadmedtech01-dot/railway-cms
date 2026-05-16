@@ -1145,6 +1145,7 @@ export default function EmbedPlayerPage(props: any = {}) {
             ? (crypto as any).randomUUID()
             : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
           body.currentTime = v ? v.currentTime : 0;
+          body.playbackRate = v ? (v.playbackRate || 1) : 1;
         }
         const res = await fetch(`/api/player/${publicId}/${endpoint}`, {
           method: "POST",

@@ -101,7 +101,7 @@ export const defaultHardening: SessionHardeningConfig = {
   downloadAheadLimit: 30,
   stealthModeEnabled: true,
   // Balanced-profile defaults
-  maxPrebufferSec: 45,
+  maxPrebufferSec: 90,
   maxDownloadAheadSec: 60,
   windowOverlapGraceSec: 30,
 };
@@ -1277,6 +1277,7 @@ export interface HeartbeatInput {
   nonce: string;
   currentTime: number;
   segmentIndex?: number;
+  playbackRate?: number;
 }
 export function verifyHeartbeat(sid: string, input: HeartbeatInput): { ok: boolean; reason?: string; windowStart?: number; windowEnd?: number; newSegmentIndex?: number } {
   const s = sessions.get(sid);
@@ -1300,8 +1301,22 @@ export function verifyHeartbeat(sid: string, input: HeartbeatInput): { ok: boole
 
   const now = Date.now();
   const elapsedSec = Math.max(0.5, (now - s.lastHeartbeatAt) / 1000);
-  // Cap how fast playback time may advance between heartbeats — defeats heartbeat-forge walking
-  const maxAdvanceSec = elapsedSec * 2.5 + 5; // generous: allow buffering catch-up + small skip
+  // Enforce minimum heartbeat cadence — automated clients ratchet rapidly,
+  // real browsers are limited by the configured heartbeatIntervalSec (≥5s).
+  // Score mild abuse if heartbeats arrive suspiciously fast.
+  if (elapsedSec < 1) {
+    // < 1 s: clear automation (UI can't fire that fast)
+    addAbuse(s, 2, { signal: "heartbeat_invalid", detail: `cadence too fast: ${elapsedSec.toFixed(2)}s` });
+    return { ok: false, reason: "cadence_violation" };
+  }
+
+  // Cap how fast playback time may advance between heartbeats — defeats heartbeat-forge walking.
+  // Scale by declared playback rate so fast-forward (1.5x, 2x) users don't trip the cap.
+  // Max 2.0 — matches the highest speed in any real video player UI. A forged
+  // rate above 2.0 would still be capped here, limiting window walking to
+  // elapsedSec*3.5+10 (e.g. 15s → 62.5s → 31 segments) even at declared 2x.
+  const speed = Math.min(2.0, Math.max(1.0, input.playbackRate || 1.0));
+  const maxAdvanceSec = elapsedSec * (speed * 1.5 + 0.5) + 10;
   const prevTime = s.currentSegmentIndex; // index proxy
   // (only enforced when server-gated window is on, since legacy mode is permissive)
   let advanceCappedSegIdx = input.segmentIndex;
