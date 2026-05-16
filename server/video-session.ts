@@ -92,20 +92,16 @@ export const defaultHardening: SessionHardeningConfig = {
   // session lifetime, abuse detection, and window validation — not by token
   // TTL. 90s is well under SESSION_MAX_AGE_MS so signed URLs still rotate
   // through the natural session lifecycle.
-  // CRITICAL: must be ≥ maxPrebufferSec below, otherwise segments deep in
-  // the sliding-window playlist expire before hls.js reaches them, causing
-  // "3 sec audio then black screen" symptoms. Bucketed in 60-s chunks so
-  // the same opaque IDs are re-minted across playlist reloads for cache stability.
-  tokenTtlPlaylistSec: 120,
-  tokenTtlSegmentSec: 120,
-  tokenTtlKeySec: 120,
+  tokenTtlPlaylistSec: 60,
+  tokenTtlSegmentSec: 30,
+  tokenTtlKeySec: 30,
   heartbeatIntervalSec: 15,
   // Allow hls.js to prefetch without false abuse. Real bulk-download scrapers
   // request hundreds in seconds and still get caught by velocity checks.
   downloadAheadLimit: 30,
   stealthModeEnabled: true,
   // Balanced-profile defaults
-  maxPrebufferSec: 90,
+  maxPrebufferSec: 45,
   maxDownloadAheadSec: 60,
   windowOverlapGraceSec: 30,
 };
