@@ -204,6 +204,18 @@ export default function EmbedPlayerPage(props: any = {}) {
   // before declaring failure.
   const fatalRecoveryLogRef = useRef<number[]>([]);
   const deferredRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Rotation cool-down — once a session rotation completes successfully,
+  // suppress further rotations for 60s. Without this, if the server keeps
+  // emitting recoverable 403s, the player chains rotations every ~10s and
+  // each one black-screens + restarts playback from the (briefly-zero)
+  // savedTime captured during the previous rotation's MSE re-attach.
+  const lastRotationAtRef = useRef<number>(0);
+  const ROTATION_COOLDOWN_MS = 60_000;
+  // Last known good playback position, sampled continuously during healthy
+  // playback. Used as savedTime when capturing currentTime at the moment
+  // of a fatal error would return 0 (because hls.js or MSE has already
+  // started tearing down the buffer).
+  const lastHealthyTimeRef = useRef<number>(0);
   const guardedFatalRestart = (hls: any) => {
     const now = Date.now();
     fatalRecoveryLogRef.current = fatalRecoveryLogRef.current.filter(t => t > now - 60_000);
@@ -748,15 +760,20 @@ export default function EmbedPlayerPage(props: any = {}) {
             const total = d.details?.totalduration;
             if (total && isFinite(total) && total > 0) setDuration(prev => prev > 0 ? prev : total);
           });
-          // Healthy playback resets the fatal-recovery budget. As long as
-          // fragments keep arriving, transient blips never accumulate to the
-          // point of triggering the "Network unstable" error.
+          // Healthy playback resets the fatal-recovery budget AND samples
+          // the last known good time. As long as fragments keep arriving,
+          // transient blips never accumulate to the point of triggering the
+          // "Network unstable" error, and we always have a fresh resume
+          // position even if currentTime briefly reads 0 during a buffer
+          // tear-down.
           hls.on(Hls.Events.FRAG_LOADED, () => {
             if (fatalRecoveryLogRef.current.length > 0) fatalRecoveryLogRef.current = [];
             if (deferredRetryTimerRef.current) {
               clearTimeout(deferredRetryTimerRef.current);
               deferredRetryTimerRef.current = null;
             }
+            const t = videoRef.current?.currentTime ?? 0;
+            if (t > 0.25) lastHealthyTimeRef.current = t;
           });
           hls.on(Hls.Events.ERROR, (_, d) => {
             const code = (d as any).response?.code;
@@ -792,7 +809,13 @@ export default function EmbedPlayerPage(props: any = {}) {
               const currentSid = streamSidRef.current;
               const sig = fallbackSignal || signal || "rate_limit";
               if (!currentSid) { triggerDenial(sig); return; }
-              const savedTime = videoRef.current?.currentTime || 0;
+              // Prefer the last *healthy* playback position over a live read
+              // of currentTime, because by the time we get here the video
+              // element may have already reset to 0 (MSE tear-down during
+              // the previous rotation, or fatal-error pause). Falling back
+              // to lastHealthyTimeRef prevents the "restart from zero" UX bug.
+              const liveTime = videoRef.current?.currentTime || 0;
+              const savedTime = liveTime > 0.25 ? liveTime : (lastHealthyTimeRef.current || 0);
               fetch(`/api/player/${publicId}/rotate-session`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -820,10 +843,22 @@ export default function EmbedPlayerPage(props: any = {}) {
                     clearTimeout(safetyTimer);
                     if (opId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
+                    lastRotationAtRef.current = Date.now();
                     const resumeAt = pendingMessageSeekRef.current ?? savedTime;
                     if (vid) {
                       hls.startLoad(resumeAt);
                       vid.currentTime = resumeAt;
+                      // Belt-and-braces: re-apply the seek once the new
+                      // MediaSource has had a chance to attach. Without this
+                      // second assignment, fast back-to-back rotations can
+                      // leave currentTime at 0 because the first assignment
+                      // happens before MSE is ready and gets discarded.
+                      const targetTime = resumeAt;
+                      setTimeout(() => {
+                        if (vid && Math.abs((vid.currentTime || 0) - targetTime) > 1) {
+                          try { vid.currentTime = targetTime; } catch {}
+                        }
+                      }, 250);
                       vid.play().catch(() => {});
                     }
                     if (pendingMessageSeekRef.current !== null) {
@@ -915,7 +950,16 @@ export default function EmbedPlayerPage(props: any = {}) {
                     }
                   }).catch(() => triggerDenial(signal || "rate_limit"));
                 } else if (!isTrueAbuse) {
-                  tryRotationRecovery();
+                  // Honour the same rotation cool-down as the NETWORK_ERROR
+                  // path. If we just rotated, prefer a passive startLoad
+                  // and let the (already-rotated) signed URLs do their job
+                  // rather than chaining another rotation 10s later.
+                  if (Date.now() - lastRotationAtRef.current > ROTATION_COOLDOWN_MS) {
+                    tryRotationRecovery();
+                  } else {
+                    hls.startLoad();
+                    videoRef.current?.play().catch(() => {});
+                  }
                 } else {
                   triggerDenial(signal || "rate_limit");
                 }
@@ -944,9 +988,17 @@ export default function EmbedPlayerPage(props: any = {}) {
                     setStatus("error");
                     setErrorMsg("Network unstable. Please refresh to retry.");
                   }
-                } else if (streamSidRef.current && !isRotatingRef.current) {
+                } else if (
+                  streamSidRef.current &&
+                  !isRotatingRef.current &&
+                  Date.now() - lastRotationAtRef.current > ROTATION_COOLDOWN_MS
+                ) {
                   // Escalate to session rotation. Burn one budget slot so
                   // the breaker still applies if rotation itself fails.
+                  // Cool-down prevents rotation churn when the server keeps
+                  // emitting recoverable failures (each rotation has a brief
+                  // black-screen during MSE re-attach, so back-to-back
+                  // rotations are worse UX than a few extra startLoad calls).
                   fatalRecoveryLogRef.current.push(Date.now());
                   hls.stopLoad();
                   tryRotationRecovery("network_error");
