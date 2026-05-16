@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings.
 // Admin-controlled values from the Security Profile (or Custom override) are
@@ -78,20 +78,28 @@ function buildHardening(s: any): SessionHardeningConfig {
 // stealth mode. `bucketExp` still snaps exp to a wall-clock bucket so
 // successive playlist refetches within the same window produce identical
 // opaque URLs (eliminates xhr.abort() storms and black screens).
+// When HLS_GATEWAY_BASE is set, prefix stealth URLs so they go through the
+// Cloudflare Worker just like legacy /hls /seg /key paths. The Worker treats
+// stealth paths as transparent passthrough — the opaque ID is AES-encrypted
+// server-side, so only the origin can decode it. Worker gives us: hidden
+// Railway origin, edge presence in front of every chunk/playlist/key.
+function stealthGatewayPrefix(): string {
+  return getHlsGatewayBase(); // "" in dev → relative paths, full URL in prod
+}
 function buildStealthLevelUrl(publicId: string, sid: string, variantSubPath: string, ttlSec: number): string {
   const exp = bucketExp(Math.max(15, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "l", v: variantSubPath.replace(/^\//, ""), e: exp });
-  return `/api/player/${publicId}/stream/window/${id}`;
+  return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/window/${id}`;
 }
 function buildStealthChunkUrl(publicId: string, sid: string, segSubPath: string, ttlSec: number): string {
   const exp = bucketExp(Math.max(15, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "c", p: segSubPath.replace(/^\//, ""), e: exp });
-  return `/api/player/${publicId}/stream/chunk/${id}`;
+  return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/chunk/${id}`;
 }
 function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): string {
   const exp = bucketExp(Math.max(15, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "k", e: exp });
-  return `/api/player/${publicId}/stream/secret/${id}`;
+  return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/secret/${id}`;
 }
 
 // Resolve the first variant playlist subpath from a video's HLS master.

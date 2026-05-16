@@ -1,0 +1,53 @@
+You are working on my latest Railway Video CMS codebase. Deeply inspect server/routes.ts, server/video-session.ts, client/src/pages/embed-player.tsx, share-player.tsx, and cloudflare-worker/worker.js before editing.
+
+Goal: fix playback black screens, Network unstable errors, excessive request storms, and stale SID bugs WITHOUT weakening security or exposing raw B2/R2/S3 URLs.
+
+Implement these exact fixes:
+
+1. Fix /api/player/:publicId/refresh-token:
+   - When it creates a new playback session SID, return `sessionId` in the JSON response.
+   - Support all storage providers already supported by /manifest and /rotate-session: backblaze_b2, cloudflare_r2, bunny_net, s3, and local where applicable.
+   - Return correct `manifestUrl`, `stealth`, heartbeat settings, overlapGraceSec, sessionExpiresAt, nextRefreshAt.
+   - Do not return raw storage URLs.
+
+2. Fix frontend refresh handling in client/src/pages/embed-player.tsx:
+   - When refresh-token returns `sessionId`, assign `streamSidRef.current = rd.sessionId`.
+   - Reset `heartbeatSeqRef.current = 0` after SID changes.
+   - Ensure progress/heartbeat/security-event calls use the latest SID only.
+   - Do not show suspicious activity overlay for recoverable expiry/window/rotation errors.
+
+3. Remove duplicate playback-window advancement:
+   - Heartbeat V2 must be the only source of truth for server-gated window movement.
+   - If `heartbeat.v2` is enabled, frontend must stop calling `/api/stream/:publicId/progress` every 10 seconds, or call it analytics-only less frequently.
+   - Backend `/api/stream/:publicId/progress` must not call `updateProgress()` when `session.hardening.heartbeatV2Enabled` or `serverGatedWindowEnabled` is true.
+
+4. Reduce request storm and black screen risk:
+   - Change HLS transcode segment duration from 2 seconds to 4 seconds.
+   - Adjust hls.js buffer config to safer values: maxBufferLength 60, maxMaxBufferLength 120, backBufferLength 60.
+   - Avoid unnecessary `hls.loadSource()` during normal heartbeat/extend flow.
+   - Keep rotation only for real recovery or long pause resume.
+
+5. Clean TTL behavior:
+   - Use balanced safe defaults: playlist TTL 300s, segment TTL 180s, key TTL 180s, windowOverlapGraceSec 60s, heartbeatIntervalSec 25s unless admin overrides.
+   - Keep admin-configurable values but add safe lower bounds that do not cause normal playback expiry.
+   - Update misleading comments so code and comments match.
+
+6. Fix false blocked state:
+   - In getBreachInfo(), do not treat `revokeReason.signal === "rotated"` as suspicious blocked.
+   - Rotation-revoked sessions inside/outside grace should be recoverable, not abuse overlay.
+
+7. Cloudflare Worker architecture check:
+   - Current worker only handles /hls, /seg, /key but stealth uses /api/player/:publicId/stream/window|chunk|secret.
+   - Add support or document exact TODO clearly.
+   - Do not break existing /hls, /seg, /key paths.
+   - Never expose origin B2/R2/S3 signed URLs to the browser.
+
+Acceptance criteria:
+- Video plays smoothly for 30+ minutes without recurring black screen.
+- No "Network unstable. Please refresh to retry" during normal playback.
+- Refresh-token updates token and SID correctly.
+- Heartbeat works without duplicate progress-window updates.
+- Request count is significantly lower than current behavior.
+- LMS iframe and shareable link both work.
+- No raw B2/R2/S3 URLs appear in browser Network.
+- Security is not weakened: opaque URLs, UA/session binding, revocation, heartbeat validation, and abuse detection remain active.

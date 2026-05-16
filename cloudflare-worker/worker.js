@@ -6,16 +6,28 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    if (!env.SIGNING_SECRET) {
-      return new Response("Server misconfiguration: SIGNING_SECRET is required", { status: 500 });
-    }
     if (!env.ORIGIN_BASE) {
       return new Response("Server misconfiguration: ORIGIN_BASE is required", { status: 500 });
     }
 
+    // Stealth routes: opaque-ID based playlist/chunk/key URLs.
+    // The opaque ID is AES-encrypted at the origin; the Worker cannot (and
+    // must not) verify it — the origin decodes & validates session, UA,
+    // window, abuse, etc. The Worker is a transparent CDN passthrough that
+    // hides the Railway origin and puts an edge in front of every request.
+    const stealthMatch = url.pathname.match(/^\/api\/player\/([^/]+)\/stream\/(window|chunk|secret)\/([^/?#]+)\/?$/);
+    if (stealthMatch) {
+      return proxyStealth(request, env, url, stealthMatch[2], stealthMatch[1]);
+    }
+
+    // Legacy signed routes: /hls /seg /key with HMAC verification.
     const routeMatch = url.pathname.match(/^\/(hls|seg|key)\/([^/]+)(\/.*)?$/);
     if (!routeMatch) {
       return new Response("Not found", { status: 404 });
+    }
+
+    if (!env.SIGNING_SECRET) {
+      return new Response("Server misconfiguration: SIGNING_SECRET is required", { status: 500 });
     }
 
     const routeType = routeMatch[1];
@@ -108,6 +120,76 @@ export default {
     }
   },
 };
+
+// Transparent stealth-route proxy. The origin owns all auth (session, UA,
+// abuse). Worker forwards the request preserving headers (User-Agent, Range,
+// etc.) and streams the response back unchanged.
+async function proxyStealth(request, env, url, kind, publicId) {
+  const upstream = `${env.ORIGIN_BASE.replace(/\/+$/, "")}${url.pathname}${url.search}`;
+  try {
+    // Preserve method, headers (UA must match the originally-bound session),
+    // and request body for any future POST stealth routes.
+    const fwdHeaders = new Headers(request.headers);
+    // Strip CF-internal headers that confuse some origins; let CF re-add what
+    // it needs (cf-connecting-ip, x-real-ip, etc. are added automatically).
+    fwdHeaders.delete("host");
+
+    const upstreamReq = new Request(upstream, {
+      method: request.method,
+      headers: fwdHeaders,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+      redirect: "manual",
+    });
+
+    const originResp = await fetch(upstreamReq);
+
+    // The chunk endpoint currently streams bytes from B2/R2 directly (it does
+    // not 302). If a future origin change starts returning 302, follow it here
+    // so bytes flow Storage → Worker → Browser (same Bandwidth Alliance win
+    // the legacy /seg/ route gets).
+    if (kind === "chunk" && (originResp.status === 302 || originResp.status === 301)) {
+      const location = originResp.headers.get("Location");
+      if (!location) return new Response("Missing redirect location", { status: 502 });
+      const storageResp = await fetch(location, {
+        method: "GET",
+        headers: request.headers.get("range") ? { Range: request.headers.get("range") } : undefined,
+      });
+      const respHeaders = new Headers();
+      // Stealth contract: keep generic content-type, never leak storage origin
+      // hints (e.g. "video/MP2T") that scrapers sniff for.
+      respHeaders.set("Content-Type", "application/octet-stream");
+      const passthrough = ["content-length", "content-range", "accept-ranges"];
+      for (const h of passthrough) {
+        const v = storageResp.headers.get(h);
+        if (v) respHeaders.set(h, v);
+      }
+      respHeaders.set("Access-Control-Allow-Origin", "*");
+      respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
+      respHeaders.set("Cache-Control", "private, no-store, no-cache, max-age=0");
+      respHeaders.set("X-Content-Type-Options", "nosniff");
+      console.log(`[gw] stealth ${kind} ${publicId} -> 302 -> storage ${storageResp.status}`);
+      return new Response(storageResp.body, { status: storageResp.status, headers: respHeaders });
+    }
+
+    // Normal passthrough — origin already set correct headers (no-store,
+    // octet-stream for chunks, application/vnd.apple.mpegurl for window, etc.)
+    const respHeaders = new Headers(originResp.headers);
+    respHeaders.set("Access-Control-Allow-Origin", "*");
+    respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
+
+    console.log(`[gw] stealth ${kind} ${publicId} -> ${originResp.status}`);
+
+    return new Response(originResp.body, {
+      status: originResp.status,
+      headers: respHeaders,
+    });
+  } catch (e) {
+    console.log(`[gw] stealth upstream error: ${e.message}`);
+    return new Response("Upstream error", { status: 502 });
+  }
+}
 
 function corsHeaders() {
   return {
