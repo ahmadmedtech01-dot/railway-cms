@@ -101,16 +101,23 @@ function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): stri
   const id = mintOpaqueId({ s: sid, t: "k", e: exp });
   return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/secret/${id}`;
 }
-// Master playlist URL — opaque ID resolves at request time and emits an
-// HLS master with every variant rewritten to a stealth level URL. Required
-// for the quality selector: a single-variant URL collapses hls.js's level
-// list to one entry, hiding the 360p/480p/720p picker. The opaque ID
-// carries only sid + exp (no variant) — the master content is generated
-// on-demand from the upstream master.m3u8.
+// Master playlist URL — served DIRECTLY from the CMS/Railway origin, NOT via
+// the Cloudflare Worker gateway. Rationale:
+//   1. The master is dynamically generated per-session — no CDN caching benefit.
+//   2. The Worker routing table only includes /hls/, /seg/, /key/, and the
+//      existing /stream/window|chunk|secret/ patterns. Adding /stream/master/
+//      would require a Worker redeploy. Instead, serve it straight from Railway.
+//   3. The embed player iframe is served from the Railway origin, so a
+//      path-only URL resolves correctly in all contexts (LMS embed, share link,
+//      admin preview) without any cross-origin request.
+//
+// The level/chunk/key URLs emitted INSIDE the master response still use
+// buildStealthLevelUrl (→ gateway) so the Worker continues to handle those.
 function buildStealthMasterUrl(publicId: string, sid: string, ttlSec: number): string {
   const exp = bucketExp(Math.max(15, ttlSec));
   const id = mintOpaqueId({ s: sid, t: "m", e: exp });
-  return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/master/${id}`;
+  // Path-only — no gateway prefix. Resolves to Railway CMS origin.
+  return `/api/player/${publicId}/stream/master/${id}`;
 }
 
 // Resolve the first variant playlist subpath from a video's HLS master.

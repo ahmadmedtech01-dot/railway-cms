@@ -1,0 +1,38 @@
+Fix the new playback failure after adding stealth master playlist support.
+
+Current issue:
+Video no longer plays. Browser requests:
+https://video.syanmedtech.com/api/player/:publicId/stream/master/:opaqueId
+
+It returns 404 Not Found, then browser shows CORS error because the 404 response has no Access-Control-Allow-Origin header.
+
+Important:
+The real root problem is 404 route/gateway mismatch, not only CORS.
+
+Investigate and fix these points:
+
+1. Verify where buildStealthMasterUrl(...) generates the master URL.
+2. Verify GET /api/player/:publicId/stream/master/:opaqueId exists in Express routes and is registered before fallback/404 handlers.
+3. Confirm the generated master URL matches the actual reachable route.
+4. If using video.syanmedtech.com / Cloudflare Worker gateway, update the Worker routing so it forwards:
+   /api/player/:publicId/stream/master/:opaqueId
+   /api/player/:publicId/stream/level/:opaqueId
+   /api/player/:publicId/stream/chunk/:opaqueId
+   /api/player/:publicId/stream/secret/:opaqueId
+   to the Railway origin correctly.
+5. If the Worker should not proxy /api/player routes, then buildStealthMasterUrl must use the Railway origin for /api/player/... routes, not video.syanmedtech.com.
+6. Keep one consistent secure URL strategy:
+   - Either all stealth stream routes go through video.syanmedtech.com and Worker supports them
+   - OR all /api/player stream routes go directly to Railway with correct CORS
+   Do not mix old /hls path and new /api/player/stream/master path inconsistently.
+7. Add CORS headers to all error/404 responses from the Worker and Express for video player routes so the browser shows the real error instead of masking it as CORS.
+8. Check /api/player/:publicId/manifest response. It must return the final playable master URL that actually exists and is reachable.
+9. Test directly in browser:
+   GET /api/player/:publicId/stream/master/:opaqueId
+   must return 200 and playlist content, not 404.
+10. The master endpoint response should contain multiple #EXT-X-STREAM-INF entries and rewritten stealth level URLs.
+11. Confirm hls.js can load the master playlist and video starts from “Preparing secure playback”.
+12. Confirm quality selector shows Auto, 360p, 480p, 720p if available.
+13. Confirm seek still works after this fix and does not reintroduce 403 storm.
+
+Do not mark complete until the master URL returns 200 from the same domain used by the player.
