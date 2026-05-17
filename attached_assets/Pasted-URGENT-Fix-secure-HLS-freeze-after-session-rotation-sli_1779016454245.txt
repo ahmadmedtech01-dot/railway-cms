@@ -1,0 +1,132 @@
+URGENT: Fix secure HLS freeze after session rotation / sliding-window mismatch.
+
+Current issue:
+Video freezes around 4:17. Clicking play/resume does nothing.
+Browser console shows repeated 403 Forbidden on HLS chunk requests.
+Server logs show:
+
+- SESSION_ROTATED oldSid -> newSid
+- rotate-session returns 200 with new manifestUrl and new sessionId
+- immediately after rotation, player requests new window/key/chunk
+- one chunk request returns 403
+- later the same chunk succeeds with 200
+- progress sends conflicting windows:
+  {"windowStart":24,"windowEnd":48}
+  then immediately {"windowStart":0,"windowEnd":23}
+
+This means session rotation and sliding-window state are out of sync. The player/server is mixing old SID/window/chunk tokens with new SID/window state.
+
+Do not weaken security.
+Do not disable signed URLs.
+Do not disable session rotation permanently.
+Do not disable Cloudflare Worker.
+Do not bypass secure HLS.
+Do not remove LMS iframe security.
+Do not hardcode admin security settings.
+
+Fix requirements:
+
+1. Rotation must preserve playback position and window
+When /rotate-session creates a new SID, it must preserve:
+- currentTime
+- current segment index
+- current windowStart/windowEnd
+- allowed overlap window
+- playback position from old session
+
+Do not reset window to 0 after rotation unless playback is actually near segment 0.
+
+2. Client must update active SID atomically
+In embed-player.tsx:
+- after rotate-session response, replace active sessionId/SID everywhere
+- replace manifestUrl everywhere
+- clear old manifest/window/chunk token refs
+- do not continue requesting old window/chunk URLs after rotation
+- do not keep two HLS manifests active at the same time
+- do not create duplicate HLS instance during rotation
+- if HLS must reload manifest, preserve currentTime and resume from same position
+
+3. Add overlap grace for old SID after rotation
+Server should keep old SID valid for a short overlap grace period, e.g. 30–60 seconds, only for already-issued chunk/key/window tokens.
+
+During overlap:
+- old SID chunk/key requests should not instantly 403
+- old SID must not mint new long-term playback
+- old SID must not bypass revoked/blocked state
+- only allow existing window/chunk/key tokens within expiry/grace
+
+This prevents hls.js from failing while it still has old fragment requests in flight.
+
+4. Fix sliding-window update conflict
+Progress/heartbeat/window logic must not send conflicting window updates after rotation.
+
+Current bad behavior:
+- progress says windowStart 24–48
+- immediately another progress says windowStart 0–23
+
+Fix:
+- after rotation, server/client must continue from current segment index, not reset to 0
+- ignore stale progress requests from old session/SID
+- include SID in progress/heartbeat payload if missing
+- server should reject or ignore stale old-SID progress updates without changing new session window
+- progress update must be monotonic around current playback position
+- do not allow old background interval to update window after new SID is active
+
+5. Prevent duplicate intervals after rotation
+On rotate-session:
+- clear old progress interval
+- clear old heartbeat interval
+- clear old ping/global-lock interval if tied to old session
+- restart only one interval set with new SID
+- use refs to ensure only one active timer exists
+
+6. HLS recovery on 403
+When hls.js gets 403 on segment/chunk:
+- do not permanently freeze
+- attempt silent session refresh/rotation once
+- reload manifest
+- resume at last known currentTime
+- if retry succeeds, continue playback
+- only show error if retry fails repeatedly
+
+7. Do not treat one 403 during rotation as security violation
+If 403 occurs within rotation overlap window:
+- treat as recoverable stale-token error
+- do not increment violation count
+- do not revoke session
+- do not block user
+- do not show security overlay
+
+Only treat 403 as real security issue if:
+- server explicitly says blocked/revoked
+- token signature invalid outside grace
+- repeated 403 after successful refresh
+- abuse/velocity rules are triggered
+
+8. Add safe debug logs behind SECURE_PLAYER_DEBUG=true
+Log masked values only:
+- oldSid -> newSid
+- currentTime during rotation
+- oldWindow -> newWindow
+- segmentIndex
+- stale progress ignored
+- old SID overlap accepted/denied
+- HLS 403 recovery attempted/succeeded/failed
+
+Never log:
+- SIGNING_SECRET
+- full token
+- full signed URL
+- storage credentials
+
+Acceptance criteria:
+- Video does not freeze at 4:17 or after session rotation.
+- After rotate-session, no immediate unrecovered 403 chunk failure.
+- Old in-flight chunks during rotation do not break playback.
+- Progress/window does not reset from 24–48 to 0–23.
+- Only one HLS instance exists.
+- Only one heartbeat/progress interval exists.
+- Shareable link works.
+- LMS iframe works.
+- Admin preview works.
+- Security remains active.

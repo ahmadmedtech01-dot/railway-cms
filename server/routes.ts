@@ -2887,7 +2887,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Progress endpoint — player reports current segment for window tracking ───
   app.post("/api/stream/:publicId/progress", async (req: any, res: any) => {
     try {
-      const { sid, segmentIndex, currentTime } = req.body;
+      const { sid, segmentIndex, currentTime, seekTo } = req.body;
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
       await getSessionAsync(sid);
@@ -2904,7 +2904,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       if (idx >= 0) {
-        updateProgress(sid, idx);
+        // seekTo: explicit re-anchor (user seek or rotation-completion). Allows
+        // backward movement. Otherwise the update is monotonic-forward only,
+        // ignoring stale/racy progress posts whose currentTime briefly read 0
+        // during a post-rotation MSE re-attach.
+        updateProgress(sid, idx, seekTo === true);
       }
 
       const { start, end } = getWindowRange(sid);

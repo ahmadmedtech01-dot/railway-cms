@@ -1262,10 +1262,30 @@ export function buildStableKeyUrl(baseUrl: string, sid: string, session: VideoSe
   return `${fullUrl}${sep}sid=${encodeURIComponent(sid)}&st=${encodeURIComponent(session.keySig)}&exp=${session.keyExp}`;
 }
 
-export function updateProgress(sid: string, segmentIndex: number): boolean {
+// Update the session's playback position.
+//
+// `seekTo=false` (periodic/heartbeat progress reports): monotonic-forward only.
+//   Any post carrying a segmentIndex *behind* the current one is ignored. This
+//   defends against the post-rotation race where `hls.loadSource(newUrl)`
+//   briefly flushes MSE → `video.currentTime` momentarily reads 0 → a
+//   periodic progress interval fires with the NEW sid and would otherwise
+//   reset the freshly-rotated session's window from [start,end] back to
+//   [0, windowSegs]. The subsequent in-flight chunk for the real position
+//   then trips `out_of_window` and freezes hls.js.
+//
+// `seekTo=true` (explicit seek by the user, or a rotation-completion post
+// re-anchoring to a known-good position): allowed to move backward. Callers
+// must only set this flag for intentional re-positioning.
+export function updateProgress(sid: string, segmentIndex: number, seekTo: boolean = false): boolean {
   const s = sessions.get(sid);
   if (!s || s.revoked) return false;
-  s.currentSegmentIndex = Math.max(0, segmentIndex);
+  const clamped = Math.max(0, segmentIndex);
+  if (seekTo) {
+    s.currentSegmentIndex = clamped;
+  } else {
+    // Forward-only — never regress the window from a stale or racy report.
+    s.currentSegmentIndex = Math.max(s.currentSegmentIndex, clamped);
+  }
   s.lastProgressAt = Date.now();
   return true;
 }

@@ -971,6 +971,14 @@ export default function EmbedPlayerPage(props: any = {}) {
                       isRotatingRef.current = false;
                       const resumeAt = pendingMessageSeekRef.current ?? savedTime;
                       if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
+                      // MANIFEST_PARSED never fired — re-anchor progress
+                      // ourselves so the (preserved) sliding window matches
+                      // wherever we actually resumed playback.
+                      fetch(`/api/stream/${publicId}/progress`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt, seekTo: true }),
+                      }).catch(() => {});
                       if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                     }
                   }, 15000);
@@ -1002,7 +1010,10 @@ export default function EmbedPlayerPage(props: any = {}) {
                     fetch(`/api/stream/${publicId}/progress`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt }),
+                      // seekTo:true — this is an authoritative re-anchor after
+                      // rotation. Allow it to move the server's window backward
+                      // if savedTime is slightly behind the preserved index.
+                      body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt, seekTo: true }),
                     }).catch(() => {});
                   });
                 } else {
@@ -1098,12 +1109,31 @@ export default function EmbedPlayerPage(props: any = {}) {
                       const nextUrl = (rd.stealth && rd.stealth.enabled && rd.stealth.streamUrl) ? rd.stealth.streamUrl : rd.manifestUrl;
                       hls.loadSource(nextUrl);
                       const vid = videoRef.current;
+                      // refresh-token mints a BRAND-NEW session whose
+                      // currentSegmentIndex is initialised to 0 (unlike
+                      // rotate-session, which spreads the old session and
+                      // preserves the index). Without an authoritative
+                      // re-anchor here the new session's sliding window
+                      // stays at [0, windowSegs], and the player's first
+                      // chunk request for the resumed position will trip
+                      // out_of_window 403. The post below uses seekTo:true
+                      // so it is accepted even though it moves the index
+                      // "forward" from 0 to resumeAt.
+                      const reanchorProgress = (resumeAt: number) => {
+                        if (!publicId) return;
+                        fetch(`/api/stream/${publicId}/progress`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt, seekTo: true }),
+                        }).catch(() => {});
+                      };
                       const refreshSafetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
                         if (isRotatingRef.current) {
                           isRotatingRef.current = false;
                           const resumeAt = pendingMessageSeekRef.current ?? savedTime;
                           if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
+                          reanchorProgress(resumeAt);
                           if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                         }
                       }, 15000);
@@ -1117,6 +1147,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                           vid.currentTime = resumeAt;
                           vid.play().catch(() => {});
                         }
+                        reanchorProgress(resumeAt);
                         if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                       });
                     } else {
@@ -1254,6 +1285,17 @@ export default function EmbedPlayerPage(props: any = {}) {
       const v = videoRef.current;
       const currentSid = streamSidRef.current;
       if (!v || v.paused || !currentSid) return;
+      // Skip while a rotation is in-flight. `hls.loadSource(newUrl)` briefly
+      // flushes MSE, during which `v.currentTime` can read 0 — posting that
+      // would (pre-monotonic-server-fix) reset the new session's sliding
+      // window to [0, windowSegs] and cause the next chunk to 403 with
+      // out_of_window, freezing playback. Server is now also forward-only,
+      // but suppressing the post here avoids a needless round-trip.
+      if (isRotatingRef.current) return;
+      // Defensive: even on the same SID, a near-zero currentTime during the
+      // earliest moments after attach is not a real playback position.
+      // Genuine seeks to 0 go through performLocalSeek with seekTo:true.
+      if (!(v.currentTime > 0.25)) return;
       fetch(`/api/stream/${publicId}/progress`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1562,6 +1604,13 @@ export default function EmbedPlayerPage(props: any = {}) {
                       hls.startLoad(resumeAt);
                       v.currentTime = resumeAt;
                       v.play().catch(() => {});
+                      // MANIFEST_PARSED never fired — re-anchor progress so
+                      // the sliding window matches the resume position.
+                      fetch(`/api/stream/${publicId}/progress`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ sid: data.sessionId, currentTime: resumeAt, seekTo: true }),
+                      }).catch(() => {});
                       if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                     }
                   }, 15000);
@@ -1577,7 +1626,10 @@ export default function EmbedPlayerPage(props: any = {}) {
                     fetch(`/api/stream/${publicId}/progress`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ sid: data.sessionId, currentTime: resumeAt }),
+                      // seekTo:true — authoritative re-anchor after the
+                      // pause-resume rotation (see comment at the other
+                      // rotation-completion progress post).
+                      body: JSON.stringify({ sid: data.sessionId, currentTime: resumeAt, seekTo: true }),
                     }).catch(() => {});
                   });
                 } else {
