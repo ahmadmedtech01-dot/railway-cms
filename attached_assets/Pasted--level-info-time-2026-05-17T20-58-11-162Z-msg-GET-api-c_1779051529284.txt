@@ -1,0 +1,29 @@
+{"level":"info","time":"2026-05-17T20:58:11.162Z","msg":"GET /api/config/content-security 304 0ms","requestId":"14134904","method":"GET","url":"/api/config/content-security","status":304,"duration":0}
+[Session] check-session: OK (sessionId match) {
+  userId: 'cdf17969-35f4-4f91-bfe7-17cd76f49b6f',
+  sessionId: '812db7ae-6da5-430d-b85d-c228dff9ad55'
+}
+{"level":"info","time":"2026-05-17T20:58:11.294Z","msg":"POST /api/auth/check-session 200 433ms","requestId":"1770a7fd","method":"POST","url":"/api/auth/check-session","status":200,"duration":433}
+{"level":"info","time":"2026-05-17T20:58:11.564Z","msg":"GET /api/security/global-lock 304 408ms","requestId":"218f5f00","method":"GET","url":"/api/security/global-lock","status":304,"duration":408}
+{"level":"info","time":"2026-05-17T20:58:11.615Z","msg":"GET /api/video-analytics/activity?courseId=b489af65-7dd8-464b-80e2-ddd860e23c4c 304 437ms","requestId":"8d6a445e","method":"GET","url":"/api/video-analytics/activity?courseId=b489af65-7dd8-464b-80e2-ddd860e23c4c","status":304,"duration":437}
+{"level":"info","time":"2026-05-17T20:58:11.888Z","msg":"GET /api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c 304 712ms","requestId":"5f200c8f","method":"GET","url":"/api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c","status":304,"duration":712}
+{"level":"info","time":"2026-05-17T20:58:12.397Z","msg":"GET /api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/curriculum 304 1223ms","requestId":"e0d4d51d","method":"GET","url":"/api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/curriculum","status":304,"duration":1223}
+{"level":"info","time":"2026-05-17T20:58:13.131Z","msg":"GET /api/security/status?moduleType=video 304 402ms","requestId":"02e81c3c","method":"GET","url":"/api/security/status?moduleType=video","status":304,"duration":402}
+{"level":"info","time":"2026-05-17T20:58:13.160Z","msg":"GET /api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/topics/6ba09cae-2a9a-444c-beff-fff1b5271d94/content 200 1983ms","requestId":"9bec7076","method":"GET","url":"/api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/topics/6ba09cae-2a9a-444c-beff-fff1b5271d94/content","status":200,"duration":1983}
+{"level":"info","time":"2026-05-17T20:58:13.901Z","msg":"POST /api/video-analytics/activity 200 420ms","requestId":"9c0d7e18","method":"POST","url":"/api/video-analytics/activity","status":200,"duration":420}
+{"level":"info","time":"2026-05-17T20:58:13.950Z","msg":"GET /api/security/global-lock 304 423ms","requestId":"2bb4e595","method":"GET","url":"/api/security/global-lock","status":304,"duration":423}
+[Embed Token] Minting embed token for publicId=uIjtPm_JyD, userId=cdf17969-35f4-4f91-bfe7-17cd76f49b6f
+Menu
+[Embed Token] Payload: {"iss":"syan-lms","aud":"cms-player","sub":"cdf17969-35f4-4f91-bfe7-17cd76f49b6f","publicId":"uIjtPm_JyD","iat":1779051495,"exp":1779051795,"jti":"d3b9bb89-795b-4cd5-8a85-ee3c34674438","name":"Ahmad","email":"ahmadmsa488@gmail.com"}
+[Embed Token] Token structure: payloadB64Len=310, sigLen=64, secretPrefix=176753af...
+[Embed Token] Mint URL: https://railway-cms-production.up.railway.app/api/integrations/player/uIjtPm_JyD/mint
+[Embed Token] Using Origin header: https://complete-video-hr-syan-exams-test-final-dww7.onrender.com
+{"level":"info","time":"2026-05-17T20:58:16.569Z","msg":"GET /api/security/global-lock 304 406ms","requestId":"8576549a","method":"GET","url":"/api/security/global-lock","status":304,"duration":406}
+[Embed Token] CMS status: 200
+[Embed Token] CMS response keys: ok,integrationSessionId,embedToken,expiresIn,manifestUrl,refreshUrl,pingUrl,eventUrl,metadata,playerConfig
+[Embed Token] Success: publicId=uIjtPm_JyD, tokenLen=541, hasManifest=true
+{"level":"info","time":"2026-05-17T20:58:17.773Z","msg":"POST /api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/embed-token 200 4303ms","requestId":"995112f4","method":"POST","url":"/api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/embed-token","status":200,"duration":4303}
+{"level":"info","time":"2026-05-17T20:58:18.966Z","msg":"GET /api/security/global-lock 304 421ms","requestId":"a44b04f0","method":"GET","url":"/api/security/global-lock","status":304,"duration":421}
+{"level":"info","time":"2026-05-17T20:58:21.536Z","msg":"GET /api/security/global-lock 304 378ms","requestId":"21b722fa","method":"GET","url":"/api/security/global-lock","status":304,"duration":378}
+{"level":"info","time":"2026-05-17T20:58:23.890Z","msg":"GET /api/security/global-lock 304 379ms","requestId":"87e8c7a9","method":"GET","url":"/api/security/global-lock","status":304,"duration":379}
+{"level":"info","time":"2026-05-17T20:58:26.561Z","msg":"GET /api/security/global-lock 304 396ms","requestId":"8e350e7f","method":"GET","url":"/api/security/global-lock","status":304,"duration":396}
