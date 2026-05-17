@@ -1,0 +1,86 @@
+Issue is still not fixed.
+
+Logs still show duplicate/conflicting progress POSTs after seek:
+
+Example:
+5:02:46 targetSegmentIndex 22
+5:02:46 targetSegmentIndex 0
+5:02:49 targetSegmentIndex 21
+5:02:49 targetSegmentIndex 0
+5:02:53 targetSegmentIndex 20
+5:02:53 targetSegmentIndex 0
+
+Later:
+5:03:36 targetSegmentIndex 23
+5:03:36 targetSegmentIndex 8
+5:03:39 targetSegmentIndex 20
+5:03:39 targetSegmentIndex 8
+5:03:41 targetSegmentIndex 24
+
+So the previous client-only fix removed one duplicate path, but another stale progress sender is still active.
+
+Do not change server security, signed URLs, Worker, EVENT playlist, or session binding.
+
+Find every place in frontend that calls:
+/api/stream/:publicId/progress
+
+Do a full grep/search for:
+- "/progress"
+- "sendProgress"
+- "updateProgress"
+- "seekTo"
+- "targetSegmentIndex"
+- "currentTime"
+- "timeupdate"
+- "seeking"
+- "seeked"
+- "heartbeat"
+
+Requirement:
+There must be exactly ONE centralized function allowed to POST progress.
+
+All progress calls must go through:
+sendProgress(reason, currentTime, options)
+
+Add required payload:
+{
+  sessionId,
+  playbackEpoch,
+  reason,
+  currentTime,
+  targetSegmentIndex,
+  source: "interval" | "seek" | "heartbeat" | "ended" | "visibility" | "manual"
+}
+
+Then add client-side guard:
+- if source is interval and isSeekingRef is true, skip
+- if capturedEpoch !== playbackEpochRef.current, skip
+- if Date.now() - lastProgressSentAt < 800ms, skip duplicate unless reason is "seek"
+- if lastSentSegmentIndex equals current segment and reason is not important, skip
+- if currentTime is 0 but video.currentTime is not actually near 0, block stale zero progress
+- heartbeat must not send progress separately with old time
+- native timeupdate must not POST progress directly
+- seeked event must not POST twice if manual seek already posted
+
+Also check duplicate component mount:
+- Add mountIdRef random id.
+- Log mount/unmount.
+- Ensure only one EmbedPlayer instance is mounted.
+- Ensure progress interval is global per player instance and cleared on unmount.
+
+Add debug logs behind VITE_SECURE_PLAYER_DEBUG:
+- source of every progress call
+- currentTime
+- targetSegmentIndex
+- playbackEpoch
+- mountId
+- skipped reason
+
+Expected after fix:
+- One seek gesture = one progress POST with reason "seek".
+- No alternating targetSegmentIndex values in same second.
+- No segment 0 progress after user is at segment 20+.
+- Backward seek works on first click.
+- Forward seek works after backward seek.
+- No permanent spinner.
+- Canceled XHRs during seek are ignored.

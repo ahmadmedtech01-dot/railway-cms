@@ -252,6 +252,122 @@ export default function EmbedPlayerPage(props: any = {}) {
   // Enable in dev or by setting `VITE_SECURE_PLAYER_DEBUG=true`.
   const SECURE_PLAYER_DEBUG = (import.meta as any).env?.VITE_SECURE_PLAYER_DEBUG === "true" || (import.meta as any).env?.DEV === true;
   const sdbg = (...args: any[]) => { if (SECURE_PLAYER_DEBUG) console.debug("[player]", ...args); };
+  // ── MOUNT IDENTITY ──────────────────────────────────────────────────
+  // Random per-mount id used in every debug log line. If two players are
+  // mounted (e.g. duplicate iframe, double-included on LMS page) the same
+  // backend SID will receive POSTs tagged with two different mountIds.
+  // Mount/unmount lifecycle is logged so the user can see if the same
+  // EmbedPlayer was mounted twice from a single render tree.
+  const mountIdRef = useRef<string>("");
+  if (!mountIdRef.current) {
+    mountIdRef.current = (typeof crypto !== "undefined" && (crypto as any).randomUUID)
+      ? (crypto as any).randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  }
+  // ── CENTRAL PROGRESS DISPATCH ───────────────────────────────────────
+  // EVERY POST to /api/stream/:publicId/progress MUST go through here.
+  // No other call-site is allowed to issue the request directly. This
+  // guarantees one chokepoint for: dedup window, same-segment suppression,
+  // stale-zero guard, epoch staleness check, seek-guard skip, abort, and
+  // debug logging. Returns the fetch Promise (resolved void) so callers
+  // that need to await (e.g. the pre-seek post) can chain a timeout race.
+  const SEGMENT_DURATION_SEC = 2;
+  const PROGRESS_DEDUP_WINDOW_MS = 800;
+  const lastProgressSentAtRef = useRef<number>(0);
+  const lastSentSegmentIdxRef = useRef<number>(-1);
+  type ProgressReason =
+    | "interval"        // 10s periodic loop
+    | "seek"            // user-initiated seek (scrubber / skip / postMessage / native)
+    | "rotation"        // rotate-session re-anchor after MANIFEST_PARSED / safetyTimer
+    | "refresh"         // refresh-token re-anchor (brand-new session)
+    | "seek-recovery"   // 403-after-seek lightweight recovery
+    | "pause-resume"    // long-pause rotation re-anchor
+    | "manual";         // reportProgressNow caller
+  interface SendProgressOpts {
+    seekTo?: boolean;
+    sid?: string;
+    epoch?: number;
+    signal?: AbortSignal;
+  }
+  const sendProgress = (reason: ProgressReason, currentTime: number, opts?: SendProgressOpts): Promise<void> => {
+    if (!publicId) return Promise.resolve();
+    const sid = opts?.sid ?? streamSidRef.current;
+    if (!sid) { sdbg("sendProgress skip — no sid", { reason }); return Promise.resolve(); }
+    const epoch = opts?.epoch ?? playbackEpochRef.current;
+    const mountId = mountIdRef.current;
+    const isAuthoritative = reason === "seek" || reason === "rotation" || reason === "refresh" || reason === "seek-recovery" || reason === "pause-resume";
+
+    // 1. Interval ticks must yield to active seeks. The seek POST has
+    //    already published the authoritative new currentTime; an interval
+    //    tick at this moment would either read a transitional value or
+    //    the OLD position pre-seek.
+    if (reason === "interval" && isSeekingRef.current) {
+      sdbg("sendProgress skip — interval while seeking", { mountId });
+      return Promise.resolve();
+    }
+    // 2. Interval ticks must skip while a session rotation is in-flight
+    //    (MSE is being flushed; v.currentTime can transiently read 0).
+    if (reason === "interval" && isRotatingRef.current) {
+      sdbg("sendProgress skip — interval while rotating", { mountId });
+      return Promise.resolve();
+    }
+    // 3. STALE-ZERO GUARD. If a non-authoritative caller (interval /
+    //    manual / heartbeat) passes currentTime≈0 while the video
+    //    element is actually positioned well past zero, that POST would
+    //    reset the server's sliding window to [0, windowSegs] and
+    //    produce the "alternating idx 22 / idx 0" pattern the user
+    //    reported. Drop it.
+    //    SCOPING: only applied to NON-authoritative reasons. The seek /
+    //    rotation / refresh / pause-resume paths POST progress BEFORE
+    //    setting v.currentTime to the new target, so at the moment a
+    //    legitimate seek-to-0 (e.g. replay-from-end) fires, the video
+    //    element still reads the OLD high currentTime. Blocking those
+    //    would silently break replay-from-end. The authoritative
+    //    re-anchor handlers protect themselves by always passing a
+    //    sensible `resumeAt` (pendingMessageSeekRef ?? savedTime), and
+    //    the dedup / same-segment guards still keep them honest.
+    if (!isAuthoritative) {
+      const v = videoRef.current;
+      if (currentTime < 0.5 && v && v.currentTime > 1) {
+        sdbg("sendProgress BLOCK — stale zero (non-authoritative)", { reason, passed: currentTime, real: v.currentTime, mountId });
+        return Promise.resolve();
+      }
+    }
+    // 4. Dedup window for non-seek reasons. Two POSTs within 800ms are
+    //    almost certainly the same gesture being double-reported.
+    const now = Date.now();
+    if (!isAuthoritative && now - lastProgressSentAtRef.current < PROGRESS_DEDUP_WINDOW_MS) {
+      sdbg("sendProgress skip — dedup window", { reason, sinceLastMs: now - lastProgressSentAtRef.current, mountId });
+      return Promise.resolve();
+    }
+    // 5. Same-segment dedup for interval ticks. The server's sliding
+    //    window only advances at segment boundaries, so two interval
+    //    ticks reporting the same segment idx are pure noise.
+    const segIdx = Math.floor(Math.max(0, currentTime) / SEGMENT_DURATION_SEC);
+    if (reason === "interval" && segIdx === lastSentSegmentIdxRef.current) {
+      sdbg("sendProgress skip — same segment", { reason, segIdx, mountId });
+      return Promise.resolve();
+    }
+    // 6. Epoch staleness for non-authoritative sends. Authoritative
+    //    sends carry their own epoch by design and must always go out.
+    if (!isAuthoritative && epoch !== playbackEpochRef.current) {
+      sdbg("sendProgress skip — stale epoch", { reason, capturedEpoch: epoch, current: playbackEpochRef.current, mountId });
+      return Promise.resolve();
+    }
+
+    lastProgressSentAtRef.current = now;
+    lastSentSegmentIdxRef.current = segIdx;
+    const body: any = { sid, currentTime, epoch, reason, mountId };
+    if (opts?.seekTo) body.seekTo = true;
+    sdbg("sendProgress →", { reason, currentTime: Number(currentTime.toFixed(2)), segIdx, epoch, mountId });
+
+    return fetch(`/api/stream/${publicId}/progress`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: opts?.signal,
+    }).then(() => undefined).catch(() => undefined);
+  };
   // Set to true when the video element fires "ended". Cleared whenever a seek
   // or replay resets the position. Prevents the progress interval from
   // sending the end-of-video position after playback finishes, which would
@@ -300,11 +416,7 @@ export default function EmbedPlayerPage(props: any = {}) {
     // Safety fallback — `seeked`/`playing` can be deferred or skipped under
     // network stall. Hard-clear after 1s so the periodic loop resumes.
     const guardTimer = setTimeout(clearGuard, 1000);
-    const req = fetch(`/api/stream/${publicId}/progress`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sid, currentTime, seekTo: true, epoch }),
-    }).then(() => undefined).catch(() => undefined);
+    const req = sendProgress("seek", currentTime, { sid, epoch, seekTo: true });
     return Promise.race([
       req,
       new Promise<void>(resolve => setTimeout(resolve, SEEK_PROGRESS_TIMEOUT_MS)),
@@ -1117,12 +1229,11 @@ export default function EmbedPlayerPage(props: any = {}) {
                       if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
                       // MANIFEST_PARSED never fired — re-anchor progress
                       // ourselves so the (preserved) sliding window matches
-                      // wherever we actually resumed playback.
-                      fetch(`/api/stream/${publicId}/progress`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt, seekTo: true }),
-                      }).catch(() => {});
+                      // wherever we actually resumed playback. Authoritative
+                      // re-anchor for the new session, routed through the
+                      // central sendProgress dispatcher (which applies the
+                      // stale-zero guard before sending).
+                      sendProgress("rotation", resumeAt, { sid: rd.sessionId, seekTo: true });
                       if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                     }
                   }, 15000);
@@ -1151,14 +1262,10 @@ export default function EmbedPlayerPage(props: any = {}) {
                     if (pendingMessageSeekRef.current !== null) {
                       applyPendingSeek();
                     }
-                    fetch(`/api/stream/${publicId}/progress`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      // seekTo:true — this is an authoritative re-anchor after
-                      // rotation. Allow it to move the server's window backward
-                      // if savedTime is slightly behind the preserved index.
-                      body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt, seekTo: true }),
-                    }).catch(() => {});
+                    // Authoritative re-anchor after rotation. Routed through
+                    // sendProgress so the stale-zero guard catches the case
+                    // where savedTime was captured before a later user seek.
+                    sendProgress("rotation", resumeAt, { sid: rd.sessionId, seekTo: true });
                   });
                 } else {
                   triggerDenial(sig);
@@ -1245,11 +1352,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                   const target = videoRef.current?.currentTime ?? 0;
                   seekRecoveryCountRef.current += 1;
                   if (sid && publicId) {
-                    fetch(`/api/stream/${publicId}/progress`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ sid, currentTime: target, seekTo: true }),
-                    }).catch(() => {}).then(() => {
+                    sendProgress("seek-recovery", target, { sid, seekTo: true }).then(() => {
                       try { hls.stopLoad(); } catch {}
                       try { hls.startLoad(target); } catch {}
                       videoRef.current?.play().catch(() => {});
@@ -1297,12 +1400,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                       // so it is accepted even though it moves the index
                       // "forward" from 0 to resumeAt.
                       const reanchorProgress = (resumeAt: number) => {
-                        if (!publicId) return;
-                        fetch(`/api/stream/${publicId}/progress`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ sid: rd.sessionId, currentTime: resumeAt, seekTo: true }),
-                        }).catch(() => {});
+                        sendProgress("refresh", resumeAt, { sid: rd.sessionId, seekTo: true });
                       };
                       const refreshSafetyTimer = setTimeout(() => {
                         if (opId !== rotationOpIdRef.current) return;
@@ -1517,17 +1615,9 @@ export default function EmbedPlayerPage(props: any = {}) {
       const ac = new AbortController();
       progressAbortRef.current = ac;
       const currentTime = v.currentTime;
-      sdbg("progress sent", { currentTime, epoch: capturedEpoch });
-      fetch(`/api/stream/${publicId}/progress`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sid: currentSid,
-          currentTime,
-          epoch: capturedEpoch,
-        }),
-        signal: ac.signal,
-      }).catch(() => {});
+      // Route through central sendProgress so dedup, same-segment skip,
+      // and stale-zero guards all apply uniformly with every other site.
+      sendProgress("interval", currentTime, { sid: currentSid, epoch: capturedEpoch, signal: ac.signal });
     }, 10000);
     return () => {
       if (progressIntervalRef.current) {
@@ -1610,6 +1700,20 @@ export default function EmbedPlayerPage(props: any = {}) {
         msGuardCleanupRef.current = null;
       }
     };
+  }, []);
+
+  // ── MOUNT LIFECYCLE LOG ────────────────────────────────────────────
+  // Emits a single MOUNT log on first render and a single UNMOUNT log on
+  // teardown, both tagged with the per-instance mountId. If you ever see
+  // TWO different mountIds posting to the same publicId at the same time
+  // in the network panel, that confirms a duplicate iframe / double-include
+  // on the host page — not a stale callback inside one instance.
+  useEffect(() => {
+    sdbg("MOUNT", { mountId: mountIdRef.current, publicId });
+    return () => {
+      sdbg("UNMOUNT", { mountId: mountIdRef.current, publicId });
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Pause video immediately when violation cooldown block is triggered
@@ -1863,11 +1967,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                       v.play().catch(() => {});
                       // MANIFEST_PARSED never fired — re-anchor progress so
                       // the sliding window matches the resume position.
-                      fetch(`/api/stream/${publicId}/progress`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ sid: data.sessionId, currentTime: resumeAt, seekTo: true }),
-                      }).catch(() => {});
+                      sendProgress("pause-resume", resumeAt, { sid: data.sessionId, seekTo: true });
                       if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                     }
                   }, 15000);
@@ -1880,14 +1980,10 @@ export default function EmbedPlayerPage(props: any = {}) {
                     v.currentTime = resumeAt;
                     v.play().catch(() => {});
                     if (pendingMessageSeekRef.current !== null) applyPendingSeek();
-                    fetch(`/api/stream/${publicId}/progress`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      // seekTo:true — authoritative re-anchor after the
-                      // pause-resume rotation (see comment at the other
-                      // rotation-completion progress post).
-                      body: JSON.stringify({ sid: data.sessionId, currentTime: resumeAt, seekTo: true }),
-                    }).catch(() => {});
+                    // Authoritative re-anchor after the pause-resume
+                    // rotation. Routed through sendProgress for guard
+                    // uniformity.
+                    sendProgress("pause-resume", resumeAt, { sid: data.sessionId, seekTo: true });
                   });
                 } else {
                   v.play().catch(() => {});
@@ -1913,13 +2009,7 @@ export default function EmbedPlayerPage(props: any = {}) {
   };
 
   const reportProgressNow = (time: number) => {
-    const sid = streamSidRef.current;
-    if (!sid || !publicId) return;
-    fetch(`/api/stream/${publicId}/progress`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sid, currentTime: time }),
-    }).catch(() => {});
+    sendProgress("manual", time);
   };
 
   // Shared seek routine. Routes ALL local seek interactions (skip buttons,
