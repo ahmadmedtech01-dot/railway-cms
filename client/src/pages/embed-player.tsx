@@ -185,6 +185,16 @@ export default function EmbedPlayerPage(props: any = {}) {
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const popIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const rotationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // P3: unified tick loop — replaces progress/heartbeat/ping intervals.
+  const tickIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const tickCounterRef = useRef(0);
+  const secondsWatchedRef = useRef(0);
+  const sessionCodeRef = useRef<string | null>(null);
+  const finalTickFiredRef = useRef(false);
+  // Exposes the unified tick's "fire a final tick" callback so the pause/end
+  // handlers (which live in a different useEffect) can trigger an analytics
+  // flush via sendBeacon without re-creating their own copy of the loop.
+  const fireFinalTickRef = useRef<(() => void) | null>(null);
   const controlsTimerRef = useRef<NodeJS.Timeout | null>(null);
   const devToolsCheckRef = useRef<NodeJS.Timeout | null>(null);
   const devToolsOpenRef = useRef(false);
@@ -926,21 +936,11 @@ export default function EmbedPlayerPage(props: any = {}) {
             : Promise.resolve().then(() => { setSecurityReady(true); }),
         ]);
 
-        // Session ping is analytics-only — fire-and-forget so it does NOT
-        // block the hls.loadSource() call below. Previously this was awaited,
-        // adding a full Railway round-trip (~700ms) between manifest fetch
-        // and HLS attach, contributing directly to the 5-6s initial start
-        // delay the user reported.
-        fetch(`/api/player/${publicId}/ping`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...(referrer ? { "x-embed-referrer": referrer } : {}) },
-          body: JSON.stringify({}),
-        }).then(async pingRes => {
-          if (pingRes.ok) {
-            const pingData = await pingRes.json().catch(() => null);
-            if (pingData?.sessionCode) setSessionCode(pingData.sessionCode);
-          }
-        }).catch(() => {});
+        // P3: session ping is now folded into the unified /tick loop —
+        // the first tick (n=1) forces include=["progress","ping"] which
+        // mints the sessionCode server-side and returns it in the response.
+        // We no longer fire a separate /ping at init, which removes one
+        // Railway round-trip from the player startup path.
 
         // Stealth Protected Playback Mode: when enabled, the server returns
         // an opaque stream URL (/api/player/:publicId/stream/window/<opaqueId>)
@@ -1535,156 +1535,200 @@ export default function EmbedPlayerPage(props: any = {}) {
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
       if (popIntervalRef.current) clearInterval(popIntervalRef.current);
       if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
+      if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
     };
   }, [publicId, token, retryKey]);
 
-  // Ping interval — analytics-only, throttled to 60s (was 30s).
-  // The 10-second /api/stream/:publicId/progress timer below already extends
-  // the server-side sliding-window and reports currentTime. This /ping call
-  // exists ONLY to record session-level analytics (sessionCode + total
-  // secondsWatched). Reducing it from 30s → 60s halves the per-session
-  // request rate without losing meaningful analytics resolution. Kills one
-  // of the duplicated request paths the user flagged in the LMS profile.
-  useEffect(() => {
-    if (!sessionCode) return;
-    pingIntervalRef.current = setInterval(() => {
-      fetch(`/api/player/${publicId}/ping`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionCode, secondsWatched }),
-      }).catch(() => {});
-    }, 60000);
-    return () => { if (pingIntervalRef.current) clearInterval(pingIntervalRef.current); };
-  }, [sessionCode, secondsWatched, publicId]);
+  // P3: keep refs synced so the unified tick effect can read the latest
+  // values without listing them as effect deps (would re-create the timer
+  // every second as secondsWatched ticks up).
+  useEffect(() => { secondsWatchedRef.current = secondsWatched; }, [secondsWatched]);
+  useEffect(() => { sessionCodeRef.current = sessionCode || null; }, [sessionCode]);
 
-  // Progress reporting for sliding window — every 10 seconds.
+  // ── UNIFIED TICK LOOP (P3) ────────────────────────────────────────────
+  // Consolidates the former /progress (20s), /heartbeat (~30s), and /ping
+  // (60s) intervals into a single 20s tick that POSTs /api/player/:pub/tick.
   //
-  // SINGLE-LOOP INVARIANT: there is exactly one progress interval alive at
-  // any time. Effect cleanup tears down the timer AND nulls the ref, and
-  // the effect body explicitly clears any pre-existing interval before
-  // creating a new one (defensive — under React StrictMode the effect
-  // body can run before the previous cleanup in some hot-reload paths).
+  // Per-subsystem cadence is controlled by a counter:
+  //   tick 1: progress
+  //   tick 2: progress + heartbeat                     (~40s after start)
+  //   tick 3: progress           + ping                (~60s after start)
+  //   tick 4: progress + heartbeat
+  //   tick 5: progress
+  //   tick 6: progress + heartbeat + ping              (every 60s thereafter)
   //
-  // STALE-EPOCH SKIP: every tick captures `playbackEpochRef.current` BEFORE
-  // any async work, then re-checks immediately before the fetch dispatch.
-  // If a seek has incremented the epoch in the meantime, the tick is
-  // discarded — preventing the duplicated `targetSegmentIndex 5 / 41 / 5
-  // / 41` pattern caused by an old interval closure beating the seek POST
-  // to the server.
+  // Net: 6 separate req/min/session → 3 unified req/min/session (-50%).
+  //
+  // The old /progress, /heartbeat, /ping endpoints stay alive as server-
+  // side shims so in-flight players from before this deploy keep working.
+  // Imperative one-off progress posts (seek, pause, end, rotation-complete)
+  // still go through sendProgress() → /progress shim and are unaffected.
+  //
+  // Final tick: on pause / end / visibility:hidden / beforeunload / pagehide
+  // we fire a final tick via navigator.sendBeacon so the analytics flush
+  // survives page teardown. `final:true` is informational for future P4
+  // server-side buffering.
   useEffect(() => {
     if (!streamSidRef.current || !publicId) return;
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = null;
+    if (tickIntervalRef.current) {
+      clearInterval(tickIntervalRef.current);
+      tickIntervalRef.current = null;
     }
-    sdbg("progress interval created");
-    progressIntervalRef.current = setInterval(() => {
-      const v = videoRef.current;
-      const currentSid = streamSidRef.current;
-      if (!v || v.paused || !currentSid) return;
-      // Skip while a rotation is in-flight. `hls.loadSource(newUrl)` briefly
-      // flushes MSE, during which `v.currentTime` can read 0 — posting that
-      // would reset the new session's sliding window to [0, windowSegs] and
-      // cause the next chunk to 403 with out_of_window, freezing playback.
-      if (isRotatingRef.current) return;
-      // Skip while a seek is in progress — `seekProgressWithTimeout` has
-      // already POSTed the authoritative new position with seekTo:true.
-      // Anything we sent now would be either the OLD currentTime (read
-      // before the seek applied) or a transitional value, both of which
-      // confuse the server's sliding window.
-      if (isSeekingRef.current) {
-        sdbg("progress skipped — seeking");
-        return;
-      }
-      // Defensive: even on the same SID, a near-zero currentTime during the
-      // earliest moments after attach is not a real playback position.
-      // Genuine seeks to 0 go through performLocalSeek with seekTo:true.
-      if (!(v.currentTime > 0.25)) return;
-      // Do not send progress after the video has ended. The end-of-file
-      // position would be a stale high-index value that jumps the server
-      // window far ahead, causing 403s when the user replays from the start.
-      if (videoEndedRef.current) return;
-      // Capture epoch at tick fire and re-check before the fetch dispatch.
-      // The re-check is needed because state evaluation above is sync but
-      // a microtask interleave (e.g. a seek event handler running between
-      // our checks) can still bump the epoch. Belt + suspenders.
-      const capturedEpoch = playbackEpochRef.current;
-      if (progressAbortRef.current) {
-        try { progressAbortRef.current.abort(); } catch {}
-      }
-      if (capturedEpoch !== playbackEpochRef.current) {
-        sdbg("progress skipped — stale epoch", { capturedEpoch, current: playbackEpochRef.current });
-        return;
-      }
-      const ac = new AbortController();
-      progressAbortRef.current = ac;
-      const currentTime = v.currentTime;
-      // Route through central sendProgress so dedup, same-segment skip,
-      // and stale-zero guards all apply uniformly with every other site.
-      sendProgress("interval", currentTime, { sid: currentSid, epoch: capturedEpoch, signal: ac.signal });
-      // 20s interval (raised from 10s). The server's sliding-window check
-      // tolerates progress gaps up to (windowOverlapGraceSec ≈ 30s) so 20s
-      // is safely under threshold. Halves control-plane RPS without changing
-      // analytics resolution materially. Note: seek/pause/end paths POST
-      // progress immediately via sendProgress() callers, so the interval
-      // only governs the steady-state stable-playback cadence.
-    }, 20000);
-    return () => {
-      if (progressIntervalRef.current) {
-        clearInterval(progressIntervalRef.current);
-        progressIntervalRef.current = null;
-        sdbg("progress interval cleared");
-      }
-    };
-  }, [publicId, status]);
+    tickCounterRef.current = 0;
+    finalTickFiredRef.current = false;
+    sdbg("unified tick loop created");
 
-  // Session heartbeat — ping every 3 minutes to extend the session TTL.
-  // Previously this called rotate-session which created a new SID and forced
-  // hls.loadSource(newManifest). That flushed the MSE SourceBuffer, causing a
-  // 1-2s black screen every 3 minutes.
-  // Now we call extend-session which keeps the same SID, extends expiresAt,
-  // and returns nothing that requires a manifest reload. Zero HLS disruption.
-  useEffect(() => {
-    const sid = streamSidRef.current;
-    if (!sid || !publicId) return;
-    const hint = hardeningHintRef.current;
-    const intervalMs = hint.v2 ? Math.max(5, hint.intervalSec) * 1000 : 3 * 60 * 1000;
-    rotationIntervalRef.current = setInterval(async () => {
+    const buildBody = (opts: { include: string[]; isFinal: boolean }) => {
+      const currentSid = streamSidRef.current;
+      const v = videoRef.current;
+      const epoch = playbackEpochRef.current;
+      const body: any = {
+        sid: currentSid,
+        epoch,
+        include: opts.include,
+        currentTime: v ? v.currentTime : 0,
+        segmentIndex: -1, // server derives from currentTime if <0
+      };
+      if (opts.include.includes("heartbeat")) {
+        heartbeatSeqRef.current += 1;
+        body.seq = heartbeatSeqRef.current;
+        body.nonce = (typeof crypto !== "undefined" && (crypto as any).randomUUID)
+          ? (crypto as any).randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+        body.playbackRate = v ? (v.playbackRate || 1) : 1;
+      }
+      if (opts.include.includes("ping") && sessionCodeRef.current) {
+        body.sessionCode = sessionCodeRef.current;
+        body.secondsWatched = secondsWatchedRef.current;
+      }
+      if (opts.isFinal) body.final = true;
+      return body;
+    };
+
+    const runTick = (opts?: { final?: boolean }) => {
       const currentSid = streamSidRef.current;
       if (!currentSid) return;
-      try {
-        const useV2 = hardeningHintRef.current.v2;
-        const v = videoRef.current;
-        const body: any = { sid: currentSid };
-        let endpoint = "extend-session";
-        if (useV2) {
-          endpoint = "heartbeat";
-          heartbeatSeqRef.current += 1;
-          body.seq = heartbeatSeqRef.current;
-          body.nonce = (typeof crypto !== "undefined" && (crypto as any).randomUUID)
-            ? (crypto as any).randomUUID()
-            : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-          body.currentTime = v ? v.currentTime : 0;
-          body.playbackRate = v ? (v.playbackRate || 1) : 1;
-        }
-        const res = await fetch(`/api/player/${publicId}/${endpoint}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+      const isFinal = !!opts?.final;
+      const v = videoRef.current;
+
+      tickCounterRef.current += 1;
+      const n = tickCounterRef.current;
+
+      const include: string[] = [];
+      // Progress: skip if no meaningful position (rotation/seek in flight,
+      // currentTime ≤ 0.25, or video ended). On final tick, still include
+      // so analytics record the final position.
+      const progressOk = !!v && !isRotatingRef.current && !isSeekingRef.current
+        && v.currentTime > 0.25 && !videoEndedRef.current;
+      if (isFinal || progressOk) include.push("progress");
+      // Heartbeat every 2nd tick. Only when server hinted v2 (replay-safe).
+      if (hardeningHintRef.current.v2 && (isFinal || n % 2 === 0)) include.push("heartbeat");
+      // Ping every 3rd tick. Also on the very first tick so the server
+      // mints a sessionCode immediately (replaces the old init /ping call).
+      // When sessionCodeRef.current is null the server creates one and we
+      // capture it from response.ping.sessionCode below.
+      if (isFinal || n === 1 || n % 3 === 0) include.push("ping");
+
+      if (include.length === 0) return;
+
+      const body = buildBody({ include, isFinal });
+
+      // Stale-epoch guard for progress (mirrors the previous progress loop).
+      if (include.includes("progress") && body.epoch !== playbackEpochRef.current) {
+        sdbg("tick progress skipped — stale epoch");
+        // Strip progress but still send heartbeat/ping if requested.
+        body.include = body.include.filter((s: string) => s !== "progress");
+        if (body.include.length === 0) return;
+      }
+
+      // sendBeacon for unload-time delivery (fetch is killed mid-flight on
+      // page teardown). Keep-alive fetch is the fallback for visibility:hidden
+      // where the page is alive but may be backgrounded.
+      if (isFinal && typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        try {
+          const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
+          const ok = navigator.sendBeacon(`/api/player/${publicId}/tick`, blob);
+          if (ok) return;
+        } catch {}
+      }
+
+      fetch(`/api/player/${publicId}/tick`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        keepalive: isFinal,
+      }).then(async (res) => {
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          // Only show the denial overlay when the server explicitly signals a
-          // true block. Token expiry / session expiry / out-of-window are
-          // recoverable — they are handled by the HLS ERROR path which silently
-          // refreshes or rotates the session.
+          // Surface denial when server explicitly blocks. Token/session
+          // expiry are recoverable and are handled by the HLS ERROR path.
           if (res.status === 403 && (data.code === "BLOCKED_SUSPICIOUS_ACTIVITY" || data.error === "VIDEO_BLOCKED")) {
-            triggerDenial(data.signal || "rate_limit");
+            triggerDenial(data.signal || data.reason || "rate_limit");
           }
+          return;
         }
-      } catch {}
-    }, intervalMs);
-    return () => { if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current); };
+        const data = await res.json().catch(() => null);
+        // First /tick that includes a ping may mint a sessionCode — capture
+        // it so subsequent ticks include secondsWatched against it.
+        if (data?.ping?.sessionCode && !sessionCodeRef.current) {
+          sessionCodeRef.current = data.ping.sessionCode;
+          setSessionCode(data.ping.sessionCode);
+        }
+      }).catch(() => {});
+    };
+
+    tickIntervalRef.current = setInterval(() => {
+      const v = videoRef.current;
+      // Steady-state: only tick while playback is active. Heartbeat is then
+      // pinned to playback — when the user pauses for >40s the session may
+      // expire, which is caught and recovered by the HLS error path on resume.
+      if (!v || v.paused) return;
+      runTick();
+    }, 20000);
+
+    // Final-tick hooks. Coalesce repeated triggers via finalTickFiredRef so
+    // we don't fire multiple beacons in quick succession (e.g. hidden then
+    // pagehide within ms).
+    const fireFinal = () => {
+      if (finalTickFiredRef.current) return;
+      finalTickFiredRef.current = true;
+      runTick({ final: true });
+      // Allow a follow-up final if the user comes back and leaves again.
+      setTimeout(() => { finalTickFiredRef.current = false; }, 5000);
+    };
+    const onVisibility = () => { if (document.hidden) fireFinal(); };
+    const onPageHide = () => fireFinal();
+
+    // Expose fireFinal so the pause/ended handlers in a separate useEffect
+    // can trigger an analytics flush without duplicating runTick logic.
+    fireFinalTickRef.current = fireFinal;
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onPageHide);
+
+    // Fire the very first tick immediately rather than waiting 20s — this
+    // mints the analytics sessionCode right at startup (replacing the old
+    // init /ping call) so secondsWatched starts accumulating from t=0.
+    // Deferred to a microtask so HLS.loadSource() in the init effect runs
+    // first; the tick itself is fire-and-forget and won't block playback.
+    queueMicrotask(() => {
+      if (!streamSidRef.current || !tickIntervalRef.current) return;
+      runTick();
+    });
+
+    return () => {
+      if (tickIntervalRef.current) {
+        clearInterval(tickIntervalRef.current);
+        tickIntervalRef.current = null;
+        sdbg("unified tick loop cleared");
+      }
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onPageHide);
+      if (fireFinalTickRef.current === fireFinal) fireFinalTickRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicId, status]);
 
   // Forward client-side violation events to the server's security-event endpoint.
@@ -1866,7 +1910,14 @@ export default function EmbedPlayerPage(props: any = {}) {
     const video = videoRef.current;
     if (!video) return;
     const onPlay = () => { setPlaying(true); lastPausedAtRef.current = -1; };
-    const onPause = () => { setPlaying(false); lastPausedAtRef.current = Date.now(); };
+    const onPause = () => {
+      setPlaying(false);
+      lastPausedAtRef.current = Date.now();
+      // P3: fire a final tick so analytics flush (secondsWatched + currentTime)
+      // is recorded immediately on pause rather than waiting for the next 20s
+      // tick — which may never fire if the user pauses then closes the tab.
+      fireFinalTickRef.current?.();
+    };
     const onEnded = () => {
       setPlaying(false);
       lastPausedAtRef.current = -1;
@@ -1874,6 +1925,8 @@ export default function EmbedPlayerPage(props: any = {}) {
       // the end-of-video segment index, which would leave the server window
       // parked at the last segment and cause 403s on replay from the start.
       videoEndedRef.current = true;
+      // P3: final tick — record completion event in analytics.
+      fireFinalTickRef.current?.();
     };
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime);

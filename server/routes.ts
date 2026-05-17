@@ -3099,45 +3099,232 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ── Internal helpers shared by /tick, /progress, /heartbeat, /ping ───────
+  // Each helper assumes the caller already validated sid + session existence
+  // + publicId match. They return plain objects; the caller decides HTTP
+  // status. Blocked/rejected outcomes set `blocked: true` and a `code`.
+  // ─────────────────────────────────────────────────────────────────────────
+  function _runProgressLogic(
+    sid: string,
+    session: any,
+    body: { segmentIndex?: number; currentTime?: number; seekTo?: boolean }
+  ): { ok: true; windowStart: number; windowEnd: number; targetSegmentIndex?: number } {
+    const { segmentIndex, currentTime, seekTo } = body || {};
+    let idx = typeof segmentIndex === "number" ? segmentIndex : -1;
+    if (idx < 0 && typeof currentTime === "number") {
+      const anyCache = session.variantCache.values().next().value as PlaylistCache | undefined;
+      if (anyCache && anyCache.targetDuration > 0) {
+        idx = Math.floor(currentTime / anyCache.targetDuration);
+      } else if (seekTo === true && currentTime >= 0) {
+        idx = Math.floor(currentTime / 2);
+      }
+    }
+    if (idx >= 0) {
+      updateProgress(sid, idx, seekTo === true);
+    }
+    const { start, end } = getWindowRange(sid);
+    return { ok: true, windowStart: start, windowEnd: end, ...(idx >= 0 ? { targetSegmentIndex: idx } : {}) };
+  }
+
+  async function _runHeartbeatLogic(
+    sid: string,
+    session: any,
+    req: any,
+    body: { seq?: any; nonce?: any; currentTime?: any; segmentIndex?: any; playbackRate?: any }
+  ): Promise<
+    | { ok: true; rotationIntervalMs: number; intervalSec: number; heartbeatIntervalSec: number; overlapGraceSec: number; renewalGraceSec: number; sessionExpiresAt: number; nextRefreshAt: number; windowStart?: number; windowEnd?: number; segmentIndex?: number }
+    | { ok: false; blocked: true; code: string; message: string; signal?: string; breach?: string }
+  > {
+    const ua = req.headers["user-agent"] || "";
+    if (!validateUserAgent(sid, ua)) {
+      return { ok: false, blocked: true, code: "PLAYBACK_DENIED", message: "Device mismatch" };
+    }
+    const result = verifyHeartbeat(sid, {
+      seq: Number(body.seq),
+      nonce: String(body.nonce || ""),
+      currentTime: Number(body.currentTime),
+      segmentIndex: typeof body.segmentIndex === "number" ? body.segmentIndex : undefined,
+      playbackRate: typeof body.playbackRate === "number" ? body.playbackRate : undefined,
+    });
+    if (!result.ok) {
+      const bi = getBreachInfo(sid);
+      return { ok: false, blocked: true, code: "PLAYBACK_DENIED", message: "Heartbeat rejected", signal: result.reason, breach: `${bi.breachCount}/${bi.violationLimit}` };
+    }
+    extendSession(sid);
+    const hardening = session.hardening;
+    const overlapGraceSec = hardening.windowOverlapGraceSec;
+    const heartbeatIntervalSec = hardening.heartbeatIntervalSec;
+    const nextRefreshInMs = Math.max(5000, Math.floor(heartbeatIntervalSec * 0.7 * 1000));
+    if (Math.random() < 0.02) {
+      console.log(`[playback] HEARTBEAT_OK: sid=${sid} pub=${session.publicId} t=${Number(body.currentTime)||0}s expiresIn=${Math.round((session.expiresAt - Date.now())/1000)}s`);
+    }
+    return {
+      ok: true,
+      rotationIntervalMs: SESSION_ROTATION_MS,
+      intervalSec: heartbeatIntervalSec,
+      heartbeatIntervalSec,
+      overlapGraceSec,
+      renewalGraceSec: overlapGraceSec,
+      sessionExpiresAt: session.expiresAt,
+      nextRefreshAt: Date.now() + nextRefreshInMs,
+      windowStart: result.windowStart,
+      windowEnd: result.windowEnd,
+      segmentIndex: result.newSegmentIndex,
+    };
+  }
+
+  async function _runPingLogic(
+    publicId: string,
+    req: any,
+    body: { sessionCode?: string; secondsWatched?: number }
+  ): Promise<{ ok?: boolean; sessionCode?: string }> {
+    const { sessionCode, secondsWatched } = body || {};
+    if (sessionCode) {
+      await storage.pingSession(sessionCode, Math.round(secondsWatched || 0));
+      return { ok: true };
+    }
+    const video = await storage.getVideoByPublicId(publicId);
+    if (video) {
+      const code = nanoid(16);
+      const domain = (req.headers["x-embed-referrer"] as string) || (req.headers.referer as string) || "";
+      let domainHost = "";
+      try { domainHost = new URL(domain).hostname; } catch {}
+      await storage.createSession({
+        videoId: video.id,
+        sessionCode: code,
+        domain: domainHost,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+      return { sessionCode: code };
+    }
+    return { ok: true };
+  }
+
   // ── Progress endpoint — player reports current segment for window tracking ───
+  // Thin shim over _runProgressLogic. Old players in flight after the /tick
+  // deploy still POST here directly; new players consolidate into /tick.
   app.post("/api/stream/:publicId/progress", async (req: any, res: any) => {
     try {
-      const { sid, segmentIndex, currentTime, seekTo } = req.body;
+      const { sid } = req.body || {};
       if (!sid) return res.status(400).json({ message: "Missing sid" });
-
       await getSessionAsync(sid);
       const session = getSession(sid);
       if (!session || session.revoked) return res.status(403).json({ message: "Session invalid" });
       if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
+      return res.json(_runProgressLogic(sid, session, req.body || {}));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
 
-      let idx = typeof segmentIndex === "number" ? segmentIndex : -1;
-      if (idx < 0 && typeof currentTime === "number") {
-        const anyCache = session.variantCache.values().next().value as PlaylistCache | undefined;
-        if (anyCache && anyCache.targetDuration > 0) {
-          idx = Math.floor(currentTime / anyCache.targetDuration);
-        } else if (seekTo === true && currentTime >= 0) {
-          // variantCache may be empty on a very early seek (before the first
-          // playlist has been fetched). Fall back to the fixed 2 s/segment
-          // duration used throughout this codebase so lastSeekAt is always
-          // stamped and the seek-grace window reliably opens on the server.
-          idx = Math.floor(currentTime / 2);
+  // ── /tick — consolidated progress + heartbeat + ping ─────────────────────
+  // POST /api/player/:publicId/tick
+  // Body: {
+  //   sid, currentTime, epoch,
+  //   include: ["progress"?, "heartbeat"?, "ping"?],
+  //   // progress fields:
+  //   segmentIndex?, seekTo?,
+  //   // heartbeat v2 fields (when "heartbeat" in include):
+  //   seq?, nonce?, playbackRate?,
+  //   // ping fields (when "ping" in include):
+  //   sessionCode?, secondsWatched?,
+  //   // optional flag for analytics flush on unload/visibility/end:
+  //   final?
+  // }
+  // Single session validation gate, then runs each requested subsystem.
+  // First blocking subsystem short-circuits the response with 403.
+  // Cuts control-plane RPS by ~50% vs the three separate endpoints.
+  // Beacon-safe body parser: navigator.sendBeacon CAN deliver a Blob with
+  // type "application/json" (which express.json() handles) — but some older
+  // browsers / extensions strip the MIME type and the payload arrives as
+  // text/plain or application/octet-stream. We accept those at the route
+  // level and JSON.parse manually so beacon final-ticks never silently fail.
+  app.post(
+    "/api/player/:publicId/tick",
+    express.text({ type: ["text/plain", "application/octet-stream"], limit: "10kb" }),
+    async (req: any, res: any) => {
+    try {
+      // If body arrived as a raw string (beacon fallback), parse it.
+      if (typeof req.body === "string") {
+        try { req.body = JSON.parse(req.body); } catch { req.body = {}; }
+      }
+      const body = req.body || {};
+      const { sid } = body;
+      if (!sid) return res.status(400).json({ ok: false, message: "Missing sid" });
+
+      const includeRaw = Array.isArray(body.include) ? body.include : ["progress"];
+      const wantProgress = includeRaw.includes("progress");
+      const wantHeartbeat = includeRaw.includes("heartbeat");
+      const wantPing = includeRaw.includes("ping");
+
+      await getSessionAsync(sid);
+      const session = getSession(sid);
+      if (!session || session.revoked) {
+        return res.status(403).json({ ok: false, blocked: true, code: "PLAYBACK_DENIED", reason: "SESSION_INVALID", message: "Session invalid or expired" });
+      }
+      if (session.publicId !== req.params.publicId) {
+        return res.status(403).json({ ok: false, blocked: true, code: "PLAYBACK_DENIED", reason: "SESSION_MISMATCH", message: "Session mismatch" });
+      }
+
+      // UA gate at the /tick entry — guarantees device-binding validation
+      // for every consolidated request, not just the ones that include
+      // "heartbeat". Defense in depth: media routes (/hls /seg /key) and
+      // heartbeat already validate UA; this just keeps control-plane parity.
+      const ua = req.headers["user-agent"] || "";
+      if (!validateUserAgent(sid, ua)) {
+        return res.status(403).json({ ok: false, blocked: true, code: "PLAYBACK_DENIED", reason: "DEVICE_MISMATCH", message: "Device mismatch" });
+      }
+
+      const response: any = { ok: true };
+
+      // Progress runs first — it's the cheapest and updates window state that
+      // heartbeat verification may depend on (currentSegmentIndex).
+      if (wantProgress) {
+        response.progress = _runProgressLogic(sid, session, body);
+      }
+
+      // Heartbeat — performs UA validation + replay protection + extends TTL.
+      // If rejected, surface immediately with 403 so client triggers denial.
+      if (wantHeartbeat) {
+        const hb = await _runHeartbeatLogic(sid, session, req, body);
+        response.heartbeat = hb;
+        if (!hb.ok && (hb as any).blocked) {
+          return res.status(403).json({
+            ok: false,
+            blocked: true,
+            reason: (hb as any).signal || (hb as any).code,
+            code: (hb as any).code,
+            message: (hb as any).message,
+            signal: (hb as any).signal,
+            breach: (hb as any).breach,
+            heartbeat: hb,
+            ...(response.progress ? { progress: response.progress } : {}),
+          });
         }
       }
 
-      if (idx >= 0) {
-        // seekTo: explicit re-anchor (user seek or rotation-completion). Allows
-        // backward movement. Otherwise the update is monotonic-forward only,
-        // ignoring stale/racy progress posts whose currentTime briefly read 0
-        // during a post-rotation MSE re-attach.
-        updateProgress(sid, idx, seekTo === true);
+      // Ping — analytics only, never blocks. Errors are swallowed; the rest
+      // of the tick still succeeds so playback isn't impacted by an analytics
+      // hiccup.
+      if (wantPing) {
+        try {
+          response.ping = await _runPingLogic(req.params.publicId, req, body);
+        } catch (e: any) {
+          response.ping = { ok: false, error: e.message };
+        }
       }
 
-      const { start, end } = getWindowRange(sid);
-      // Return targetSegmentIndex explicitly so callers (and acceptance tests)
-      // can verify the invariant:  windowStart <= targetSegmentIndex <= windowEnd.
-      return res.json({ ok: true, windowStart: start, windowEnd: end, ...(idx >= 0 ? { targetSegmentIndex: idx } : {}) });
+      // `final: true` is informational — client sends it on pause/end/unload
+      // via sendBeacon so future server-side buffering (P4) knows to flush.
+      // For now it's just logged sparsely.
+      if (body.final && Math.random() < 0.05) {
+        console.log(`[tick] FINAL sid=${sid} pub=${req.params.publicId} include=${includeRaw.join(",")}`);
+      }
+
+      return res.json(response);
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json({ ok: false, message: e.message });
     }
   });
 
@@ -3276,7 +3463,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // When serverGatedWindowEnabled=true the playlist window only advances here.
   app.post("/api/player/:publicId/heartbeat", async (req: any, res: any) => {
     try {
-      const { sid, seq, nonce, currentTime, segmentIndex, playbackRate } = req.body || {};
+      const { sid } = req.body || {};
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
       await getSessionAsync(sid);
@@ -3286,46 +3473,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
 
-      const ua = req.headers["user-agent"] || "";
-      if (!validateUserAgent(sid, ua)) {
-        return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Device mismatch" });
+      const hb = await _runHeartbeatLogic(sid, session, req, req.body || {});
+      if (!hb.ok && (hb as any).blocked) {
+        return res.status(403).json({
+          code: (hb as any).code,
+          message: (hb as any).message,
+          ...((hb as any).signal ? { signal: (hb as any).signal } : {}),
+          ...((hb as any).breach ? { breach: (hb as any).breach } : {}),
+        });
       }
-
-      const result = verifyHeartbeat(sid, {
-        seq: Number(seq),
-        nonce: String(nonce || ""),
-        currentTime: Number(currentTime),
-        segmentIndex: typeof segmentIndex === "number" ? segmentIndex : undefined,
-        playbackRate: typeof playbackRate === "number" ? playbackRate : undefined,
-      });
-      if (!result.ok) {
-        const bi = getBreachInfo(sid);
-        return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Heartbeat rejected", signal: result.reason, breach: `${bi.breachCount}/${bi.violationLimit}` });
-      }
-      extendSession(sid);
-
-      const hardening = session.hardening;
-      const overlapGraceSec = hardening.windowOverlapGraceSec;
-      const heartbeatIntervalSec = hardening.heartbeatIntervalSec;
-      const nextRefreshInMs = Math.max(5000, Math.floor(heartbeatIntervalSec * 0.7 * 1000));
-      // Compact audit log — only print periodically to avoid log spam from
-      // the 15s heartbeat × hundreds of concurrent sessions.
-      if (Math.random() < 0.02) {
-        console.log(`[playback] HEARTBEAT_OK: sid=${sid} pub=${req.params.publicId} t=${Number(currentTime)||0}s expiresIn=${Math.round((session.expiresAt - Date.now())/1000)}s`);
-      }
-      return res.json({
-        ok: true,
-        rotationIntervalMs: SESSION_ROTATION_MS,
-        intervalSec: heartbeatIntervalSec,
-        heartbeatIntervalSec,
-        overlapGraceSec,
-        renewalGraceSec: overlapGraceSec,
-        sessionExpiresAt: session.expiresAt,
-        nextRefreshAt: Date.now() + nextRefreshInMs,
-        windowStart: result.windowStart,
-        windowEnd: result.windowEnd,
-        segmentIndex: result.newSegmentIndex,
-      });
+      return res.json(hb);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -4134,31 +4291,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ playerSettings, watermarkSettings, banners, thumbnailUrl, videoDuration });
   });
 
-  // Playback ping
+  // Playback ping — thin shim over _runPingLogic. New players use /tick.
   app.post("/api/player/:publicId/ping", async (req, res) => {
     try {
-      const { sessionCode, secondsWatched } = req.body;
-      if (sessionCode) {
-        await storage.pingSession(sessionCode, Math.round(secondsWatched || 0));
-      } else {
-        // Create new session
-        const video = await storage.getVideoByPublicId(req.params.publicId);
-        if (video) {
-          const code = nanoid(16);
-          const domain = req.headers["x-embed-referrer"] as string || req.headers.referer || "";
-          let domainHost = "";
-          try { domainHost = new URL(domain).hostname; } catch {}
-          const session = await storage.createSession({
-            videoId: video.id,
-            sessionCode: code,
-            domain: domainHost,
-            ip: req.ip,
-            userAgent: req.headers["user-agent"],
-          });
-          return res.json({ sessionCode: code });
-        }
-      }
-      res.json({ ok: true });
+      const result = await _runPingLogic(req.params.publicId, req, req.body || {});
+      res.json(result);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

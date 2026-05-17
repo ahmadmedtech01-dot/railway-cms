@@ -1,0 +1,84 @@
+Yes, start with P3.
+
+Implement /api/player/:publicId/tick first.
+
+Requirements:
+
+1. Add new POST /api/player/:publicId/tick
+
+Payload:
+{
+  sid,
+  currentTime,
+  epoch,
+  include: ["progress", "heartbeat", "ping"],
+  seq,
+  nonce,
+  secondsWatched,
+  final
+}
+
+2. Do not run all systems on every tick.
+
+Client cadence:
+- tick every 20 seconds
+- progress every tick
+- heartbeat every 2nd tick
+- ping every 3rd tick
+- final tick on pause/end/unload/visibility hidden
+
+3. Keep old endpoints alive as shims:
+- /progress
+- /heartbeat
+- /ping
+
+They should call the same internal handlers used by /tick.
+Do not delete old endpoints yet because old active players may still use them.
+
+4. Preserve security:
+- heartbeat v2 seq + nonce must remain active
+- session revoked / blocked response must still reach client
+- BLOCKED_SUSPICIOUS_ACTIVITY must still trigger denial overlay
+- abuse detection must remain active
+- signed URLs, HMAC, session binding, UA binding, LMS iframe security unchanged
+
+5. Client:
+Create a unified tick loop/hook.
+Remove separate progress/heartbeat/ping intervals from active player path.
+Ensure only one tick interval exists.
+Clear interval on unmount, session rotation, replay, and source reload.
+Use playbackEpoch to skip stale ticks.
+Use navigator.sendBeacon for final tick on unload/hidden if available.
+
+6. Response:
+Return merged result:
+{
+  ok: true,
+  progress: {...},
+  heartbeat: {...},
+  ping: {...}
+}
+
+If any subsystem blocks/revokes session, surface it clearly:
+{
+  ok: false,
+  blocked: true,
+  reason: "...",
+  progress: {...}
+}
+
+7. Acceptance:
+- playback works normally
+- forward/backward seek works
+- replay works
+- LMS iframe works
+- shareable link works
+- admin preview works
+- /progress no longer fires separately during new player session
+- /heartbeat no longer fires separately during new player session
+- /ping no longer fires separately during new player session
+- /tick fires every ~20s
+- heartbeat logic runs about every 40s through tick
+- ping logic runs about every 60s through tick
+- old endpoints still work as compatibility shims
+- no security behavior is weakened
