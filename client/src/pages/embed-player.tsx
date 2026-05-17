@@ -216,6 +216,34 @@ export default function EmbedPlayerPage(props: any = {}) {
   // of a fatal error would return 0 (because hls.js or MSE has already
   // started tearing down the buffer).
   const lastHealthyTimeRef = useRef<number>(0);
+  // Tracks the wall-clock time (ms) of the most recent intentional seek
+  // (custom button, scrubber, native HTML5 controls, postMessage from LMS).
+  // Used by the HLS error handler so a 403 that arrives shortly after a
+  // seek triggers a lightweight local recovery (re-post progress + restart
+  // load) instead of a full session rotation that would freeze the player
+  // for 5-15s with a black screen.
+  const lastSeekAtRef = useRef<number>(0);
+  // Per-seek recovery budget — caps how many times we'll attempt the
+  // lightweight recovery for a given seek burst. Resets every new seek.
+  const seekRecoveryCountRef = useRef<number>(0);
+  // Bounded wait for the pre-seek /progress POST. If the request stalls
+  // (proxy hang, dropped TCP), we MUST still resume loading at the new
+  // position — otherwise stopLoad() runs, the POST never settles, and
+  // startLoad() is never called → permanent buffering overlay. The
+  // server's seek-grace window will still accept slightly-stale state.
+  const SEEK_PROGRESS_TIMEOUT_MS = 700;
+  const seekProgressWithTimeout = (sid: string, currentTime: number): Promise<void> => {
+    if (!publicId) return Promise.resolve();
+    const req = fetch(`/api/stream/${publicId}/progress`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sid, currentTime, seekTo: true }),
+    }).then(() => undefined).catch(() => undefined);
+    return Promise.race([
+      req,
+      new Promise<void>(resolve => setTimeout(resolve, SEEK_PROGRESS_TIMEOUT_MS)),
+    ]);
+  };
   const guardedFatalRestart = (hls: any) => {
     const now = Date.now();
     fatalRecoveryLogRef.current = fatalRecoveryLogRef.current.filter(t => t > now - 60_000);
@@ -448,26 +476,25 @@ export default function EmbedPlayerPage(props: any = {}) {
       setIsBuffering(true);
       setBufferPct(0);
 
-      // PROACTIVE WINDOW ADVANCE — this is what kills the 5-6s seek freeze.
-      // Without this, hls.startLoad(target) requests a segment outside the
-      // server's sliding window → server returns 403 OUT_OF_WINDOW → fatal
-      // error handler triggers full session rotation → ~5s recovery. By
-      // posting progress with the seek target FIRST, the server advances its
-      // window before our segment requests arrive, so they succeed first try.
+      // PROACTIVE WINDOW ADVANCE — AWAIT the progress POST so the server
+      // moves its sliding window BEFORE we restart segment loading. Without
+      // the await, hls.startLoad(target) raced the POST and chunk requests
+      // arrived at the server while it still expected the OLD position,
+      // producing a cascade of 403s + a 30-45s retry-storm freeze.
       const currentSid = streamSidRef.current;
-      if (currentSid && publicId) {
-        fetch(`/api/stream/${publicId}/progress`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sid: currentSid, currentTime: clampedTime, seekTo: true }),
-          keepalive: true,
-        }).catch(() => {});
-      }
-
+      lastSeekAtRef.current = Date.now();
+      seekRecoveryCountRef.current = 0;
       video.pause();
       hls.stopLoad();
-      video.currentTime = clampedTime;
-      hls.startLoad(clampedTime);
+      const finishHlsSeek = () => {
+        video.currentTime = clampedTime;
+        hls.startLoad(clampedTime);
+      };
+      // Bounded wait — guarantees startLoad runs even if POST stalls.
+      const seekPromise = currentSid
+        ? seekProgressWithTimeout(currentSid, clampedTime)
+        : Promise.resolve();
+      seekPromise.then(finishHlsSeek, finishHlsSeek);
     } else {
       // Native HLS (Safari) — browser handles seeking on its own
       video.currentTime = clampedTime;
@@ -857,6 +884,31 @@ export default function EmbedPlayerPage(props: any = {}) {
           video.addEventListener("play", onVideoPlay);
           video.addEventListener("pause", onVideoPause);
 
+          // ── NATIVE SEEK HOOK ──────────────────────────────────────────
+          // The browser's native HTML5 controls (keyboard arrows, spacebar
+          // tap-seek, fullscreen scrubber, OS media keys) bypass our
+          // performLocalSeek / applyPendingSeek paths entirely — so without
+          // this listener, those seeks never POST progress and the server
+          // sliding window stays at the old position. Every chunk request
+          // for the new position then 403s as out-of-window, freezing the
+          // player for 30-45s. This handler detects ANY native seek that
+          // wasn't initiated by our own helpers (isSeeking.current=false)
+          // and reproduces the same proactive window advance.
+          const onNativeSeeking = () => {
+            if (isSeeking.current) return; // our own helper already handled it
+            const sid = streamSidRef.current;
+            if (!sid || !publicId) return;
+            const target = video.currentTime;
+            lastSeekAtRef.current = Date.now();
+            seekRecoveryCountRef.current = 0;
+            const hls = hlsRef.current;
+            if (hls) hls.stopLoad();
+            const resume = () => { if (hls) hls.startLoad(target); };
+            // Bounded wait so a stalled POST cannot leave the player frozen.
+            seekProgressWithTimeout(sid, target).then(resume, resume);
+          };
+          video.addEventListener("seeking", onNativeSeeking);
+
           // Track media error recovery attempts to avoid infinite loops
           let mediaErrorRecoveries = 0;
 
@@ -1082,6 +1134,39 @@ export default function EmbedPlayerPage(props: any = {}) {
                 const recoverFromRevoke =
                   finalCode === "SESSION_REVOKED" || finalCode === "HEARTBEAT_STALE";
                 const canRefresh = activeTokenRef.current && (isExpiry || recoverFromRevoke) && !isTrueAbuse;
+
+                // ── POST-SEEK 403 LIGHTWEIGHT RECOVERY ─────────────────
+                // A 403 that arrives within ~6s of a user seek is almost
+                // always an out-of-window race: an in-flight fragment
+                // request for the OLD position landed AFTER the server
+                // had advanced its window to the new position, or vice
+                // versa. Doing a full session rotation here would freeze
+                // the player 5-15s with a black screen. Instead: re-POST
+                // progress with the current position (within the seek
+                // grace window, the server will accept and reset
+                // outOfWindowCount) and restart loading. Bounded to 3
+                // attempts per seek to avoid infinite loops.
+                const sinceSeekMs = Date.now() - lastSeekAtRef.current;
+                const inSeekGrace = lastSeekAtRef.current > 0 && sinceSeekMs < 6000;
+                if (!isTrueAbuse && inSeekGrace && seekRecoveryCountRef.current < 3) {
+                  const sid = streamSidRef.current;
+                  const target = videoRef.current?.currentTime ?? 0;
+                  seekRecoveryCountRef.current += 1;
+                  if (sid && publicId) {
+                    fetch(`/api/stream/${publicId}/progress`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ sid, currentTime: target, seekTo: true }),
+                    }).catch(() => {}).then(() => {
+                      try { hls.stopLoad(); } catch {}
+                      try { hls.startLoad(target); } catch {}
+                      videoRef.current?.play().catch(() => {});
+                    });
+                  } else {
+                    try { hls.stopLoad(); hls.startLoad(target); } catch {}
+                  }
+                  return;
+                }
 
                 if (canRefresh) {
                   const savedTime = videoRef.current?.currentTime || 0;
@@ -1673,30 +1758,43 @@ export default function EmbedPlayerPage(props: any = {}) {
   //  2. Show buffering overlay immediately for user feedback.
   //  3. Use hls.stopLoad() + startLoad(target) so the player flushes the
   //     in-flight fragment queue cleanly instead of waiting on it.
-  const performLocalSeek = (newTime: number) => {
+  const performLocalSeek = async (newTime: number) => {
     const v = videoRef.current;
     if (!v) return;
     setCurrentTime(newTime);
     setIsBuffering(true);
     setBufferPct(0);
+    // Stamp the seek BEFORE issuing any network request so the HLS error
+    // handler can recognise post-seek 403s during the await window.
+    lastSeekAtRef.current = Date.now();
+    seekRecoveryCountRef.current = 0;
     const currentSid = streamSidRef.current;
-    if (currentSid && publicId) {
-      fetch(`/api/stream/${publicId}/progress`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sid: currentSid, currentTime: newTime, seekTo: true }),
-        keepalive: true,
-      }).catch(() => {});
-    }
     const hls = hlsRef.current;
     if (hls) {
-      const wasPlaying = !v.paused;
+      // Stop in-flight fragment requests IMMEDIATELY so they don't race
+      // against the pre-seek window and produce throw-away 403s the
+      // server then attributes to the new position.
       hls.stopLoad();
+    }
+    // AWAIT the progress POST so the server advances its sliding window
+    // BEFORE we restart segment loading at the new position. Without the
+    // await, hls.startLoad(newTime) raced the POST: chunk requests for the
+    // new segment arrived first and got 403'd as out-of-window, triggering
+    // the 30-45s retry storm + denial cascade the user reported.
+    const wasPlaying = hls ? !v.paused : false;
+    try {
+      if (currentSid) {
+        await seekProgressWithTimeout(currentSid, newTime);
+      }
+    } finally {
+      // Always resume loading even if the POST timed out — the seek-grace
+      // window on the server is forgiving enough, and the HLS error
+      // handler's seek-recovery branch will re-post on any 403.
       v.currentTime = newTime;
-      hls.startLoad(newTime);
-      if (wasPlaying) v.play().catch(() => {});
-    } else {
-      v.currentTime = newTime;
+      if (hls) {
+        hls.startLoad(newTime);
+        if (wasPlaying) v.play().catch(() => {});
+      }
     }
   };
 

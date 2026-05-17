@@ -134,7 +134,7 @@ const stealthAesKey = crypto
   .update(SECRET + "::stealth-v1")
   .digest();
 
-export type OpaqueKind = "l" | "c" | "k"; // level / chunk / key
+export type OpaqueKind = "l" | "c" | "k" | "m"; // level / chunk / key / master
 export interface OpaquePayload {
   s: string;      // sid
   t: OpaqueKind;  // type
@@ -221,7 +221,7 @@ export function verifyOpaqueIdDetailed(id: string, overlapGraceSec: number = 3):
   if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") {
     return { failure: "OPAQUE_ID_TAMPERED" };
   }
-  if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k") {
+  if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k" && parsed.t !== "m") {
     return { failure: "OPAQUE_ID_TAMPERED" };
   }
   const now = Math.floor(Date.now() / 1000);
@@ -256,7 +256,7 @@ export function decodeOpaqueIdSkipExpiry(id: string): OpaquePayload | null {
     const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
     const parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
     if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") return null;
-    if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k") return null;
+    if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k" && parsed.t !== "m") return null;
     return parsed;
   } catch {
     return null;
@@ -325,6 +325,12 @@ export interface VideoSession {
   currentSegmentIndex: number;
   lastProgressAt: number;
   outOfWindowCount: number;
+  // Wall-clock ms of the most recent `seekTo:true` progress update. Used by
+  // `validateSegmentWindow` to widen the allowed segment window briefly so
+  // chunks belonging to a just-completed seek aren't rejected by the
+  // pre-seek currentSegmentIndex (race between in-flight chunk requests and
+  // the seekTo POST). 0 means no seek has occurred this session.
+  lastSeekAt: number;
   variantCache: Map<string, PlaylistCache>;
 
   ephemeralKey: Buffer;
@@ -434,6 +440,7 @@ function deserializeSession(raw: any): VideoSession {
     abuseScore: raw.abuseScore ?? 0,
     breachEvents: raw.breachEvents ?? 0,
     outOfWindowCount: raw.outOfWindowCount ?? 0,
+    lastSeekAt: raw.lastSeekAt ?? 0,
     keyIssuedCount: raw.keyIssuedCount ?? 0,
     clientSecurityEvents: raw.clientSecurityEvents ?? 0,
   } as VideoSession;
@@ -673,6 +680,7 @@ export function createSession(
     currentSegmentIndex: 0,
     lastProgressAt: Date.now(),
     outOfWindowCount: 0,
+    lastSeekAt: 0,
     variantCache: new Map(),
     ephemeralKey: crypto.randomBytes(16),
     ephemeralIV: crypto.randomBytes(16),
@@ -755,6 +763,7 @@ export function rotateSession(oldSid: string): string | null {
     segmentFetchLog: [],
     concurrentSegments: 0,
     outOfWindowCount: 0,
+    lastSeekAt: 0,
     variantCache: new Map(),
     ephemeralKey: crypto.randomBytes(16),
     ephemeralIV: crypto.randomBytes(16),
@@ -1282,6 +1291,15 @@ export function updateProgress(sid: string, segmentIndex: number, seekTo: boolea
   const clamped = Math.max(0, segmentIndex);
   if (seekTo) {
     s.currentSegmentIndex = clamped;
+    // Mark the seek timestamp so validateSegmentWindow can grant a brief
+    // grace period covering the race between the seekTo POST landing and
+    // hls.js issuing chunk requests for the new position. Also clear the
+    // out-of-window counter + sustained-pattern log: chunks queued for the
+    // OLD position before stopLoad cancellation must not poison the new
+    // session's abuse score.
+    s.lastSeekAt = Date.now();
+    s.outOfWindowCount = 0;
+    (s as any)._oowLog = [];
   } else {
     // Forward-only — never regress the window from a stale or racy report.
     s.currentSegmentIndex = Math.max(s.currentSegmentIndex, clamped);
@@ -1326,8 +1344,33 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
   if (s.hardening.serverGatedWindowEnabled) {
     // Widen the upstream window so seeks + buffer prefetch don't constantly trip it.
     // Window size is driven by admin-configured maxPrebufferSec (single source of truth).
+    const windowSegs = getWindowSegs(s);
     const start = Math.max(0, s.currentSegmentIndex - 5);
-    const end = s.currentSegmentIndex + getWindowSegs(s);
+    const end = s.currentSegmentIndex + windowSegs;
+
+    // ── SEEK GRACE ──────────────────────────────────────────────────────
+    // After a user seek, hls.js issues a burst of chunk requests around the
+    // new position. The seekTo POST has *already* moved currentSegmentIndex,
+    // but a few in-flight requests for the OLD position may still arrive,
+    // AND hls.js may overshoot the configured window by several segments
+    // while it re-buffers. During the configured overlap-grace window after
+    // a seek, accept any segment in [target - 2*windowSegs, target + 2*windowSegs]
+    // and DO NOT increment the OOW counter so the legitimate seek burst
+    // can't push the session into SECURITY_OUT_OF_WINDOW_SUSTAINED.
+    if (s.lastSeekAt > 0) {
+      const seekGraceMs = Math.max(3000, (s.hardening.windowOverlapGraceSec || 3) * 1000);
+      if (Date.now() - s.lastSeekAt < seekGraceMs) {
+        const wideStart = Math.max(0, s.currentSegmentIndex - 2 * windowSegs);
+        const wideEnd = s.currentSegmentIndex + 2 * windowSegs;
+        if (segIndex >= wideStart && segIndex <= wideEnd) {
+          return { allowed: true };
+        }
+        // Even outside the wide window during seek grace, deny without
+        // scoring — the player should recover via its 403-after-seek path.
+        return { allowed: false, reason: { signal: "out_of_window", detail: `seg=${segIndex} outside seek-grace window [${wideStart},${wideEnd}]` } };
+      }
+    }
+
     if (segIndex < start || segIndex > end) {
       s.outOfWindowCount += 1;
 

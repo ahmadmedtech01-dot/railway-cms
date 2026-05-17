@@ -101,6 +101,17 @@ function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): stri
   const id = mintOpaqueId({ s: sid, t: "k", e: exp });
   return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/secret/${id}`;
 }
+// Master playlist URL — opaque ID resolves at request time and emits an
+// HLS master with every variant rewritten to a stealth level URL. Required
+// for the quality selector: a single-variant URL collapses hls.js's level
+// list to one entry, hiding the 360p/480p/720p picker. The opaque ID
+// carries only sid + exp (no variant) — the master content is generated
+// on-demand from the upstream master.m3u8.
+function buildStealthMasterUrl(publicId: string, sid: string, ttlSec: number): string {
+  const exp = bucketExp(Math.max(15, ttlSec));
+  const id = mintOpaqueId({ s: sid, t: "m", e: exp });
+  return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/master/${id}`;
+}
 
 // Resolve the first variant playlist subpath from a video's HLS master.
 // Used by /manifest, /rotate-session, /refresh-token so all stealth entry
@@ -2111,9 +2122,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
-        const variantSub = await resolveStealthVariant("bunny_net", cfg);
-        const stealth = variantSub
-          ? { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, sid, variantSub, sessTtls.manifest) }
+        const stealth = hardening.stealthModeEnabled
+          ? { enabled: true, streamUrl: buildStealthMasterUrl(video.publicId, sid, sessTtls.manifest) }
           : { enabled: false };
         return res.json({ manifestUrl, sourceType: "bunny_net_proxy", sessionId: sid, videoId: video.id, videoDuration: video.duration || null, heartbeat: heartbeatHint, stealth, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
@@ -2126,9 +2136,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
-        const variantSub = await resolveStealthVariant(providerType, cfg);
-        const stealth = variantSub
-          ? { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, sid, variantSub, sessTtls.manifest) }
+        const stealth = hardening.stealthModeEnabled
+          ? { enabled: true, streamUrl: buildStealthMasterUrl(video.publicId, sid, sessTtls.manifest) }
           : { enabled: false };
         return res.json({ manifestUrl, sourceType: `${providerType}_proxy`, sessionId: sid, videoId: video.id, videoDuration: video.duration || null, heartbeat: heartbeatHint, stealth, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
@@ -2142,9 +2151,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
         const manifestUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", sessTtls.manifest);
-        const variantSub = await resolveStealthVariant("s3", s3cfg);
-        const stealth = variantSub
-          ? { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, sid, variantSub, sessTtls.manifest) }
+        const stealth = hardening.stealthModeEnabled
+          ? { enabled: true, streamUrl: buildStealthMasterUrl(video.publicId, sid, sessTtls.manifest) }
           : { enabled: false };
         return res.json({ manifestUrl, sourceType: "s3_proxy", sessionId: sid, videoDuration: video.duration || null, heartbeat: heartbeatHint, stealth, ...(isAdminPreview ? { adminPreview: true } : {}) });
       }
@@ -2581,8 +2589,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     req: any,
     res: any,
     opaqueId: string,
-    expectedType: "l" | "c" | "k",
-    expiredCode: "WINDOW_EXPIRED" | "OPAQUE_ID_EXPIRED" | "SECRET_EXPIRED",
+    expectedType: "l" | "c" | "k" | "m",
+    expiredCode: "WINDOW_EXPIRED" | "OPAQUE_ID_EXPIRED" | "SECRET_EXPIRED" | "MASTER_EXPIRED",
   ): Promise<{ session: any; payload: OpaquePayload } | null> {
     const decoded = decodeOpaqueIdSkipExpiry(opaqueId);
     if (!decoded || decoded.t !== expectedType) {
@@ -2635,6 +2643,116 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     return { session, payload: decoded };
   }
+
+  // GET /api/player/:publicId/stream/master/:opaqueId
+  //   The "master" playlist in stealth mode. Browser sees only this opaque
+  //   URL — no .m3u8 / no master / no variant name in the path. Body is an
+  //   HLS master.m3u8 whose every #EXT-X-STREAM-INF entry points at a fresh
+  //   opaque /stream/window URL bound to the same sid. This is what makes
+  //   the quality selector work in stealth mode — without a master, hls.js
+  //   only sees a single level and the 360p/480p/720p picker is hidden.
+  app.get("/api/player/:publicId/stream/master/:opaqueId", async (req: any, res: any) => {
+    const opaqueId = String(req.params.opaqueId || "");
+    const ctx = await loadStealthCtx(req, res, opaqueId, "m", "MASTER_EXPIRED");
+    if (!ctx) return;
+    const { session, payload: decoded } = ctx;
+    const sid = decoded.s;
+    if (!session.hardening.stealthModeEnabled) {
+      return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Stealth mode not active for this session" });
+    }
+
+    const ua = req.headers["user-agent"] || "";
+    if (!validateUserAgent(sid, ua)) {
+      log(`SECURITY: UA mismatch on stream/master for sid=${sid}`);
+      return stealthDeny(res, sid, "Device mismatch");
+    }
+
+    try {
+      const { hlsPrefix, storageProvider, storageConfig } = session;
+      const masterKey = `${hlsPrefix.replace(/\/$/, "")}/master.m3u8`;
+
+      let originUrl: string;
+      if (storageProvider === "backblaze_b2") {
+        originUrl = await b2PresignGetObject(storageConfig.bucket, masterKey, storageConfig.endpoint, 30);
+      } else if (storageProvider === "cloudflare_r2") {
+        originUrl = await r2PresignGetObject(storageConfig.bucket, masterKey, storageConfig.endpoint, 30);
+      } else if (storageProvider === "bunny_net") {
+        originUrl = bunnyCdnUrl(storageConfig.pullZoneUrl, masterKey, 30);
+      } else {
+        const c = await getS3Client();
+        const s3cfg = await getS3Config();
+        if (!c || !s3cfg.bucket) return res.status(500).json({ message: "Storage not configured" });
+        const cmd = new GetObjectCommand({ Bucket: s3cfg.bucket, Key: masterKey });
+        originUrl = await getSignedUrl(c, cmd, { expiresIn: 30 });
+      }
+
+      const masterRes = await fetch(originUrl);
+      if (!masterRes.ok) return res.status(404).json({ message: "Master playlist not found" });
+      const masterText = await masterRes.text();
+
+      const ttls = getSessionTokenTTL(sid);
+      const outLines: string[] = [];
+      const lines = masterText.split("\n");
+      // Rewrites any URI="..." attribute inside an HLS tag (e.g.
+      // #EXT-X-MEDIA, #EXT-X-I-FRAME-STREAM-INF). Without this, an
+      // external https:// origin URL embedded as URI="..." would leak
+      // straight to the browser, breaking the stealth invariant.
+      const rewriteTagUriAttr = (tagLine: string): string | null => {
+        const m = tagLine.match(/URI="([^"]*)"/i);
+        if (!m) return tagLine;
+        const uri = m[1];
+        // Drop any absolute external URL — we never want to hand the
+        // browser an origin location, even via a manifest tag.
+        if (/^https?:\/\//i.test(uri)) {
+          log(`STEALTH_MASTER_STRIPPED_TAG_EXTERNAL_URI: pub=${req.params.publicId} sid=${sid}`);
+          return null;
+        }
+        if (/\.m3u8(\?|$)/i.test(uri)) {
+          const opaque = buildStealthLevelUrl(req.params.publicId, sid, uri.replace(/^\//, ""), ttls.manifest);
+          return tagLine.replace(/URI="[^"]*"/i, `URI="${opaque}"`);
+        }
+        // For non-playlist URIs inside tags (init segments, subs, etc.)
+        // we currently only support relative master playlist variants.
+        // Strip anything else rather than risk leaking it.
+        log(`STEALTH_MASTER_STRIPPED_TAG_UNSUPPORTED_URI: pub=${req.params.publicId} sid=${sid}`);
+        return null;
+      };
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        const line = raw.trim();
+        if (!line) { outLines.push(raw); continue; }
+        if (line.startsWith("#")) {
+          if (/URI="/i.test(line)) {
+            const rewritten = rewriteTagUriAttr(line);
+            if (rewritten !== null) outLines.push(rewritten);
+          } else {
+            outLines.push(raw);
+          }
+          continue;
+        }
+        // Strip any external (http://, https://) playlist URLs — security
+        // invariant: stealth master must NEVER expose an origin URL.
+        if (/^https?:\/\//i.test(line)) {
+          log(`STEALTH_MASTER_STRIPPED_EXTERNAL_URL: pub=${req.params.publicId} sid=${sid}`);
+          continue;
+        }
+        // Rewrite each relative variant playlist to a fresh stealth level URL.
+        if (/\.m3u8(\?|$)/i.test(line)) {
+          outLines.push(buildStealthLevelUrl(req.params.publicId, sid, line.replace(/^\//, ""), ttls.manifest));
+        } else {
+          outLines.push(raw);
+        }
+      }
+
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      return res.send(outLines.join("\n"));
+    } catch (e: any) {
+      log(`stream/master error for ${req.params.publicId}: ${e.message}`);
+      return res.status(500).json({ message: "Stream master error" });
+    }
+  });
 
   // GET /api/player/:publicId/stream/window/:opaqueId
   //   The "level" playlist. Browser sees only this opaque URL — no .m3u8 in
@@ -2946,14 +3064,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // player can keep using opaque names across rotation.
       let stealth: { enabled: boolean; streamUrl?: string } = { enabled: false };
       if (newSession.hardening.stealthModeEnabled) {
-        const variantSub = await resolveStealthVariantForSession(
-          newSession.hlsPrefix,
-          newSession.storageProvider as any,
-          newSession.storageConfig,
-        );
-        if (variantSub) {
-          stealth = { enabled: true, streamUrl: buildStealthLevelUrl(req.params.publicId, newSid, variantSub, ttls.manifest) };
-        }
+        stealth = { enabled: true, streamUrl: buildStealthMasterUrl(req.params.publicId, newSid, ttls.manifest) };
       }
       const overlapGraceSec = newSession.hardening.windowOverlapGraceSec;
       const heartbeatIntervalSec = newSession.hardening.heartbeatIntervalSec;
@@ -3639,10 +3750,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const ttls = getSessionTokenTTL(newSid);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
         if (hardening2.stealthModeEnabled) {
-          const variantSub = await resolveStealthVariantForSession(hlsPrefix, "bunny_net", cfg);
-          if (variantSub) {
-            stealth = { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, newSid, variantSub, ttls.manifest) };
-          }
+          stealth = { enabled: true, streamUrl: buildStealthMasterUrl(video.publicId, newSid, ttls.manifest) };
         }
       } else if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
@@ -3652,10 +3760,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const ttls = getSessionTokenTTL(newSid);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
         if (hardening2.stealthModeEnabled) {
-          const variantSub = await resolveStealthVariantForSession(hlsPrefix, providerType, cfg);
-          if (variantSub) {
-            stealth = { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, newSid, variantSub, ttls.manifest) };
-          }
+          stealth = { enabled: true, streamUrl: buildStealthMasterUrl(video.publicId, newSid, ttls.manifest) };
         }
       } else {
         // S3 (or null connection → legacy S3 config) fallback
@@ -3668,10 +3773,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             const ttls = getSessionTokenTTL(newSid);
             manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
             if (hardening2.stealthModeEnabled) {
-              const variantSub = await resolveStealthVariantForSession(hlsPrefix, "s3", s3cfg);
-              if (variantSub) {
-                stealth = { enabled: true, streamUrl: buildStealthLevelUrl(video.publicId, newSid, variantSub, ttls.manifest) };
-              }
+              stealth = { enabled: true, streamUrl: buildStealthMasterUrl(video.publicId, newSid, ttls.manifest) };
             }
           }
         } catch (e: any) {

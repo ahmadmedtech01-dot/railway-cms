@@ -1,0 +1,106 @@
+Fix the secure HLS player seek freeze and missing quality selector.
+
+CURRENT BUG:
+When the user plays video normally, it works. But when user clicks/forwards/seeks on the timeline, the video freezes for 30–45 seconds. Repeated clicking play eventually resumes. Network tab shows many repeated 403 Forbidden requests for /api/player/:publicId/stream/chunk/:token. Server logs show SECURITY_OUT_OF_WINDOW_SUSTAINED and oowInWindow increasing rapidly. This means after seeking, HLS requests segments outside the currently allowed playback window and backend blocks them.
+
+IMPORTANT:
+Do not weaken overall security. Fix the seek/window coordination properly.
+
+ROOT CAUSE TO FIX:
+The client seek action does not update/expand the server allowed segment window before HLS starts requesting the new seeked segments. After session rotation/progress update, allowed window sometimes remains old or resets incorrectly, causing seeked chunks to return 403.
+
+TASK 1 — Fix seek handling:
+1. In client/src/pages/embed-player.tsx, detect user seeking events:
+   - seeking
+   - seeked
+   - hls.js FRAG_LOADING / FRAG_CHANGED if needed
+   - manual timeline click if custom controls exist
+2. On seek, calculate the target segment index from video.currentTime and segment duration.
+3. Immediately POST progress/update-window to backend with:
+   - currentTime
+   - target segmentIndex
+   - reason: "seek"
+4. Wait for the backend window update response before allowing HLS to continue loading the new segment when possible.
+5. After seek window update, reload/refresh the secure window/manifest only if required.
+6. Do not let HLS keep retrying old blocked chunk URLs endlessly.
+7. On 403 segment error during seek:
+   - stop retry storm
+   - call progress/update-window with the failed/target segment index
+   - refresh secure window URLs
+   - recover media error or restart load from currentTime
+   - do not show black screen or long freeze.
+
+TASK 2 — Backend allowed window fix:
+1. In server/video-session.ts and related routes, update progress/window logic so seek requests are allowed.
+2. Add a separate seek-safe window expansion:
+   - For normal playback, keep normal sliding window.
+   - For user seek, immediately move/expand window around requested segment.
+3. The allowed window after seek should include enough forward buffer, for example:
+   - windowStart = max(0, targetSegmentIndex - 3)
+   - windowEnd = targetSegmentIndex + 20 to 40 segments
+4. Do not count a legitimate user seek as suspicious out-of-window abuse.
+5. SECURITY_OUT_OF_WINDOW_SUSTAINED should not trigger for valid seek requests from the active session.
+6. If a chunk request arrives slightly before progress update due to HLS race condition, allow a short seek grace window or return a recoverable response after updating window.
+7. Fix any bug where session rotation resets windowStart/windowEnd to old values or 0 incorrectly.
+8. After rotate-session, preserve last known playback currentTime/segmentIndex/window instead of resetting to the start.
+
+TASK 3 — Stop repeated 403 retry storm:
+1. In client hls.js error handler, detect repeated 403 for the same segment.
+2. Do not let HLS retry the same forbidden segment 20–100 times.
+3. On first/second 403:
+   - pause loading
+   - update server window for currentTime
+   - refresh secure URLs/window
+   - call hls.startLoad(currentTime)
+4. If recovery succeeds, continue playback smoothly.
+5. Only show playback error after real unrecoverable failure.
+
+TASK 4 — Fix quality selector:
+1. Verify the player loads the secure master.m3u8, not a single variant playlist.
+2. Verify secure master playlist contains multiple #EXT-X-STREAM-INF variants such as 360p, 480p, 720p.
+3. In embed-player.tsx, listen to HLS.Events.MANIFEST_PARSED.
+4. Read hls.levels and build quality options from:
+   - level.height
+   - level.width
+   - level.bitrate
+5. Show quality selector with:
+   - Auto
+   - 360p
+   - 480p
+   - 720p
+   - 1080p if available
+6. On quality selection:
+   - Auto: hls.currentLevel = -1
+   - Manual: hls.currentLevel = selectedLevelIndex
+7. Make sure quality selector is visible in both LMS embed and shareable link player.
+8. If only one level exists, show “Auto” or hide selector gracefully, but investigate why only one level exists if video was transcoded into multiple qualities.
+
+TASK 5 — Debug logs:
+Add temporary safe debug logs for:
+1. On seek:
+   - currentTime
+   - targetSegmentIndex
+   - old windowStart/windowEnd
+   - new windowStart/windowEnd
+2. On 403:
+   - failed segment
+   - currentTime
+   - current sessionId
+   - current allowed window
+   - whether recovery was attempted
+3. On manifest parsed:
+   - number of quality levels
+   - heights/bitrates detected
+
+TASK 6 — Acceptance tests:
+1. Play video normally for 10 minutes: no black screen, no repeated 403.
+2. Seek forward by 1 minute: playback resumes within 1–2 seconds.
+3. Seek backward: playback resumes within 1–2 seconds.
+4. Seek repeatedly 10 times: no freeze, no retry storm, no session block.
+5. Rotate session during playback: playback continues and window does not reset to 0.
+6. LMS embed and shareable link both work.
+7. Quality selector shows available qualities and switching works.
+8. Network tab should not show hundreds of repeated 403 requests.
+9. Server logs should not show SECURITY_OUT_OF_WINDOW_SUSTAINED for normal user seeking.
+
+Do not break existing secure token/session architecture. Do not disable token validation. Do not make chunks public. Fix the race between seeking, allowed playback window, session rotation, and HLS segment loading.
