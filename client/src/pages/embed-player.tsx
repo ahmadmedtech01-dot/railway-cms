@@ -792,14 +792,38 @@ export default function EmbedPlayerPage(props: any = {}) {
           // events (waiting/playing/seeking/seeked/canplay) AND hls.js
           // fragment events gives us accurate state in all three cases:
           // initial buffer fill, seek re-buffer, mid-playback network stall.
-          const onWaiting = () => setIsBuffering(true);
-          const onSeeking = () => { setIsBuffering(true); setBufferPct(0); };
+          // Debounce the spinner: hls.js fires brief sub-100ms `waiting`
+          // events between fragment swaps that are NOT real stalls. Showing
+          // a spinner for these creates a visual flicker every few seconds
+          // that users perceive as "freezing every 3 seconds" even though
+          // playback is fine. We only show the overlay if `waiting` persists
+          // beyond 400ms. Explicit user-triggered events (seek) skip the
+          // debounce because the user expects immediate feedback.
+          let waitingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+          const clearWaitingTimer = () => {
+            if (waitingDebounceTimer) {
+              clearTimeout(waitingDebounceTimer);
+              waitingDebounceTimer = null;
+            }
+          };
+          const onWaiting = () => {
+            clearWaitingTimer();
+            waitingDebounceTimer = setTimeout(() => {
+              setIsBuffering(true);
+              waitingDebounceTimer = null;
+            }, 400);
+          };
+          const onSeeking = () => {
+            clearWaitingTimer();
+            setIsBuffering(true);
+            setBufferPct(0);
+          };
           const onSeeked = () => {
             // Don't clear immediately — the decoder needs a moment to paint.
             // The `playing` / `canplay` event below clears it when frames flow.
           };
-          const onPlaying = () => setIsBuffering(false);
-          const onCanPlay = () => setIsBuffering(false);
+          const onPlaying = () => { clearWaitingTimer(); setIsBuffering(false); };
+          const onCanPlay = () => { clearWaitingTimer(); setIsBuffering(false); };
           const onProgress = () => {
             // Approximate fill % as: (buffered ahead of currentTime) /
             // (maxBufferLength target). Caps at 100. Drives the % label.

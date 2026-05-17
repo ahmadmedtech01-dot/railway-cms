@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "wouter";
 import EmbedPlayerPage from "./embed-player";
-import { setBootstrapToken, clearBootstrapToken } from "@/lib/bootstrap-token";
+import { setBootstrapToken, getBootstrapToken, getBootstrapPublicId } from "@/lib/bootstrap-token";
 
 export default function SharePlayerPage() {
   const params = useParams<{ publicId?: string; shareCode?: string }>();
@@ -70,8 +70,28 @@ export default function SharePlayerPage() {
   useEffect(() => {
     if (hasUrlToken || attemptedRef.current) return;
     attemptedRef.current = true;
+    // CRITICAL: if a bootstrap token is already in the module-level singleton,
+    // reuse it instead of calling /bootstrap again. This is the fix for the
+    // "duplicate bootstrap → new session SID → MSE flush → 3-5s black screen"
+    // cycle visible in Railway logs. It happens because:
+    //   1. /watch/:shareCode bootstrap succeeds and writes token to singleton
+    //   2. We call history.replaceState to rewrite URL to /v/:publicId below
+    //   3. Wouter sees the route change and remounts SharePlayerPage
+    //   4. New instance hits this effect with a fresh attemptedRef
+    //   5. Without this guard, we'd call /bootstrap again, mint a new session,
+    //      and force the player to swap manifests mid-playback.
+    // Also: removed the `clearBootstrapToken` cleanup. The previous cleanup
+    // wiped the singleton on every unmount, defeating singleton survival
+    // across remounts. The token lifetime is the page session — a hard
+    // navigation/refresh resets module state anyway.
+    const existing = getBootstrapToken();
+    const existingPid = getBootstrapPublicId();
+    if (existing && (!publicId || existingPid === publicId)) {
+      if (existingPid) setResolvedPublicId(existingPid);
+      setStatus("ready");
+      return;
+    }
     callBootstrap();
-    return () => { clearBootstrapToken(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
