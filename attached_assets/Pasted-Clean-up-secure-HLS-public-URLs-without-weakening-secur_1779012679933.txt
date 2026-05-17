@@ -1,0 +1,106 @@
+Clean up secure HLS public URLs without weakening security.
+
+Current browser Network tab shows very long signed URLs like:
+/api/player/:publicId/stream/chunk/<very-long-token>
+/api/player/:publicId/stream/secret/<very-long-token>
+
+Important:
+I understand HLS URLs cannot be fully hidden from DevTools Network. Do not try fake hiding. Instead make them shorter, safer, and routed only through Cloudflare gateway.
+
+Requirements:
+
+1. Keep Cloudflare gateway domain
+Production public playback must continue using:
+https://video.syanmedtech.com
+or configured HLS_GATEWAY_BASE / PUBLIC_HLS_GATEWAY_BASE.
+
+Do not expose Railway origin in browser Network.
+
+2. Replace very long public chunk/key URLs with short opaque signed URLs.
+
+Preferred new format:
+/hls/:sid/master.m3u8
+/seg/:sid/:segId
+/key/:sid/:keyId
+
+or compact format:
+/s/:shortToken
+/k/:shortToken
+
+3. Do not reduce security.
+Short URL must still validate:
+- publicId/video id
+- active session id
+- segment index or key id
+- expiry
+- HMAC signature
+- device/session binding where applicable
+- revoked/blocked session state
+
+4. Do not put full storage path or huge payload in browser URL.
+If needed, store mapping server-side:
+segmentId -> real storage path
+keyId -> real key path
+
+Or use compact base64url payload with minimal fields:
+sid, vid, segmentIndex, exp, nonce
+plus short HMAC signature.
+
+5. Do not expose:
+- SIGNING_SECRET
+- full storage path
+- B2/S3 private URL
+- Railway origin
+- raw internal token payload
+
+6. Keep existing security flow working:
+- mint
+- hls manifest
+- segment validation
+- key validation
+- token refresh
+- session rotation
+- LMS iframe playback
+- shareable link playback
+- admin preview
+- Cloudflare Worker validation
+- heartbeat/progress
+- global/per-video security settings
+
+7. Update manifest rewriting.
+Generated .m3u8 should contain short gateway URLs only, for example:
+https://video.syanmedtech.com/seg/<sid>/<segId>
+https://video.syanmedtech.com/key/<sid>/<keyId>
+
+8. Update Cloudflare Worker.
+Worker must accept new short paths:
+- /hls/*
+- /seg/*
+- /key/*
+
+Worker should validate or forward validation to origin securely.
+Worker must not redirect browser to Railway or B2 private URLs.
+Worker should preserve required HLS headers, CORS headers, and Range headers.
+
+9. Keep TTL stable:
+- manifest TTL: 60–120 sec
+- segment TTL: 120–180 sec
+- key TTL: 120 sec
+
+Do not use very short TTL that causes playback freeze.
+
+10. Add safe debug logs behind SECURE_PLAYER_DEBUG=true.
+Log only masked token/id:
+abc123...xyz789
+Never log full token, SIGNING_SECRET, full signed URL, or storage credentials.
+
+Acceptance criteria:
+- DevTools Network still shows HLS requests, but URLs are short.
+- URLs show video.syanmedtech.com, not Railway.
+- Video plays smoothly for 10 minutes.
+- 1.5x and 1.75x playback works.
+- LMS iframe works.
+- Shareable link works.
+- Admin preview works.
+- No security bypass is introduced.
+- Existing signed URL validation remains active.
