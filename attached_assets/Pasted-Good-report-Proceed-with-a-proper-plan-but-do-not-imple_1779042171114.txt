@@ -1,0 +1,80 @@
+Good report. Proceed with a proper plan, but do not implement blindly.
+
+Decision:
+For scalability, prefer caching master-encrypted B2 segment bytes at Cloudflare edge. Do not cache per-session re-encrypted bytes. Keep per-user security through signed URLs, SID validation, expiry, HMAC, session binding, key protection, watermarking, and abuse detection.
+
+Next step:
+Prepare the Worker synthetic-cache implementation plan.
+
+Requirements:
+
+1. Validate every request first:
+- HMAC signature
+- SID/session
+- expiry
+- publicId
+- segment path/index
+- UA/device binding if currently enforced
+- blocked/revoked state if Worker can verify it
+
+If invalid, return 403 before cache lookup.
+
+2. Use synthetic cache key after validation:
+cacheKey = publicId + variant/quality + segmentIndex or stable segment path.
+Do not include sid, st, exp, user token, or HMAC in the cache key.
+
+3. Cache only immutable media segments:
+- .ts
+- .m4s if used
+
+Do not cache:
+- master manifest
+- variant playlist if user/window-specific
+- encryption keys
+- user-specific responses
+- API responses
+
+4. Browser response:
+Return:
+Cache-Control: private, no-store
+
+5. Edge cached response:
+Store internally with:
+Cache-Control: public, max-age=86400, immutable
+
+6. Preserve:
+- CORS headers
+- content-type
+- content-length if safe
+- range behavior
+- error handling
+- no B2/R2 URL exposure
+
+7. Avoid Railway on segment cache hits.
+On cache hit, Worker must return segment bytes directly from Cloudflare cache without calling Railway or B2.
+
+8. On cache miss:
+Fetch origin/B2 safely, cache the segment, then return no-store response to browser.
+
+9. Keep Railway for:
+- mint
+- heartbeat
+- progress
+- tick
+- admin APIs
+- security settings
+
+10. Do not weaken:
+- signed URL validation
+- session binding
+- LMS iframe security
+- one-device/session rules
+- key protection
+- global/per-video security settings
+
+Return changed files and explain:
+- cache key used
+- what is cached
+- what is not cached
+- whether Railway is skipped on cache HIT
+- how security remains active
