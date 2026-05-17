@@ -1,0 +1,108 @@
+Fix 3 secure video player UX/playback issues without breaking security.
+
+Important:
+Do not weaken secure HLS, signed URLs, session binding, LMS iframe security, Cloudflare Worker gateway, anti-download protection, heartbeat/progress tracking, or global/per-video security settings.
+
+Issues to fix:
+
+1. Timeline seeking is slow/freezing
+When user clicks any point on the video progress bar/timeline, for example 5:00, video should seek there quickly and continue playback.
+Currently it freezes for 5–6 seconds before playing.
+
+Fix:
+- Improve seek handling in client/src/pages/embed-player.tsx.
+- On seek, immediately set video.currentTime to target time.
+- Show buffering overlay while HLS loads target segment.
+- Do not remint session unnecessarily on every seek.
+- Do not recreate HLS instance on every seek.
+- Do not revoke or rotate session just because user seeks.
+- Make sure segment token TTL is long enough for seek buffering.
+- If target segment returns 401/403, silently refresh token once, reload manifest, then resume from selected currentTime.
+- Only show playback error if retry fails.
+
+2. Initial video start has delay
+When video page opens, player should become ready fast.
+Currently play button appears, then after clicking, video starts after 5–6 seconds.
+
+Fix:
+- Preload manifest as soon as player page/session is ready.
+- Attach HLS source before user clicks play.
+- Do not wait for unnecessary heartbeat/progress/security API calls before loading manifest.
+- Start playback only after manifest is attached and enough metadata is loaded.
+- Use proper loading state: “Preparing secure playback…”
+- Avoid duplicate mint requests.
+- Avoid duplicate HLS instances.
+- Do not block first frame on analytics/progress calls.
+
+3. Add buffering/loading percentage overlay like YouTube/Netflix
+Add a buffering loader inside the video player.
+
+Behavior:
+- Show loader when:
+  - initial manifest/video is loading
+  - video is buffering
+  - seeking to new timeline position
+  - token refresh/reconnect is happening
+- Hide loader when video is playing smoothly.
+- Show percentage 0–100 if possible.
+
+Implementation:
+- Track loading progress using:
+  - HLS manifest loaded event
+  - HLS fragment loading/progress/loaded events
+  - video waiting, seeking, seeked, canplay, playing events
+  - buffered ranges from video.buffered
+- Calculate approximate buffer percentage:
+  - For initial load: based on manifest + first fragment loaded.
+  - For seek: based on target segment/fragment load completion.
+  - For normal buffering: based on buffered range around currentTime.
+- UI should be centered over video:
+  - spinner/progress ring
+  - text like “Buffering 45%”
+  - for reconnect: “Reconnecting secure session…”
+- Do not show scary error unless real failure occurs.
+
+Also fix false error behavior:
+- Ignore harmless canceled/aborted HLS requests:
+  - AbortError
+  - request canceled
+  - request aborted
+  - XHR status 0 from browser cancellation
+  - hls.js canceled/aborted request details
+- These must not show Playback Error, must not increment violation count, and must not revoke session.
+
+HLS tuning:
+- Add safe hls.js config for smoother playback and faster seek:
+  - enableWorker: true
+  - lowLatencyMode: false unless required
+  - backBufferLength: 30
+  - maxBufferLength: 30
+  - maxMaxBufferLength: 60
+  - maxBufferHole: 0.5
+  - nudgeOffset: 0.1
+  - nudgeMaxRetry: 3
+  - fragLoadingTimeOut: 20000
+  - manifestLoadingTimeOut: 20000
+  - levelLoadingTimeOut: 20000
+- Do not overbuffer too much.
+- Do not re-transcode videos.
+- Do not hardcode admin security settings.
+
+Request flood protection:
+- Destroy old HLS instance before creating new one.
+- Clear all intervals on unmount.
+- Prevent duplicate heartbeat/progress/token-refresh intervals.
+- Progress interval should be minimum 10–15 seconds.
+- Heartbeat interval should be minimum 20–30 seconds.
+- Do not call mint/refresh repeatedly while one request is already running.
+
+Acceptance criteria:
+- Video starts faster after opening.
+- Clicking timeline to 5:00 seeks correctly and resumes quickly.
+- During seek/load/buffer, user sees loader with progress instead of frozen screen.
+- No false “Playback Error — Network unstable” from canceled requests.
+- No duplicate request flood.
+- LMS iframe playback still works.
+- Shareable link playback still works.
+- Admin preview still works.
+- Security remains fully active.

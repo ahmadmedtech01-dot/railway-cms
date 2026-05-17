@@ -254,6 +254,34 @@ export default function EmbedPlayerPage(props: any = {}) {
   const [status, setStatus] = useState<"waiting" | "blocked" | "loading" | "ready" | "error" | "unavailable" | "processing">(
     urlToken || isLmsHmacToken ? "loading" : "waiting"
   );
+  // Inline buffering state shown over the playing video (YouTube/Netflix-style
+  // spinner). Distinct from `status === "loading"` which is the *initial*
+  // pre-ready load. isBuffering flips true while hls.js is filling buffers
+  // mid-playback (seek targets, network stalls, post-rotation re-buffer).
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [bufferPct, setBufferPct] = useState(0);
+  // Failsafe: auto-clear the buffering overlay if no `playing`/`canplay`
+  // event arrives within 15s after we flipped it true. Prevents a stuck
+  // spinner in pathological stalls where playback events never fire but
+  // the recovery ladder is still trying. The user can always see actual
+  // failures via the `error` status overlay.
+  const bufferingFailsafeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (bufferingFailsafeRef.current) {
+      clearTimeout(bufferingFailsafeRef.current);
+      bufferingFailsafeRef.current = null;
+    }
+    if (!isBuffering) return;
+    bufferingFailsafeRef.current = setTimeout(() => {
+      setIsBuffering(false);
+    }, 15000);
+    return () => {
+      if (bufferingFailsafeRef.current) {
+        clearTimeout(bufferingFailsafeRef.current);
+        bufferingFailsafeRef.current = null;
+      }
+    };
+  }, [isBuffering]);
   const [errorMsg, setErrorMsg] = useState("");
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -415,6 +443,27 @@ export default function EmbedPlayerPage(props: any = {}) {
     // Playback is restored inside finishSeek once the frame is confirmed visible.
     const hls = hlsRef.current;
     if (hls) {
+      // Show buffering overlay immediately so the user sees feedback even if
+      // the seek takes a moment to flush + re-buffer.
+      setIsBuffering(true);
+      setBufferPct(0);
+
+      // PROACTIVE WINDOW ADVANCE — this is what kills the 5-6s seek freeze.
+      // Without this, hls.startLoad(target) requests a segment outside the
+      // server's sliding window → server returns 403 OUT_OF_WINDOW → fatal
+      // error handler triggers full session rotation → ~5s recovery. By
+      // posting progress with the seek target FIRST, the server advances its
+      // window before our segment requests arrive, so they succeed first try.
+      const currentSid = streamSidRef.current;
+      if (currentSid && publicId) {
+        fetch(`/api/stream/${publicId}/progress`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sid: currentSid, currentTime: clampedTime, seekTo: true }),
+          keepalive: true,
+        }).catch(() => {});
+      }
+
       video.pause();
       hls.stopLoad();
       video.currentTime = clampedTime;
@@ -668,16 +717,21 @@ export default function EmbedPlayerPage(props: any = {}) {
             : Promise.resolve().then(() => { setSecurityReady(true); }),
         ]);
 
-        // Start session ping
-        const pingRes = await fetch(`/api/player/${publicId}/ping`, {
+        // Session ping is analytics-only — fire-and-forget so it does NOT
+        // block the hls.loadSource() call below. Previously this was awaited,
+        // adding a full Railway round-trip (~700ms) between manifest fetch
+        // and HLS attach, contributing directly to the 5-6s initial start
+        // delay the user reported.
+        fetch(`/api/player/${publicId}/ping`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(referrer ? { "x-embed-referrer": referrer } : {}) },
           body: JSON.stringify({}),
-        });
-        if (pingRes.ok) {
-          const pingData = await pingRes.json();
-          if (pingData.sessionCode) setSessionCode(pingData.sessionCode);
-        }
+        }).then(async pingRes => {
+          if (pingRes.ok) {
+            const pingData = await pingRes.json().catch(() => null);
+            if (pingData?.sessionCode) setSessionCode(pingData.sessionCode);
+          }
+        }).catch(() => {});
 
         // Stealth Protected Playback Mode: when enabled, the server returns
         // an opaque stream URL (/api/player/:publicId/stream/window/<opaqueId>)
@@ -733,6 +787,44 @@ export default function EmbedPlayerPage(props: any = {}) {
           hls.loadSource(manifestUrl);
           hls.attachMedia(video);
 
+          // Buffering overlay drivers — track buffer fill around currentTime
+          // and toggle the inline spinner. Listening to both video element
+          // events (waiting/playing/seeking/seeked/canplay) AND hls.js
+          // fragment events gives us accurate state in all three cases:
+          // initial buffer fill, seek re-buffer, mid-playback network stall.
+          const onWaiting = () => setIsBuffering(true);
+          const onSeeking = () => { setIsBuffering(true); setBufferPct(0); };
+          const onSeeked = () => {
+            // Don't clear immediately — the decoder needs a moment to paint.
+            // The `playing` / `canplay` event below clears it when frames flow.
+          };
+          const onPlaying = () => setIsBuffering(false);
+          const onCanPlay = () => setIsBuffering(false);
+          const onProgress = () => {
+            // Approximate fill % as: (buffered ahead of currentTime) /
+            // (maxBufferLength target). Caps at 100. Drives the % label.
+            try {
+              const v = videoRef.current;
+              if (!v || !v.buffered || v.buffered.length === 0) return;
+              const ct = v.currentTime;
+              let ahead = 0;
+              for (let i = 0; i < v.buffered.length; i++) {
+                if (v.buffered.start(i) <= ct && v.buffered.end(i) >= ct) {
+                  ahead = v.buffered.end(i) - ct;
+                  break;
+                }
+              }
+              const pct = Math.max(0, Math.min(100, Math.round((ahead / 30) * 100)));
+              setBufferPct(pct);
+            } catch {}
+          };
+          video.addEventListener("waiting", onWaiting);
+          video.addEventListener("seeking", onSeeking);
+          video.addEventListener("seeked", onSeeked);
+          video.addEventListener("playing", onPlaying);
+          video.addEventListener("canplay", onCanPlay);
+          video.addEventListener("progress", onProgress);
+
           // Control bridge: relay native video play/pause events to parent
           // Suppress PAUSE notifications that are caused by our internal seek
           // sequence (applyPendingSeek pauses the video before seeking).
@@ -778,6 +870,25 @@ export default function EmbedPlayerPage(props: any = {}) {
           hls.on(Hls.Events.ERROR, (_, d) => {
             const code = (d as any).response?.code;
             const responseText = (d as any).response?.text || "";
+
+            // Suppress harmless aborted/cancelled requests — these fire when
+            // hls.stopLoad() runs during seek/rotation/destroy and are NOT
+            // real errors. We require an explicit *Abort detail string OR a
+            // non-fatal error whose reason text matches abort/cancelled —
+            // we do NOT suppress on `code === 0` alone, because that code
+            // also covers real transport failures (offline, CORS, reset)
+            // that must still flow through the recovery ladder.
+            const details = (d as any).details || "";
+            const reasonText = (responseText || "").toLowerCase();
+            const isExplicitAbort =
+              details === "internalAbort" ||
+              details === "fragLoadAbort" ||
+              details === "keyLoadAbort" ||
+              details === "manifestLoadAbort" ||
+              details === "levelLoadAbort";
+            const isCancelledNonFatal =
+              !d.fatal && code === 0 && (reasonText.includes("abort") || reasonText.includes("cancel"));
+            if (isExplicitAbort || isCancelledNonFatal) return;
 
             // Non-fatal network errors: try startLoad() to resume stalled downloads.
             // Suppress during rotation — old cancelled requests produce noise here and
@@ -1478,22 +1589,53 @@ export default function EmbedPlayerPage(props: any = {}) {
     }).catch(() => {});
   };
 
+  // Shared seek routine. Routes ALL local seek interactions (skip buttons,
+  // timeline scrubber) through the same hardened path as applyPendingSeek:
+  //  1. Pre-emptively POST /progress with seekTo:true so server advances its
+  //     sliding window BEFORE our segment requests arrive — eliminates the
+  //     OUT_OF_WINDOW → full-rotation freeze (~5s).
+  //  2. Show buffering overlay immediately for user feedback.
+  //  3. Use hls.stopLoad() + startLoad(target) so the player flushes the
+  //     in-flight fragment queue cleanly instead of waiting on it.
+  const performLocalSeek = (newTime: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    setCurrentTime(newTime);
+    setIsBuffering(true);
+    setBufferPct(0);
+    const currentSid = streamSidRef.current;
+    if (currentSid && publicId) {
+      fetch(`/api/stream/${publicId}/progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: currentSid, currentTime: newTime, seekTo: true }),
+        keepalive: true,
+      }).catch(() => {});
+    }
+    const hls = hlsRef.current;
+    if (hls) {
+      const wasPlaying = !v.paused;
+      hls.stopLoad();
+      v.currentTime = newTime;
+      hls.startLoad(newTime);
+      if (wasPlaying) v.play().catch(() => {});
+    } else {
+      v.currentTime = newTime;
+    }
+  };
+
   const seek = (delta: number) => {
     const v = videoRef.current;
     if (!v || !playerSettings.allowSkip) return;
     const newTime = Math.max(0, Math.min(isFinite(v.duration) ? v.duration : Infinity, v.currentTime + delta));
-    v.currentTime = newTime;
-    setCurrentTime(newTime);
-    reportProgressNow(newTime);
+    performLocalSeek(newTime);
   };
 
   const handleSeekBar = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = videoRef.current;
     if (!v || !playerSettings.allowSkip) return;
     const newTime = parseFloat(e.target.value);
-    v.currentTime = newTime;
-    setCurrentTime(newTime);
-    reportProgressNow(newTime);
+    performLocalSeek(newTime);
   };
 
   const handleVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1801,10 +1943,34 @@ export default function EmbedPlayerPage(props: any = {}) {
             onContextMenu={effectiveSecurity.disableRightClick ? e => e.preventDefault() : undefined}
           />
 
-          {/* Loading overlay */}
+          {/* Initial loading overlay (pre-ready) */}
           {status === "loading" && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/80">
-              <div className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 gap-3" data-testid="overlay-initial-loading">
+              <div className="h-10 w-10 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              <p className="text-white/80 text-xs tracking-wide">Preparing secure playback…</p>
+            </div>
+          )}
+
+          {/* Inline buffering overlay (YouTube/Netflix-style) — shown while
+              hls.js is filling buffers mid-playback (seek, stall, rotation). */}
+          {status === "ready" && isBuffering && !isBlocked && (
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-[1px] pointer-events-none z-30"
+              data-testid="overlay-buffering"
+            >
+              <div className="relative h-14 w-14">
+                <div className="absolute inset-0 animate-spin rounded-full border-[3px] border-white/20 border-t-white" />
+              </div>
+              {bufferPct > 0 && bufferPct < 100 && (
+                <p className="mt-3 text-white/90 text-xs font-medium tracking-wide tabular-nums">
+                  Buffering {bufferPct}%
+                </p>
+              )}
+              {isRotatingRef.current && (
+                <p className="mt-1 text-white/60 text-[10px] tracking-wide">
+                  Reconnecting secure session…
+                </p>
+              )}
             </div>
           )}
 
