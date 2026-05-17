@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool } from "./db";
+import { runMigrations } from "./migrate";
 import { registerRoutes, recoverProcessingVideos } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -207,6 +208,15 @@ async function seedDefaultSettings() {
 }
 
 (async () => {
+  // Apply idempotent SQL migrations before any route or query runs. Each
+  // migration uses `IF NOT EXISTS` guards so repeated boots are no-ops.
+  try {
+    await runMigrations();
+  } catch (e) {
+    crashLog(`[FATAL] Migration run failed: ${(e as Error)?.stack || e}`);
+    throw e;
+  }
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
