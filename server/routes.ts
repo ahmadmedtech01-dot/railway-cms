@@ -250,6 +250,23 @@ async function downloadToTempFile(url: string, headers: Record<string, string> =
   return tmpPath;
 }
 
+// Concurrency tuned for B2/R2: 8 parallel PUTs comfortably saturates the
+// upstream link without tripping per-bucket request burst limits. Raising
+// further yields diminishing returns and risks 429s on shared B2 buckets.
+const HLS_UPLOAD_CONCURRENCY = 8;
+const HLS_UPLOAD_MAX_ATTEMPTS = 3;
+
+function hlsContentType(filename: string): string {
+  if (filename.endsWith(".m3u8")) return "application/vnd.apple.mpegurl";
+  if (filename.endsWith(".ts")) return "video/MP2T";
+  if (filename.endsWith(".key")) return "application/octet-stream";
+  if (filename.endsWith(".vtt")) return "text/vtt";
+  if (filename.endsWith(".png")) return "image/png";
+  if (filename.endsWith(".jpg") || filename.endsWith(".jpeg")) return "image/jpeg";
+  if (filename.endsWith(".webp")) return "image/webp";
+  return "application/octet-stream";
+}
+
 async function uploadHlsDir(localDir: string, prefix: string, activeConn: Awaited<ReturnType<typeof storage.getActiveStorageConnection>>): Promise<void> {
   function walkDir(dir: string): string[] {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -260,16 +277,77 @@ async function uploadHlsDir(localDir: string, prefix: string, activeConn: Awaite
     }
     return files;
   }
-  const files = walkDir(localDir);
+  const allFiles = walkDir(localDir);
+  // Never upload the symmetric AES master key or the local key_info hint —
+  // the encrypted enc.key is uploaded separately by the caller through the
+  // provider-specific upload path so the bytes can be tracked in storage_kid.
   const skipFiles = new Set(["enc.key", "key_info.txt"]);
-  for (const file of files) {
-    const basename = path.basename(file);
-    if (skipFiles.has(basename)) continue;
+  const files = allFiles.filter(f => !skipFiles.has(path.basename(f)));
+  const total = files.length;
+  if (total === 0) return;
+
+  log(`[upload] starting parallel HLS upload: files=${total} concurrency=${HLS_UPLOAD_CONCURRENCY} prefix=${prefix}`);
+  const startedAt = Date.now();
+
+  let cursor = 0;
+  let completed = 0;
+  let firstError: Error | null = null;
+
+  async function uploadOne(file: string): Promise<void> {
     const relPath = path.relative(localDir, file).replace(/\\/g, "/");
     const key = `${prefix}${relPath}`;
-    const contentType = file.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/MP2T";
-    await uploadToActiveStorage(file, key, contentType, activeConn);
+    const contentType = hlsContentType(path.basename(file));
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= HLS_UPLOAD_MAX_ATTEMPTS; attempt++) {
+      try {
+        await uploadToActiveStorage(file, key, contentType, activeConn);
+        return;
+      } catch (err: any) {
+        lastErr = err;
+        if (attempt < HLS_UPLOAD_MAX_ATTEMPTS) {
+          // 500ms, 1500ms backoff
+          const backoff = 500 * Math.pow(3, attempt - 1);
+          log(`[upload] retry ${attempt}/${HLS_UPLOAD_MAX_ATTEMPTS - 1} for ${key} after ${backoff}ms: ${err?.message || err}`);
+          await new Promise(r => setTimeout(r, backoff));
+        }
+      }
+    }
+    throw new Error(`Upload failed for ${key} after ${HLS_UPLOAD_MAX_ATTEMPTS} attempts: ${lastErr?.message || lastErr}`);
   }
+
+  // Fixed-size worker pool. Each worker pulls indices until exhausted or until
+  // any worker has recorded a fatal error (firstError), at which point the
+  // remaining workers exit early without starting new uploads.
+  async function worker(): Promise<void> {
+    while (true) {
+      if (firstError) return;
+      const idx = cursor++;
+      if (idx >= total) return;
+      try {
+        await uploadOne(files[idx]);
+        completed++;
+        if (completed % 50 === 0 || completed === total) {
+          const pct = Math.round((completed / total) * 100);
+          const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+          log(`[upload] progress ${completed}/${total} (${pct}%) elapsed=${elapsed}s`);
+        }
+      } catch (err: any) {
+        if (!firstError) firstError = err;
+        return;
+      }
+    }
+  }
+
+  const workerCount = Math.min(HLS_UPLOAD_CONCURRENCY, total);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  if (firstError) {
+    const err: Error = firstError;
+    log(`[upload] FAILED after ${completed}/${total} files: ${err.message}`);
+    throw err;
+  }
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  log(`[upload] HLS upload complete: ${total} files in ${elapsed}s (${(total / parseFloat(elapsed)).toFixed(1)} files/s)`);
 }
 
 async function deleteStoragePrefix(client: S3Client, bucket: string, prefix: string): Promise<number> {
