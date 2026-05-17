@@ -226,6 +226,21 @@ export default function EmbedPlayerPage(props: any = {}) {
   // Per-seek recovery budget — caps how many times we'll attempt the
   // lightweight recovery for a given seek burst. Resets every new seek.
   const seekRecoveryCountRef = useRef<number>(0);
+  // Playback epoch — incremented on every intentional seek, replay-after-ended,
+  // and session rotation. The progress interval attaches the current epoch to
+  // each POST body; seeks abort the in-flight request and bump the epoch so
+  // any response that does arrive on the wire is discarded by the server's
+  // stale-advance guard (belt) and by AbortController cancellation (suspenders).
+  const playbackEpochRef = useRef<number>(0);
+  // AbortController for the currently in-flight periodic progress POST.
+  // Aborting it on seek prevents the old-position request from reaching the
+  // server (or at minimum cancels response processing on the client side).
+  const progressAbortRef = useRef<AbortController | null>(null);
+  // Set to true when the video element fires "ended". Cleared whenever a seek
+  // or replay resets the position. Prevents the progress interval from
+  // sending the end-of-video position after playback finishes, which would
+  // leave a stale high-index window that freezes replay from the beginning.
+  const videoEndedRef = useRef<boolean>(false);
   // Bounded wait for the pre-seek /progress POST. If the request stalls
   // (proxy hang, dropped TCP), we MUST still resume loading at the new
   // position — otherwise stopLoad() runs, the POST never settles, and
@@ -234,10 +249,23 @@ export default function EmbedPlayerPage(props: any = {}) {
   const SEEK_PROGRESS_TIMEOUT_MS = 700;
   const seekProgressWithTimeout = (sid: string, currentTime: number): Promise<void> => {
     if (!publicId) return Promise.resolve();
+    // Cancel any in-flight periodic progress POST from the OLD position before
+    // it reaches the server. If the request is already in-flight at the TCP
+    // level this abort won't stop the server from processing it, but the
+    // server-side stale-advance guard (SEEK_STALE_GUARD_MS) catches those.
+    if (progressAbortRef.current) {
+      try { progressAbortRef.current.abort(); } catch {}
+      progressAbortRef.current = null;
+    }
+    // Bump playback epoch so any concurrent interval tick that spawns a new
+    // request after this point carries the new epoch in its body.
+    playbackEpochRef.current += 1;
+    // Seeking always clears the ended flag — we are now at a new position.
+    videoEndedRef.current = false;
     const req = fetch(`/api/stream/${publicId}/progress`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sid, currentTime, seekTo: true }),
+      body: JSON.stringify({ sid, currentTime, seekTo: true, epoch: playbackEpochRef.current }),
     }).then(() => undefined).catch(() => undefined);
     return Promise.race([
       req,
@@ -1389,19 +1417,36 @@ export default function EmbedPlayerPage(props: any = {}) {
       if (!v || v.paused || !currentSid) return;
       // Skip while a rotation is in-flight. `hls.loadSource(newUrl)` briefly
       // flushes MSE, during which `v.currentTime` can read 0 — posting that
-      // would (pre-monotonic-server-fix) reset the new session's sliding
-      // window to [0, windowSegs] and cause the next chunk to 403 with
-      // out_of_window, freezing playback. Server is now also forward-only,
-      // but suppressing the post here avoids a needless round-trip.
+      // would reset the new session's sliding window to [0, windowSegs] and
+      // cause the next chunk to 403 with out_of_window, freezing playback.
       if (isRotatingRef.current) return;
       // Defensive: even on the same SID, a near-zero currentTime during the
       // earliest moments after attach is not a real playback position.
       // Genuine seeks to 0 go through performLocalSeek with seekTo:true.
       if (!(v.currentTime > 0.25)) return;
+      // Do not send progress after the video has ended. The end-of-file
+      // position would be a stale high-index value that jumps the server
+      // window far ahead, causing 403s when the user replays from the start.
+      if (videoEndedRef.current) return;
+      // Snapshot the epoch at fire time. If a seek fires concurrently and
+      // bumps the epoch, the new epoch value is carried on the seekTo POST;
+      // THIS request's old epoch still goes out but the server's
+      // stale-advance guard (SEEK_STALE_GUARD_MS) will drop it if the jump
+      // is too large. Abort any previously-issued interval POST first.
+      if (progressAbortRef.current) {
+        try { progressAbortRef.current.abort(); } catch {}
+      }
+      const ac = new AbortController();
+      progressAbortRef.current = ac;
       fetch(`/api/stream/${publicId}/progress`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sid: currentSid, currentTime: v.currentTime }),
+        body: JSON.stringify({
+          sid: currentSid,
+          currentTime: v.currentTime,
+          epoch: playbackEpochRef.current,
+        }),
+        signal: ac.signal,
       }).catch(() => {});
     }, 10000);
     return () => { if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); };
@@ -1622,7 +1667,14 @@ export default function EmbedPlayerPage(props: any = {}) {
     if (!video) return;
     const onPlay = () => { setPlaying(true); lastPausedAtRef.current = -1; };
     const onPause = () => { setPlaying(false); lastPausedAtRef.current = Date.now(); };
-    const onEnded = () => { setPlaying(false); lastPausedAtRef.current = -1; };
+    const onEnded = () => {
+      setPlaying(false);
+      lastPausedAtRef.current = -1;
+      // Mark the ended state so the periodic progress interval stops sending
+      // the end-of-video segment index, which would leave the server window
+      // parked at the last segment and cause 403s on replay from the start.
+      videoEndedRef.current = true;
+    };
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime);
       if (!video.paused) setSecondsWatched(s => s + 0.25);
@@ -1676,6 +1728,23 @@ export default function EmbedPlayerPage(props: any = {}) {
       return;
     }
     if (v.paused) {
+      // ── REPLAY AFTER ENDED ──────────────────────────────────────────────
+      // When the video has reached its natural end, `v.ended === true` and
+      // `v.currentTime ≈ duration`. Calling `v.play()` at this position would
+      // either replay the last few ms and immediately fire "ended" again, or
+      // (on some browsers) silently do nothing. More importantly, the server
+      // window is still parked at the last-segment index from the final
+      // progress report. We must reset it before any HLS chunk requests arrive.
+      // Fix: run the full seek-to-start flow through applyPendingSeek(0), which:
+      //   1. increments playbackEpoch (via seekProgressWithTimeout → aborts stale in-flight)
+      //   2. POSTs seekTo:true with currentTime=0 → server resets window to [0, windowSegs]
+      //   3. calls hls.startLoad(0) → hls.js fetches from the beginning
+      //   4. clears videoEndedRef so the progress interval resumes
+      if (videoEndedRef.current || v.ended) {
+        videoEndedRef.current = false;
+        applyPendingSeek(0);
+        return;
+      }
       // If paused for more than 90 seconds, proactively rotate the HLS session
       // to get fresh signed URLs before resuming — prevents black-screen on long pauses.
       const pausedMs = lastPausedAtRef.current > 0 ? Date.now() - lastPausedAtRef.current : 0;

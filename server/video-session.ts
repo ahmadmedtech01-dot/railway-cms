@@ -1302,6 +1302,30 @@ export function updateProgress(sid: string, segmentIndex: number, seekTo: boolea
     (s as any)._oowLog = [];
   } else {
     // Forward-only — never regress the window from a stale or racy report.
+    //
+    // STALE-ADVANCE GUARD ─────────────────────────────────────────────────
+    // Problem: when the user seeks backward (e.g. t=13:37 → t=0:08), an
+    // in-flight progress POST from the OLD position (idx=412) may arrive at
+    // the server AFTER the seekTo POST (idx=4) has already moved the window
+    // to [3, 27]. Because this path is forward-only, 412 > 4 → window jumps
+    // to [411, 435] → hls.js requesting seg_004 gets 403 → freeze.
+    //
+    // Fix: within SEEK_STALE_GUARD_MS after a seekTo, ignore any non-seekTo
+    // advance that jumps more than SEEK_STALE_MAX_JUMP_SEGS ahead of the
+    // current index. Threshold is generous (20 segs = 40 s) so legitimate
+    // fast-forward / rebuffer advances are never blocked. A stale post from
+    // t=13:37 arriving after a seek to t=0:08 has jump=408 >> 20 → dropped.
+    const SEEK_STALE_GUARD_MS = 5000;
+    const SEEK_STALE_MAX_JUMP_SEGS = 20;
+    if (
+      s.lastSeekAt > 0 &&
+      Date.now() - s.lastSeekAt < SEEK_STALE_GUARD_MS &&
+      clamped > s.currentSegmentIndex + SEEK_STALE_MAX_JUMP_SEGS
+    ) {
+      // Drop silently — stale pre-seek progress post arriving late.
+      // Return true so the HTTP layer returns 200 (no client-visible error).
+      return true;
+    }
     s.currentSegmentIndex = Math.max(s.currentSegmentIndex, clamped);
   }
   s.lastProgressAt = Date.now();

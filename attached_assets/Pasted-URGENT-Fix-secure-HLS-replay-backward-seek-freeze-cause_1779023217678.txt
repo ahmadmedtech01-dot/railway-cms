@@ -1,0 +1,164 @@
+URGENT: Fix secure HLS replay/backward-seek freeze caused by sliding-window desync.
+
+Current issue:
+Video plays smoothly once.
+But after video completes, or when user clicks back on timeline to replay any earlier duration, video freezes with buffering spinner and does not continue.
+Refreshing the page fixes it temporarily.
+
+Logs show progress/heartbeat/window desync:
+The same session sends multiple conflicting window updates within seconds:
+- windowStart 0–24, targetSegmentIndex 1
+- windowStart 6–30, targetSegmentIndex 7
+- windowStart 13–37, targetSegmentIndex 14
+- windowStart 8–32, targetSegmentIndex 9
+- windowStart 1–25, targetSegmentIndex 2
+
+This means old progress/heartbeat/window requests are still active after seek/replay and are fighting with the new playback position.
+
+Do not weaken security.
+Do not disable secure HLS.
+Do not disable signed URLs.
+Do not disable sliding-window protection completely.
+Do not remove session binding.
+Do not remove Cloudflare Worker gateway.
+Do not bypass LMS iframe security.
+Do not hardcode admin security settings.
+
+Fix requirements:
+
+1. Add seek/replay transaction ID
+
+In client/src/pages/embed-player.tsx:
+- Maintain playbackEpochRef or seekEpochRef.
+- Increment it whenever:
+  - user seeks
+  - video replays after ended
+  - source/manifest reloads
+  - session rotates
+- Attach current epoch to progress, heartbeat, window-refresh, and any async callback if possible.
+- Ignore any response/callback from an old epoch.
+
+Goal:
+Old progress/heartbeat requests must not update current window after user seeks backward or replays.
+
+2. Clear stale timers on seek/replay
+
+When user seeks or restarts video:
+- abort pending progress request
+- abort pending heartbeat request if tied to old position
+- abort pending window refresh request
+- clear any seek debounce timer
+- do not destroy full HLS unless necessary
+- do not create duplicate HLS instance
+
+Restart only one clean progress/heartbeat loop with the new currentTime.
+
+3. Progress update must be debounced after seek
+
+On seek:
+- immediately set video.currentTime
+- set isSeeking/buffering overlay
+- wait until seeked/canplay/playing OR 500–1000ms debounce
+- then send one progress update with the new segment index
+- do not send old currentTime progress during seek
+
+4. Server must ignore stale progress/window updates
+
+Update /api/stream/:publicId/progress and heartbeat logic:
+- include sessionId/SID in payload if not already
+- include currentTime and segmentIndex
+- include optional clientEpoch
+- if request uses old SID or old epoch, ignore it safely
+- do not move allowed window backwards due to stale progress
+- do not let old background interval reset window from 13–37 back to 0–24 unless this is a confirmed user seek/replay
+
+5. Add explicit seek/replay endpoint or flag
+
+When user intentionally seeks backward or replays:
+Client should send:
+{
+  currentTime,
+  segmentIndex,
+  reason: "seek" | "replay",
+  epoch
+}
+
+Server should then allow backward window movement only for intentional seek/replay.
+
+Normal progress should be monotonic or near-monotonic.
+Backward window jump should not happen from stale timers.
+
+6. Fix ended/replay behavior
+
+When video reaches ended:
+- stop progress interval or mark ended state
+- do not keep pushing final/old progress forever
+- when user presses play again:
+  - set currentTime = 0 or selected replay time
+  - increment playback epoch
+  - refresh window around new segment index
+  - reload manifest if needed
+  - resume playback
+
+7. HLS recovery after backward seek
+
+On backward seek:
+- call hls.startLoad(targetTime) if needed
+- do not recreate HLS unless the manifest/window is invalid
+- if segment returns 401/403 because old window does not include target:
+  - call progress/window refresh with reason seek
+  - reload manifest
+  - resume from target currentTime
+- only show error if retry fails repeatedly
+
+8. Sliding-window rules
+
+Keep security active, but allow legitimate user seek:
+
+- Current playback can advance normally.
+- Backward jump is allowed only when client sends reason "seek" or "replay".
+- Stale progress requests cannot move window.
+- Old SID/old epoch progress cannot update active session.
+- Segment access remains signed and session-bound.
+- Abuse/velocity scoring remains active.
+
+9. UI
+
+During seek/replay:
+- show buffering overlay:
+  “Loading selected position…”
+- hide overlay when playing/canplay
+- do not leave permanent spinner if recovery succeeds
+- if recovery fails, show clear error:
+  “Could not load selected position. Please retry.”
+
+10. Debug logs behind SECURE_PLAYER_DEBUG=true
+
+Log masked only:
+- seek/replay epoch increment
+- old progress ignored
+- current segment index
+- old window -> new window
+- backward seek accepted
+- stale window update blocked
+- HLS retry after seek
+
+Never log:
+- SIGNING_SECRET
+- full token
+- full signed URL
+- storage credentials
+
+Acceptance criteria:
+- Video plays smoothly first time.
+- After completion, pressing play again starts video without page refresh.
+- Clicking timeline backward to any duration loads and plays.
+- No permanent spinner after seek/replay.
+- Progress/window does not jump randomly between old and new segment indexes.
+- Only one HLS instance exists.
+- Only one progress interval exists.
+- Only one heartbeat interval exists.
+- Shareable link works.
+- LMS iframe works.
+- Admin preview works.
+- Security remains fully active.
