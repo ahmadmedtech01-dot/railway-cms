@@ -194,31 +194,118 @@ export function mintOpaqueId(payload: OpaquePayload): string {
   return Buffer.concat([iv, ct, tag]).toString("hex");
 }
 
+// ── STABLE CHUNK CACHE-KEY PREFIX ─────────────────────────────────────────
+// Length of the hex prefix prepended to chunk opaque IDs (16 hex = 8 bytes
+// = 64 bits of HMAC entropy — enough to be collision-free per video and
+// indistinguishable from random in the URL).
+export const CHUNK_CACHE_PREFIX_LEN = 16;
+
+// Deterministic stable cache key for a chunk. Same (publicId, segSubPath)
+// always produces the same key — across users, sessions, even server
+// restarts (HMAC keyed only by SIGNING_SECRET which is the same on every
+// instance). Prefixed with "chunk|" domain separator so the same secret
+// can't collide with any other HMAC use (e.g. /seg/ signing).
+//
+// SECURITY: publicId is INCLUDED in the HMAC. Without it, segSubPath like
+// "720p/seg_042.ts" repeats across videos and Worker cache would serve
+// Video A's bytes to Video B viewers. The publicId binding prevents that.
+export function computeChunkStableKey(publicId: string, segSubPath: string): string {
+  return crypto
+    .createHmac("sha256", SECRET + "::stealth-chunk-cache-v1")
+    .update(`chunk|${publicId}|${segSubPath}`)
+    .digest("hex")
+    .slice(0, CHUNK_CACHE_PREFIX_LEN);
+}
+
+// Mint a chunk opaque ID with a stable cache-key prefix prepended. The
+// prefix is what the Cloudflare Worker reads to build its cache key —
+// it's identical for all users watching the same segment, even though
+// the encrypted suffix is per-session. The full ID stays URL-opaque.
+//
+// Format: <16hex stableKey><existing-opaque-hex>
+//
+// On the server, verifyOpaqueIdDetailed strips an optional 16-hex prefix
+// before AES-GCM decryption, so this is backward-compatible with any
+// old non-prefixed IDs that might still be in flight after a deploy.
+export function mintOpaqueChunkId(payload: OpaquePayload, publicId: string): string {
+  if (payload.t !== "c" || !payload.p) {
+    // Only chunk opaque IDs get the prefix. For any other type, fall back
+    // to the regular mint so callers using mintOpaqueChunkId mistakenly
+    // can't accidentally pollute the cache namespace.
+    return mintOpaqueId(payload);
+  }
+  const stable = computeChunkStableKey(publicId, payload.p);
+  return stable + mintOpaqueId(payload);
+}
+
+// Edge-validatable signed token bound to (publicId, cache prefix, exp).
+// The Cloudflare Worker uses this to authenticate stealth chunk URLs at
+// the EDGE before doing a cache lookup. Without this, any holder of a
+// previously-observed chunk URL could keep pulling bytes from the edge
+// cache after their session is revoked — for up to the cache TTL (24h).
+// With this gate, the replay window is bounded by `exp + skew` (~15s),
+// matching the existing /seg/ revocation model.
+//
+// The signature is HMAC-SHA256 of "chunk-cache-v1|publicId|prefix|exp",
+// keyed by SIGNING_SECRET. Both Worker and origin compute this the same
+// way — the Worker has SIGNING_SECRET as an env var.
+export function signChunkCacheToken(publicId: string, stablePrefix: string, exp: number): string {
+  return crypto
+    .createHmac("sha256", SECRET)
+    .update(`chunk-cache-v1|${publicId}|${stablePrefix}|${exp}`)
+    .digest("hex");
+}
+
 // Result of opaque-ID verification. `reason` distinguishes the specific failure
 // for structured logging (OPAQUE_ID_EXPIRED, OPAQUE_ID_MALFORMED, OPAQUE_ID_TAMPERED).
 // The verify path used to return null for every failure mode, making it
 // impossible to tell "natural TTL rollover" apart from "tampered/forged URL".
 export type OpaqueVerifyFailure = "OPAQUE_ID_MALFORMED" | "OPAQUE_ID_TAMPERED" | "OPAQUE_ID_EXPIRED";
 
+// Strip the optional 16-hex chunk cache-key prefix. The encrypted opaque
+// payload that follows is what we actually decrypt. Non-chunk types and
+// legacy chunks without a prefix decrypt fine because the cipher length
+// for a non-prefixed ID has IV(12) + CT(>=1) + TAG(16) ≥ 29 bytes = 58
+// hex chars, while the prefix is exactly 16 hex chars added at the
+// front. We can tell whether a prefix is present by trying decryption
+// at both offsets; the wrong offset always fails GCM authentication.
+function stripChunkCachePrefixIfPresent(id: string): { stripped: string; hadPrefix: boolean } {
+  if (id.length > CHUNK_CACHE_PREFIX_LEN + 60 && /^[0-9a-f]+$/i.test(id)) {
+    return { stripped: id.slice(CHUNK_CACHE_PREFIX_LEN), hadPrefix: true };
+  }
+  return { stripped: id, hadPrefix: false };
+}
+
 export function verifyOpaqueIdDetailed(id: string, overlapGraceSec: number = 3): { payload?: OpaquePayload; failure?: OpaqueVerifyFailure } {
   if (typeof id !== "string" || id.length < 60 || !/^[0-9a-f]+$/i.test(id)) {
     return { failure: "OPAQUE_ID_MALFORMED" };
   }
-  let parsed: OpaquePayload;
-  try {
-    const buf = Buffer.from(id, "hex");
-    if (buf.length < 12 + 16 + 1) return { failure: "OPAQUE_ID_MALFORMED" };
-    const iv = buf.subarray(0, 12);
-    const tag = buf.subarray(buf.length - 16);
-    const ct = buf.subarray(12, buf.length - 16);
-    const decipher = crypto.createDecipheriv("aes-256-gcm", stealthAesKey, iv);
-    decipher.setAuthTag(tag);
-    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
-    parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
-  } catch {
+  // Try decryption with possible chunk-cache prefix stripped first, then
+  // fall back to the raw ID. GCM authentication makes false-positives
+  // (decrypting the wrong byte range successfully) cryptographically
+  // negligible, so trying both is safe.
+  const { stripped, hadPrefix } = stripChunkCachePrefixIfPresent(id);
+  const tryDecrypt = (hex: string): OpaquePayload | null => {
+    try {
+      const buf = Buffer.from(hex, "hex");
+      if (buf.length < 12 + 16 + 1) return null;
+      const iv = buf.subarray(0, 12);
+      const tag = buf.subarray(buf.length - 16);
+      const ct = buf.subarray(12, buf.length - 16);
+      const decipher = crypto.createDecipheriv("aes-256-gcm", stealthAesKey, iv);
+      decipher.setAuthTag(tag);
+      const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+      return JSON.parse(pt.toString("utf8")) as OpaquePayload;
+    } catch {
+      return null;
+    }
+  };
+  let parsed: OpaquePayload | null = hadPrefix ? tryDecrypt(stripped) : null;
+  if (!parsed) parsed = tryDecrypt(id);
+  if (!parsed) {
     return { failure: "OPAQUE_ID_TAMPERED" };
   }
-  if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") {
+  if (typeof parsed.s !== "string" || typeof parsed.e !== "number") {
     return { failure: "OPAQUE_ID_TAMPERED" };
   }
   if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k" && parsed.t !== "m") {
@@ -245,22 +332,26 @@ export function verifyOpaqueId(id: string): OpaquePayload | null {
 // still acceptable. Returns null if the ID is malformed or tampered.
 export function decodeOpaqueIdSkipExpiry(id: string): OpaquePayload | null {
   if (typeof id !== "string" || id.length < 60 || !/^[0-9a-f]+$/i.test(id)) return null;
-  try {
-    const buf = Buffer.from(id, "hex");
-    if (buf.length < 12 + 16 + 1) return null;
-    const iv = buf.subarray(0, 12);
-    const tag = buf.subarray(buf.length - 16);
-    const ct = buf.subarray(12, buf.length - 16);
-    const decipher = crypto.createDecipheriv("aes-256-gcm", stealthAesKey, iv);
-    decipher.setAuthTag(tag);
-    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
-    const parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
-    if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") return null;
-    if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k" && parsed.t !== "m") return null;
-    return parsed;
-  } catch {
-    return null;
-  }
+  const tryOne = (hex: string): OpaquePayload | null => {
+    try {
+      const buf = Buffer.from(hex, "hex");
+      if (buf.length < 12 + 16 + 1) return null;
+      const iv = buf.subarray(0, 12);
+      const tag = buf.subarray(buf.length - 16);
+      const ct = buf.subarray(12, buf.length - 16);
+      const decipher = crypto.createDecipheriv("aes-256-gcm", stealthAesKey, iv);
+      decipher.setAuthTag(tag);
+      const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+      const parsed = JSON.parse(pt.toString("utf8")) as OpaquePayload;
+      if (!parsed || typeof parsed.s !== "string" || typeof parsed.e !== "number") return null;
+      if (parsed.t !== "l" && parsed.t !== "c" && parsed.t !== "k" && parsed.t !== "m") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+  const { stripped, hadPrefix } = stripChunkCachePrefixIfPresent(id);
+  return (hadPrefix && tryOne(stripped)) || tryOne(id);
 }
 
 export function isOpaqueExpired(payload: OpaquePayload, graceSec: number): boolean {

@@ -1,0 +1,114 @@
+Proceed with Option A, but implement it safely.
+
+Goal:
+Keep Stealth Mode URL structure, but make stealth chunks cacheable by serving master-encrypted B2/R2 segment bytes instead of per-session re-encrypted bytes.
+
+Do not weaken the primary security layers.
+
+Requirements:
+
+1. Keep stealth opaque URLs
+The browser should still see:
+/api/player/:publicId/stream/chunk/<opaque-id>
+
+Do not expose:
+- B2/R2 URL
+- storage path
+- Railway origin
+- raw segment path
+- SIGNING_SECRET
+- storage credentials
+
+2. Change stealth chunk backend behavior
+Currently stealth chunk may return per-session re-encrypted bytes.
+
+Change it so validated stealth chunk requests resolve to the underlying master-encrypted segment object in B2/R2, same byte content for all valid viewers.
+
+It can return 302/presigned origin to Worker internally, or Worker can fetch origin after validation.
+
+3. Extend Worker synthetic cache to stealth chunks
+After validation, Worker should cache stealth chunk bytes using a stable synthetic key, for example:
+
+https://cache.internal/stealth/:publicId/:variant/:segmentIndex
+
+Do not include:
+- opaque token
+- sid
+- st
+- exp
+- HMAC
+- user/session-specific fields
+
+4. Validation must happen before cache lookup
+Before cache.match:
+- validate HMAC/signature
+- validate SID/session token
+- validate expiry
+- validate publicId
+- validate segment index/path from opaque token
+- validate UA/device hash if currently used
+- reject blocked/revoked/invalid requests
+
+If invalid, return 401/403 before cache lookup.
+
+5. Cache only immutable segment bytes
+Cache:
+- .ts segment bytes
+- .m4s segment bytes if used
+
+Do not cache:
+- /hls manifests
+- /key responses
+- /stream/window stealth playlists
+- API responses
+- 4xx/5xx responses
+- partial Range responses in v1
+
+6. Browser response must stay no-store
+Return to browser:
+Cache-Control: private, no-store
+
+Internal edge cache copy:
+Cache-Control: public, max-age=86400, immutable
+
+7. Key security remains active
+Do not cache /key.
+Do not expose the AES key.
+Do not weaken key endpoint validation.
+Master-encrypted segments are useless without a valid key.
+
+8. Railway skipped on cache HIT
+On stealth chunk cache HIT:
+- Worker returns cached segment bytes
+- no Railway call
+- no B2/R2 call
+
+On cache MISS:
+- current safe origin flow runs
+- cache successful 200 full segment response
+- return no-store response to browser
+
+9. Admin setting clarity
+Rename or explain Stealth Mode clearly:
+Stealth Mode hides/obfuscates media URLs and enforces signed session validation.
+It should not necessarily mean per-session segment re-encryption.
+
+If keeping both options, split them:
+- Stealth URLs: on/off
+- Per-session segment re-encryption: on/off advanced option
+
+Default for scalability:
+- Stealth URLs: ON
+- Per-session segment re-encryption: OFF
+
+10. Acceptance criteria
+- Stealth URL still appears opaque in browser.
+- Cf-Cache-Status becomes MISS then HIT for repeated stealth chunk segment.
+- Cache HIT skips Railway and B2.
+- LMS iframe works.
+- Shareable link works.
+- Admin preview works.
+- Seeking/replay works.
+- No keys/manifests are cached.
+- Signed URL/session validation remains active.
+- No storage URL or credentials exposed.

@@ -17,7 +17,7 @@ export default {
     // hides the Railway origin and puts an edge in front of every request.
     const stealthMatch = url.pathname.match(/^\/api\/player\/([^/]+)\/stream\/(window|chunk|secret)\/([^/?#]+)\/?$/);
     if (stealthMatch) {
-      return proxyStealth(request, env, url, stealthMatch[2], stealthMatch[1]);
+      return proxyStealth(request, env, url, stealthMatch[2], stealthMatch[1], stealthMatch[3], ctx, env.SIGNING_SECRET);
     }
 
     // Legacy signed routes: /hls /seg /key with HMAC verification.
@@ -230,17 +230,118 @@ export default {
   },
 };
 
-// Transparent stealth-route proxy. The origin owns all auth (session, UA,
-// abuse). Worker forwards the request preserving headers (User-Agent, Range,
-// etc.) and streams the response back unchanged.
-async function proxyStealth(request, env, url, kind, publicId) {
+// Stealth-route proxy. The origin owns all auth (session, UA, window, abuse,
+// kill switch). Worker forwards requests preserving headers (User-Agent,
+// Range, etc.). For chunk requests the origin has already validated, the
+// Worker also runs a synthetic edge cache keyed by a stable 16-hex prefix
+// embedded in the opaque ID (computed server-side as
+// HMAC(SIGNING_SECRET, "chunk|publicId|segSubPath")). The prefix is the
+// SAME for every viewer of the same segment of the same video, so the cache
+// collapses N viewers × M segments down to M origin fetches.
+//
+// ── WHAT IS CACHED ────────────────────────────────────────────────────
+//   • Stealth chunk (kind="chunk") successful 200 responses, GET only,
+//     no Range header, opaque ID carries the 16-hex stable prefix.
+// ── WHAT IS NEVER CACHED ──────────────────────────────────────────────
+//   • Stealth playlist (kind="window") — per-session, per-window content.
+//   • Stealth key (kind="secret") — per-session AES key material.
+//   • 4xx / 5xx / 206 responses.
+//   • Any Range request.
+//   • Old-format opaque IDs without the 16-hex prefix (backward compat).
+// ── BROWSER RESPONSE ──────────────────────────────────────────────────
+// Always `Cache-Control: private, no-store` regardless of HIT/MISS so
+// token rotation and per-user session binding remain enforceable. Only
+// the INTERNAL cached copy carries `public, max-age=86400, immutable`.
+// ── REVOCATION LATENCY ────────────────────────────────────────────────
+// Same trade-off as /seg/: on cache HIT the Worker skips Railway, so
+// revocations enforced ONLY at the chunk endpoint are delayed by up to
+// the segment TTL window. The stealth playlist (/stream/window) is
+// NEVER cached and is the chokepoint for SESSION_REVOKED / kill switch
+// / abuse blocks. Once the playlist is denied, no new opaque chunk URLs
+// are minted and the player runs out of valid URLs within seconds.
+async function proxyStealth(request, env, url, kind, publicId, opaqueId, ctx, signingSecret) {
   const upstream = `${env.ORIGIN_BASE.replace(/\/+$/, "")}${url.pathname}${url.search}`;
   try {
+    // ── EDGE CACHE LOOKUP (chunk only) ───────────────────────────────
+    // BEFORE cache.match we MUST validate `st` (HMAC) and `exp` so a
+    // stolen-URL replay attacker cannot keep pulling cached bytes after
+    // their session is revoked. Without this gate, cache.match returns
+    // bytes for any holder of a prefix for up to 24h.
+    //
+    // The opaque ID has been minted by the origin with format:
+    //   <16hex stableKey><existing-encrypted-opaque>
+    // URL also carries ?st=<hmac-hex>&exp=<unix>. The HMAC is computed as
+    // HMAC-SHA256(SIGNING_SECRET, "chunk-cache-v1|publicId|prefix|exp").
+    // Same secret on origin and Worker — neither can be forged without it.
+    const STABLE_PREFIX_LEN = 16;
+    const HEX_RE = /^[0-9a-f]+$/i;
+    const st = url.searchParams.get("st");
+    const expStr = url.searchParams.get("exp");
+    let canEdgeCache =
+      kind === "chunk" &&
+      request.method === "GET" &&
+      !request.headers.get("range") &&
+      typeof opaqueId === "string" &&
+      opaqueId.length > STABLE_PREFIX_LEN + 60 &&
+      HEX_RE.test(opaqueId) &&
+      !!st && !!expStr && !!signingSecret;
+
+    let edgeCache = null;
+    let cacheKeyReq = null;
+    if (canEdgeCache) {
+      const stablePrefix = opaqueId.slice(0, STABLE_PREFIX_LEN);
+      const expNum = parseInt(expStr, 10);
+      const now = Math.floor(Date.now() / 1000);
+      // 15s skew window matches /seg/ behaviour. After exp + 15s the
+      // URL is unusable AT THE EDGE — request is rejected before any
+      // cache lookup and forwarded to origin (which will also reject).
+      if (!Number.isFinite(expNum) || now > expNum + 15) {
+        console.log(`[gw] stealth chunk ${publicId}/${stablePrefix} edge-expired (now=${now} exp=${expNum})`);
+        return jsonResponse(403, { code: "TOKEN_EXPIRED", message: "Token expired" });
+      }
+      // Defense-in-depth: reject absurdly-future exp values (e.g. from a
+      // mis-configured origin or a tampered token). Stealth chunk URLs are
+      // minted with TTL ≤ TOKEN_TTL (~15 min) so anything more than 1h in
+      // the future is invalid by construction.
+      if (expNum - now > 3600) {
+        console.log(`[gw] stealth chunk ${publicId}/${stablePrefix} exp-too-far-future (delta=${expNum - now}s)`);
+        return jsonResponse(403, { code: "INVALID_TOKEN", message: "Exp out of range" });
+      }
+      const expectedSt = await hmacHex(signingSecret, `chunk-cache-v1|${publicId}|${stablePrefix}|${expNum}`);
+      if (!timingSafeEqualHex(st, expectedSt)) {
+        console.log(`[gw] stealth chunk ${publicId}/${stablePrefix} INVALID_TOKEN`);
+        return jsonResponse(403, { code: "INVALID_TOKEN", message: "Invalid signature" });
+      }
+      edgeCache = caches.default;
+      // Cache key is publicId + stablePrefix — fully scoped per video so
+      // there is no cross-video collision risk. No sid, no exp, no token.
+      const syntheticUrl = `https://cache.internal/stealth-chunk/${publicId}/${stablePrefix}`;
+      cacheKeyReq = new Request(syntheticUrl, { method: "GET" });
+      const cached = await edgeCache.match(cacheKeyReq);
+      if (cached) {
+        const respHeaders = new Headers();
+        const passthrough = ["content-length", "accept-ranges"];
+        for (const h of passthrough) {
+          const v = cached.headers.get(h);
+          if (v) respHeaders.set(h, v);
+        }
+        // Stealth contract: generic octet-stream content type to deny
+        // scrapers a "video/MP2T" hint.
+        respHeaders.set("Content-Type", "application/octet-stream");
+        respHeaders.set("Access-Control-Allow-Origin", "*");
+        respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
+        respHeaders.set("Cache-Control", "private, no-store");
+        respHeaders.set("X-Content-Type-Options", "nosniff");
+        respHeaders.set("cf-cache-status", "HIT");
+        console.log(`[gw] stealth chunk ${publicId}/${stablePrefix} CACHE HIT`);
+        return new Response(cached.body, { status: 200, headers: respHeaders });
+      }
+    }
+
     // Preserve method, headers (UA must match the originally-bound session),
     // and request body for any future POST stealth routes.
     const fwdHeaders = new Headers(request.headers);
-    // Strip CF-internal headers that confuse some origins; let CF re-add what
-    // it needs (cf-connecting-ip, x-real-ip, etc. are added automatically).
     fwdHeaders.delete("host");
 
     const upstreamReq = new Request(upstream, {
@@ -252,10 +353,9 @@ async function proxyStealth(request, env, url, kind, publicId) {
 
     const originResp = await fetch(upstreamReq);
 
-    // The chunk endpoint currently streams bytes from B2/R2 directly (it does
-    // not 302). If a future origin change starts returning 302, follow it here
-    // so bytes flow Storage → Worker → Browser (same Bandwidth Alliance win
-    // the legacy /seg/ route gets).
+    // If origin returns a 302 (e.g. future change to redirect chunks to B2
+    // directly), follow it. Bytes flow Storage → Worker → Browser (and the
+    // cache fill path below also captures them).
     if (kind === "chunk" && (originResp.status === 302 || originResp.status === 301)) {
       const location = originResp.headers.get("Location");
       if (!location) return new Response("Missing redirect location", { status: 502 });
@@ -263,41 +363,87 @@ async function proxyStealth(request, env, url, kind, publicId) {
         method: "GET",
         headers: request.headers.get("range") ? { Range: request.headers.get("range") } : undefined,
       });
-      const respHeaders = new Headers();
-      // Stealth contract: keep generic content-type, never leak storage origin
-      // hints (e.g. "video/MP2T") that scrapers sniff for.
-      respHeaders.set("Content-Type", "application/octet-stream");
-      const passthrough = ["content-length", "content-range", "accept-ranges"];
-      for (const h of passthrough) {
-        const v = storageResp.headers.get(h);
-        if (v) respHeaders.set(h, v);
+      const respHeaders = buildChunkRespHeaders(storageResp);
+      // Cache MISS → STORE (only successful 200 with body + cache key set).
+      if (edgeCache && cacheKeyReq && storageResp.status === 200 && storageResp.body) {
+        const [browserStream, cacheStream] = storageResp.body.tee();
+        const cacheHeaders = new Headers();
+        cacheHeaders.set("Content-Type", "application/octet-stream");
+        const cl = storageResp.headers.get("Content-Length");
+        if (cl) cacheHeaders.set("Content-Length", cl);
+        cacheHeaders.set("Cache-Control", "public, max-age=86400, immutable");
+        const cacheable = new Response(cacheStream, { status: 200, headers: cacheHeaders });
+        const putPromise = edgeCache.put(cacheKeyReq, cacheable)
+          .catch(e => console.log(`[gw] cache.put failed: ${e.message}`));
+        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(putPromise);
+        respHeaders.set("cf-cache-status", "MISS");
+        console.log(`[gw] stealth chunk ${publicId} -> 302 -> storage 200 CACHE MISS → stored`);
+        return new Response(browserStream, { status: 200, headers: respHeaders });
       }
-      respHeaders.set("Access-Control-Allow-Origin", "*");
-      respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-      respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
-      respHeaders.set("Cache-Control", "private, no-store, no-cache, max-age=0");
-      respHeaders.set("X-Content-Type-Options", "nosniff");
       console.log(`[gw] stealth ${kind} ${publicId} -> 302 -> storage ${storageResp.status}`);
       return new Response(storageResp.body, { status: storageResp.status, headers: respHeaders });
     }
 
-    // Normal passthrough — origin already set correct headers (no-store,
-    // octet-stream for chunks, application/vnd.apple.mpegurl for window, etc.)
+    // Cache MISS path for streamed bytes (origin returns 200 + body directly).
+    if (kind === "chunk" && edgeCache && cacheKeyReq && originResp.status === 200 && originResp.body) {
+      const [browserStream, cacheStream] = originResp.body.tee();
+      const cacheHeaders = new Headers();
+      // Origin already stripped identifying headers; we mirror that for the
+      // cached copy. Generic octet-stream + no other media hints.
+      cacheHeaders.set("Content-Type", "application/octet-stream");
+      const cl = originResp.headers.get("Content-Length");
+      if (cl) cacheHeaders.set("Content-Length", cl);
+      cacheHeaders.set("Cache-Control", "public, max-age=86400, immutable");
+      const cacheable = new Response(cacheStream, { status: 200, headers: cacheHeaders });
+      const putPromise = edgeCache.put(cacheKeyReq, cacheable)
+        .catch(e => console.log(`[gw] cache.put failed: ${e.message}`));
+      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(putPromise);
+
+      const respHeaders = new Headers();
+      const passthrough = ["content-length", "accept-ranges"];
+      for (const h of passthrough) {
+        const v = originResp.headers.get(h);
+        if (v) respHeaders.set(h, v);
+      }
+      respHeaders.set("Content-Type", "application/octet-stream");
+      respHeaders.set("Access-Control-Allow-Origin", "*");
+      respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
+      respHeaders.set("Cache-Control", "private, no-store");
+      respHeaders.set("X-Content-Type-Options", "nosniff");
+      respHeaders.set("cf-cache-status", "MISS");
+      console.log(`[gw] stealth chunk ${publicId} CACHE MISS → stored (${cl || "?"} bytes)`);
+      return new Response(browserStream, { status: 200, headers: respHeaders });
+    }
+
+    // Normal passthrough — non-cacheable cases (window, secret, 4xx/5xx,
+    // 206 Range responses, old-format opaque IDs, etc.).
     const respHeaders = new Headers(originResp.headers);
     respHeaders.set("Access-Control-Allow-Origin", "*");
     respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
-
     console.log(`[gw] stealth ${kind} ${publicId} -> ${originResp.status}`);
-
-    return new Response(originResp.body, {
-      status: originResp.status,
-      headers: respHeaders,
-    });
+    return new Response(originResp.body, { status: originResp.status, headers: respHeaders });
   } catch (e) {
     console.log(`[gw] stealth upstream error: ${e.message}`);
     return new Response("Upstream error", { status: 502 });
   }
+}
+
+function buildChunkRespHeaders(storageResp) {
+  const respHeaders = new Headers();
+  respHeaders.set("Content-Type", "application/octet-stream");
+  const passthrough = ["content-length", "content-range", "accept-ranges"];
+  for (const h of passthrough) {
+    const v = storageResp.headers.get(h);
+    if (v) respHeaders.set(h, v);
+  }
+  respHeaders.set("Access-Control-Allow-Origin", "*");
+  respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
+  respHeaders.set("Cache-Control", "private, no-store");
+  respHeaders.set("X-Content-Type-Options", "nosniff");
+  return respHeaders;
 }
 
 function corsHeaders() {
@@ -322,6 +468,29 @@ async function computeDeviceHash(ua) {
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
   return hashHex.slice(0, 16);
+}
+
+// Compute HMAC-SHA256 hex of (secret, payload). Used by the stealth-chunk
+// edge gate to derive the expected st value.
+async function hmacHex(secret, payload) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Constant-time hex string compare. Prevents leaking the expected HMAC
+// via response timing on the chunk cache edge gate.
+function timingSafeEqualHex(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 async function verifyHmac(secret, payload, expected) {

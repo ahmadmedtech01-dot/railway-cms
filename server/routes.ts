@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, bumpMaxSegmentExposed, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, mintOpaqueChunkId, computeChunkStableKey, signChunkCacheToken, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, bumpMaxSegmentExposed, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings.
 // Admin-controlled values from the Security Profile (or Custom override) are
@@ -93,8 +93,21 @@ function buildStealthLevelUrl(publicId: string, sid: string, variantSubPath: str
 }
 function buildStealthChunkUrl(publicId: string, sid: string, segSubPath: string, ttlSec: number): string {
   const exp = bucketExp(Math.max(15, ttlSec));
-  const id = mintOpaqueId({ s: sid, t: "c", p: segSubPath.replace(/^\//, ""), e: exp });
-  return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/chunk/${id}`;
+  const cleanSub = segSubPath.replace(/^\//, "");
+  // mintOpaqueChunkId prepends a stable 16-hex cache-key prefix derived
+  // from (publicId, segSubPath) using SIGNING_SECRET. The Cloudflare
+  // Worker uses this prefix as a synthetic edge-cache key so the same
+  // segment is served from cache across all users/sessions. The encrypted
+  // suffix is still session-bound — server validation is unchanged.
+  const id = mintOpaqueChunkId({ s: sid, t: "c", p: cleanSub, e: exp }, publicId);
+  // Append st (HMAC of prefix|publicId|exp) and exp as query params so the
+  // Worker can validate the URL at the edge BEFORE doing a cache lookup.
+  // Without this gate, any holder of a previously-observed chunk URL could
+  // keep pulling cached bytes after their session is revoked. With it,
+  // replay is bounded by exp + 15s skew, matching the /seg/ model.
+  const stablePrefix = computeChunkStableKey(publicId, cleanSub);
+  const st = signChunkCacheToken(publicId, stablePrefix, exp);
+  return `${stealthGatewayPrefix()}/api/player/${publicId}/stream/chunk/${id}?st=${st}&exp=${exp}`;
 }
 function buildStealthKeyUrl(publicId: string, sid: string, ttlSec: number): string {
   const exp = bucketExp(Math.max(15, ttlSec));

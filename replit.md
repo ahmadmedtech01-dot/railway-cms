@@ -196,21 +196,32 @@ The Worker (`cloudflare-worker/worker.js`) implements synthetic-key edge caching
 
 **Cache key:** `https://cache.internal/seg/${publicId}${subPath}` — strips `sid`, `st`, `exp`, and the entire query string. Stable across users. Same segment of same video at same quality always hits the same key.
 
-**What is cached:** Only `/seg/` segment responses with status 200, no Range header. Stored internally with `Cache-Control: public, max-age=86400, immutable` (segments are content-addressed and never change).
+**What is cached:**
+- `/seg/` segment responses (legacy route) with status 200, no Range header.
+- `/api/player/.../stream/chunk/<opaqueId>?st=<hmac>&exp=<unix>` stealth chunk responses with status 200, no Range header. Bytes are master-encrypted (the previously-documented "per-session re-encryption" was aspirational/legacy and never actually implemented in the stealth chunk handler — it has always streamed master-encrypted bytes through Railway). Stable cache key is a 16-hex HMAC prefix derived from `(SIGNING_SECRET, "chunk|publicId|segSubPath")` and prepended to the opaque ID at mint time (`mintOpaqueChunkId`). Worker reads the prefix from the URL and uses it as a synthetic cache key: `https://cache.internal/stealth-chunk/<publicId>/<16hexPrefix>`. The encrypted suffix of the opaque ID stays per-session — server validation (UA, window, abuse, session binding) is unchanged. URL still appears fully opaque in the browser.
+
+  **Edge auth gate (mandatory before cache lookup):** Worker validates `exp` (now ≤ exp + 15s) and `st` (= `HMAC-SHA256(SIGNING_SECRET, "chunk-cache-v1|publicId|prefix|exp")`) BEFORE any `cache.match`. Without this gate, any holder of a previously-observed chunk URL could keep pulling cached bytes after session revocation — for the full cache TTL (24h). With the gate, replay is bounded by `exp + 15s skew`, matching the `/seg/` model exactly. `st` comparison is constant-time. Old-format chunk URLs without `st`/`exp` are not edge-cached (forwarded straight to Railway for full validation), preserving backward compatibility during deploy.
+
+Stored internally with `Cache-Control: public, max-age=86400, immutable` (segments are content-addressed and never change).
 
 **What is NOT cached (intentional):**
 - `/hls/` variant playlists — contain per-session signed URLs
 - `/key/` AES keys — per-session ephemeral
-- `/api/player/.../stream/chunk` stealth route — Railway re-encrypts per session, cross-user cache would break decryption
 - `/api/player/.../stream/window` stealth playlist — user/window-specific
+- `/api/player/.../stream/secret/<opaqueId>` stealth key — per-session AES key material
 - All 4xx/5xx responses
 - All Range requests (v1 limitation; HLS.js doesn't issue Range on `.ts` segments)
+- Stealth chunks with old-format opaque IDs missing the 16-hex prefix (backward-compatible — old IDs in flight after deploy still validate, just bypass the cache)
 
-**Railway is skipped entirely on `/seg/` cache HIT.** Worker returns cached bytes directly from Cloudflare edge — zero calls to Railway, zero calls to B2/R2.
+**Railway is skipped entirely on `/seg/` and stealth-chunk cache HITs.** Worker returns cached bytes directly from Cloudflare edge — zero calls to Railway, zero calls to B2/R2.
 
 **Browser response always carries `Cache-Control: private, no-store`** regardless of HIT or MISS, so token rotation, session binding, and per-user revocation stay enforceable. Only the *internal* cached copy uses `public, max-age=86400, immutable`.
 
-**Security preserved:** HMAC validation, SID/session binding, expiry, UA/device hash, signed-URL contract, master-key protection (`/key` never cached), LMS iframe enforcement (client-side, untouched), one-session-per-user (Railway-enforced), global/per-video security settings (Railway-enforced), abuse detection (Railway-enforced on `/hls/` and stealth routes which are never cached).
+**Security preserved:** HMAC validation, SID/session binding, expiry, UA/device hash, signed-URL contract, master-key protection (both `/key` and `/stream/secret` never cached), LMS iframe enforcement (client-side, untouched), one-session-per-user (Railway-enforced), global/per-video security settings (Railway-enforced), abuse detection (Railway-enforced on `/hls/` and stealth playlist `/stream/window` which are never cached).
+
+**Revocation latency for stealth chunks:** Identical to `/seg/` — on cache HIT the Worker skips Railway, but the URL itself carries an `exp` that the Worker rejects after `exp + 15s` BEFORE the cache lookup. So a revoked session can replay only until the `exp` baked into the URLs it already holds (max segment TTL + 15s skew ≈ `TOKEN_TTL`). The chokepoint is `/stream/window` (NEVER cached, fetched every few seconds by hls.js): once it returns SESSION_REVOKED / kill-switch / abuse-block, no new opaque chunk URLs are minted and existing ones reach `exp` within seconds.
+
+**Stealth mode clarification:** "Stealth Mode" in the admin UI controls URL obfuscation — it hides storage URLs behind opaque AES-encrypted tokens and enforces per-session validation. It does NOT perform per-session segment re-encryption. The AES-128 HLS encryption key is per-video (master key, fetched only via `/key` or `/stream/secret` which are never cached and are per-session validated). Bytes are master-encrypted at storage and decrypted by the player using a session-bound key delivery — making cached segment bytes useless without a valid live session.
 
 ## Environment Variables
 
