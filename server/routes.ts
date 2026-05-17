@@ -2375,7 +2375,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       // Never redirect to origin — proxy bytes so B2/R2/S3/Bunny URLs stay server-side.
-      log(`SEGMENT_PROXY: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
+      // Hot-path log gated behind LOG_VERBOSE — fires once per segment otherwise
+      // and synchronous stdout writes become an event-loop bottleneck at scale.
+      if (process.env.LOG_VERBOSE === "1") log(`SEGMENT_PROXY: sid=${sid}, seg=${segSubPath}, fileKey=${fileKey}`);
       try {
         const range = req.headers["range"];
         // AbortController tied to PREMATURE client disconnect only — listens on
@@ -4090,6 +4092,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/security/global", requireAuth, async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     await secRepo.saveGlobal(req.body);
+    (globalThis as any).__clearSecurityEffectiveCache?.();
     res.json({ ok: true });
   });
 
@@ -4102,6 +4105,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/security/video/:videoId", requireAuth, async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     await secRepo.saveVideo(req.params.videoId, req.body);
+    (globalThis as any).__clearSecurityEffectiveCache?.();
     res.json({ ok: true });
   });
 
@@ -4116,6 +4120,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { useGlobal } = req.body;
     if (typeof useGlobal !== "boolean") return res.status(400).json({ message: "useGlobal must be boolean" });
     await secRepo.setUseGlobal(req.params.videoId, useGlobal);
+    (globalThis as any).__clearSecurityEffectiveCache?.();
     res.json({ ok: true });
   });
 
@@ -4177,19 +4182,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  // ── /api/security/effective/:videoId — cached resolver ───────────────────
+  // The effective security profile is read by the player on every load and
+  // sometimes refetched mid-session. Each call previously made 1-3 Postgres
+  // round-trips (getUseGlobal, getGlobal, getVideo). The data changes only
+  // when an admin edits the security page, so a short in-memory cache is
+  // safe: a stale read at most equals the TTL after an admin save.
+  // Cache invalidation: admin save handlers below already call clearSecurityEffectiveCache().
+  const SECURITY_EFFECTIVE_CACHE_TTL_MS = 60_000;
+  const securityEffectiveCache = new Map<string, { value: any; expires: number }>();
+  (globalThis as any).__clearSecurityEffectiveCache = () => securityEffectiveCache.clear();
   app.get("/api/security/effective/:videoId", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    const useGlobal = await secRepo.getUseGlobal(req.params.videoId);
+    const key = req.params.videoId;
+    const now = Date.now();
+    const cached = securityEffectiveCache.get(key);
+    if (cached && cached.expires > now) return res.json(cached.value);
+
+    const useGlobal = await secRepo.getUseGlobal(key);
+    let value: any;
     if (useGlobal) {
-      const global = await secRepo.getGlobal();
-      return res.json(global);
+      value = await secRepo.getGlobal();
+    } else {
+      const video = await secRepo.getVideo(key);
+      value = video ?? (await secRepo.getGlobal());
     }
-    const video = await secRepo.getVideo(req.params.videoId);
-    if (!video) {
-      const global = await secRepo.getGlobal();
-      return res.json(global);
-    }
-    res.json(video);
+    securityEffectiveCache.set(key, { value, expires: now + SECURITY_EFFECTIVE_CACHE_TTL_MS });
+    res.json(value);
   });
 
   // ── Self-Test Endpoint (dev mode only) ─────────────────────────────────────

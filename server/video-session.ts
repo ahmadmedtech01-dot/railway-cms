@@ -20,11 +20,30 @@ const SECRET = resolveSecret();
 const SESSION_MAX_AGE_MS = 60 * 60 * 1000;   // 60 min — covers long videos + pauses for 2k+ daily users
 export const SESSION_ROTATION_MS = 3 * 60 * 1000;
 
+// Optional, environment-gated verbose logging. The HLS hot path produces
+// several log lines per segment (SEGMENT_PROXY, SESSION_EXTENDED) which at
+// 2k+ concurrent students can block Node's synchronous stdout and degrade
+// server throughput. Default OFF in production; set LOG_VERBOSE=1 to re-enable.
+const LOG_VERBOSE = process.env.LOG_VERBOSE === "1" || process.env.NODE_ENV !== "production";
+export function vlog(msg: string) { if (LOG_VERBOSE) console.log(msg); }
+
 const ABUSE_THRESHOLDS = {
   // Only used when suspiciousDetectionEnabled=true
   // Tuned to NEVER trigger on normal HLS playback (incl. seeks, quality switches,
   // reloads, hls.js cancel/retry bursts). Only sustained abuse should score.
-  concurrentSegments: 24,          // hls.js may parallel-fetch on quality switch/seek (raised 10→24)
+  // ── Concurrent segment cap ──────────────────────────────────────────────
+  // Two caps: a "normal" cap and an "elevated" cap. The elevated cap kicks in
+  // only when abuseScore is already at >= 50% of the violation limit — i.e.
+  // some OTHER signal (velocity, playlist spam, key spam) already flagged this
+  // session. This way legitimate hls.js bursts (initial buffer fill across
+  // multiple quality levels, post-seek rebuffer) never trip the cap, but a
+  // scraper that's already half-flagged gets clamped hard on the next wave.
+  concurrentSegments: 64,          // raised 24→64; normal cap, rarely tripped
+  concurrentSegmentsElevated: 8,   // clamps abuse-flagged sessions
+  // TTL after which a stuck acquire is auto-released by the self-healing ring
+  // below. Guarantees no leaked counter even if a code path forgets to call
+  // releaseSegment() on an error branch.
+  concurrentSegmentTtlMs: 15_000,
   segmentsPerSec: 50,              // raised 30→50 (per-sec rate; sustained 5s window still required)
   segmentRateSpikeWindowMs: 5000,
   playlistPerSec: 2,
@@ -911,7 +930,7 @@ export function extendSession(sid: string): boolean {
       .where(eq(videoSessions.sid, sid))
       .catch((err) => { noteDbErr(err); if (!videoSessionsTableMissing) console.error(`[video-session] extend write-through failed sid=${sid}:`, err?.message || err); });
   }
-  console.log(`[video-session] SESSION_EXTENDED: sid=${sid}, publicId=${s.publicId}, newExpiry=${new Date(s.expiresAt).toISOString()}`);
+  vlog(`[video-session] SESSION_EXTENDED: sid=${sid}, publicId=${s.publicId}, newExpiry=${new Date(s.expiresAt).toISOString()}`);
   return true;
 }
 
@@ -1013,14 +1032,12 @@ export function trackRequest(sid: string, ip?: string): { abused: boolean; reaso
     return { abused: true, reason: { signal: "rate_limit", detail: "Session expired" } };
   }
 
-  // IP tracking (informational only) — not enforced because playlist requests arrive
-  // via the Cloudflare Worker (worker IP) while segments come directly from the browser
-  // (browser IP), causing false ip_mismatch revocations. Session is already authenticated
-  // by SID + HMAC signature + device-hash, so IP binding adds no meaningful security here.
-  if (ip && !s.boundIp) {
-    s.boundIp = ip;
-  }
-
+  // IP tracking removed from the hot path: HLS playlist requests arrive
+  // through the Cloudflare Worker (worker IP) while segments arrive directly
+  // from the browser (browser IP), so IP binding cannot be enforced without
+  // false positives. SID + HMAC signature + UA hash + device hash already
+  // authenticate the session — recording an IP we'd never use was pure write
+  // overhead on every segment.
   return { abused: false };
 }
 
@@ -1074,23 +1091,55 @@ export function acquireSegment(sid: string, ip?: string): { abused: boolean; rea
   if (base.abused) return base;
 
   const s = sessions.get(sid)!;
-  s.concurrentSegments += 1;
+  const now = Date.now();
+
+  // ── Self-healing concurrent-segment ring ────────────────────────────────
+  // Replaces the old simple integer counter that could leak on any error
+  // path that forgot to call releaseSegment(). Now we push the acquisition
+  // timestamp into a ring buffer, evict anything older than the configured
+  // TTL on every read, and treat the post-eviction length as the live count.
+  // releaseSegment() pops the oldest entry (FIFO). This means:
+  //   • A stuck acquisition auto-releases after concurrentSegmentTtlMs
+  //   • No need for a global sweep timer
+  //   • False 429s caused by counter drift are now impossible
+  const ring: number[] = (s as any)._segAcqRing || ((s as any)._segAcqRing = []);
+  // Evict expired acquisitions
+  const cutoff = now - ABUSE_THRESHOLDS.concurrentSegmentTtlMs;
+  while (ring.length > 0 && ring[0] < cutoff) ring.shift();
+  ring.push(now);
+  // Mirror to the legacy counter for any external readers/diagnostics.
+  s.concurrentSegments = ring.length;
 
   // When suspicious detection is disabled, allow all concurrent downloads
   if (!s.suspiciousDetectionEnabled) return { abused: false };
 
-  // Signal: concurrent parallel segment downloads > 3 at the same moment
-  if (s.concurrentSegments > ABUSE_THRESHOLDS.concurrentSegments) {
-    const reason: AbuseReason = {
-      signal: "concurrent",
-      detail: `${s.concurrentSegments} concurrent segment requests (limit: ${ABUSE_THRESHOLDS.concurrentSegments})`,
-    };
-    s.concurrentSegments -= 1;
-    console.log(`[video-session] SECURITY_BLOCK_REASON: CONCURRENT_SEGMENTS | sid=${sid} concurrent=${s.concurrentSegments + 1} publicId=${s.publicId}`);
-    return addAbuse(s, 5, reason);
-  }
+  // Abuse-gated cap: the strict 8-cap only applies when abuseScore is already
+  // elevated (>= 50% of violationLimit). Otherwise the generous 64-cap holds.
+  // Normal hls.js bursts almost never reach 64; a scraper that's tripped any
+  // other signal (velocity/playlist/key) gets clamped to 8 on the next wave.
+  const effectiveCap =
+    s.abuseScore >= Math.ceil(s.violationLimit / 2)
+      ? ABUSE_THRESHOLDS.concurrentSegmentsElevated
+      : ABUSE_THRESHOLDS.concurrentSegments;
 
-  const now = Date.now();
+  if (ring.length > effectiveCap) {
+    // Pop the entry we just added so this request doesn't count
+    ring.pop();
+    s.concurrentSegments = ring.length;
+    // Only score abuse if we're already in the elevated regime — otherwise
+    // this is a soft notice. Velocity scoring remains the primary defense.
+    if (effectiveCap === ABUSE_THRESHOLDS.concurrentSegmentsElevated) {
+      const reason: AbuseReason = {
+        signal: "concurrent",
+        detail: `${ring.length + 1} concurrent segment requests under elevated abuse (cap: ${effectiveCap})`,
+      };
+      vlog(`[video-session] SECURITY_BLOCK_REASON: CONCURRENT_SEGMENTS_ELEVATED | sid=${sid} concurrent=${ring.length + 1} score=${s.abuseScore} publicId=${s.publicId}`);
+      return addAbuse(s, 5, reason);
+    }
+    // Low-score regime: do not deny, do not score. Just log and continue.
+    // hls.js retries naturally on the next tick; user sees no error.
+    vlog(`[video-session] SEGMENT_CONCURRENT_HIGH (soft, no deny) | sid=${sid} concurrent=${ring.length + 1} cap=${effectiveCap} score=${s.abuseScore}`);
+  }
 
   // NOTE: stale-heartbeat abuse scoring was removed from here.
   // Background tabs (mobile, minimized browser) get their JS timers throttled
@@ -1127,7 +1176,16 @@ export function acquireSegment(sid: string, ip?: string): { abused: boolean; rea
 
 export function releaseSegment(sid: string): void {
   const s = sessions.get(sid);
-  if (s && s.concurrentSegments > 0) s.concurrentSegments -= 1;
+  if (!s) return;
+  const ring: number[] | undefined = (s as any)._segAcqRing;
+  if (ring && ring.length > 0) {
+    // FIFO pop — the oldest acquisition pairs with this release.
+    ring.shift();
+    s.concurrentSegments = ring.length;
+  } else if (s.concurrentSegments > 0) {
+    // Defensive fallback for any pre-ring sessions still alive in memory.
+    s.concurrentSegments -= 1;
+  }
 }
 
 export function trackKeyHit(sid: string, ip?: string): { abused: boolean; reason?: AbuseReason } {
