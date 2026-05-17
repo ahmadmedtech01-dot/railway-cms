@@ -1,0 +1,114 @@
+Fix backward seek freeze in secure HLS player.
+
+Current behavior:
+- Forward seek works.
+- Backward seek freezes with spinner.
+- If user clicks backward position 2–3 times, sometimes it starts.
+- After backward seek fails, forward seek also starts having issues.
+- Refresh page fixes it temporarily.
+
+Logs show sliding-window conflict:
+- progress window jumps from 0–23 to 30–54 to 22–46
+- later jumps from 22–46 back to 8–32 and 9–33
+This means old progress/heartbeat/HLS callbacks are fighting with the new backward seek position.
+
+Do not weaken security.
+Do not disable signed URLs.
+Do not disable sliding-window protection.
+Do not remove session binding.
+Do not remove Cloudflare Worker gateway.
+Do not bypass LMS iframe security.
+Do not hardcode admin security settings.
+
+Required fix:
+
+1. Add explicit seek mode for backward seek
+When user seeks backward, client must call progress/window refresh with:
+{
+  currentTime,
+  targetSegmentIndex,
+  reason: "seek",
+  direction: "backward",
+  playbackEpoch
+}
+
+Server must immediately allow/rebuild the HLS window around targetSegmentIndex.
+
+2. Add playbackEpoch / seekEpoch
+In embed-player.tsx:
+- maintain playbackEpochRef.
+- increment epoch on every user seek, replay, session rotation, and manifest reload.
+- attach epoch to progress, heartbeat, window refresh, and async HLS callbacks.
+- ignore old responses if epoch does not match current epoch.
+
+3. Abort old requests on seek
+On backward seek:
+- abort pending progress request
+- abort pending heartbeat request if tied to old position
+- abort pending window refresh request
+- ignore old HLS fragment callbacks
+- do not let old callbacks update current window/state
+
+4. Debounce progress after seek
+On user seek:
+- pause progress sending temporarily.
+- set video.currentTime immediately.
+- show loader: “Loading selected position…”
+- wait for seeked/canplay/playing or 500–1000ms.
+- send only one progress update for the new target segment.
+- then resume normal progress interval.
+
+5. Server must reject stale progress safely
+Update /api/stream/:publicId/progress:
+- accept sid/sessionId and playbackEpoch if available.
+- if progress request is stale, ignore it and return ok:true, ignored:true.
+- do not let stale old progress move window forward/backward.
+- backward window movement is allowed only when reason is "seek" or "replay".
+- normal progress should not randomly move window backwards.
+
+6. Fix heartbeat conflict
+Heartbeat should not overwrite window with old segment index during/after seek.
+During seeking:
+- heartbeat should either pause briefly or use latest targetSegmentIndex.
+- heartbeat must not reset window to old position.
+
+7. HLS handling on backward seek
+When backward seek happens:
+- call hls.startLoad(targetTime) if needed.
+- if current manifest/window does not include target segment:
+  - call progress/window refresh with reason seek.
+  - reload manifest/window.
+  - resume from target currentTime.
+- do not recreate duplicate HLS instance unless necessary.
+- do not leave spinner forever.
+
+8. Canceled requests
+Canceled XHRs during seek are normal.
+They must not:
+- show Playback Error
+- increment violation count
+- revoke session
+- block user
+- leave buffering spinner stuck
+
+9. Recovery
+If a segment gets 401/403 during backward seek:
+- silently refresh window/manifest once.
+- resume from target currentTime.
+- only show error if repeated retry fails.
+
+10. Acceptance criteria
+- Forward seek works.
+- Backward seek works on first click.
+- Repeated backward/forward seeking works.
+- Replay after video end works.
+- Spinner disappears once playback resumes.
+- No permanent freeze.
+- Window does not jump randomly between old and new segment indexes.
+- Only one HLS instance exists.
+- Only one progress interval exists.
+- Only one heartbeat interval exists.
+- LMS iframe works.
+- Shareable link works.
+- Admin preview works.
+- Security remains fully active.

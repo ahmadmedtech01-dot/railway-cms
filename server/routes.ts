@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, bumpMaxSegmentExposed, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings.
 // Admin-controlled values from the Security Profile (or Custom override) are
@@ -2348,19 +2348,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const dh = session.deviceHash;
         const gated = session.hardening.serverGatedWindowEnabled;
 
-        // Compute window when gated mode is on: [currentIdx-2, currentIdx+prebufferSegs]
-        // Window size driven by admin-configured maxPrebufferSec via getWindowSegs().
-        const windowStart = gated ? Math.max(0, session.currentSegmentIndex - 2) : 0;
+        // ── EVENT-style sliding window (fixes backward-seek freeze) ───────
+        // The playlist always starts at segment 0 with MEDIA-SEQUENCE:0 and
+        // only grows forward. windowEnd is `max(maxSegmentExposed,
+        // currentIdx + prebufferSegs)` so it never shrinks across playlist
+        // reloads — required for `#EXT-X-PLAYLIST-TYPE:EVENT` compliance.
+        // Previous design used windowStart=currentIdx-2 + MEDIA-SEQUENCE:
+        // windowStart; on backward seek MEDIA-SEQUENCE went backward
+        // (protocol violation) and hls.js rejected the playlist as stale,
+        // leaving the player stuck with a permanent buffering spinner.
+        const windowSegs = getWindowSegs(session);
+        const windowStart = 0;
         const windowEnd = gated
-          ? Math.min(totalSegs - 1, session.currentSegmentIndex + getWindowSegs(session))
+          ? Math.min(totalSegs - 1, Math.max(session.maxSegmentExposed, session.currentSegmentIndex + windowSegs))
           : totalSegs - 1;
+        // Commit the high-water mark (in-memory + throttled persistence).
+        // Persistence is required so other instances hydrating from DB
+        // don't emit a shrunk playlist and re-trigger the EVENT violation.
+        if (gated) bumpMaxSegmentExposed(sid, windowEnd);
         const isFinalWindow = windowEnd >= totalSegs - 1;
 
-        // Full VOD playlist (legacy) or live-like windowed playlist (gated)
+        // EVENT playlists allow seeking anywhere within the exposed range
+        // while still preventing scrapers from prefetching beyond the
+        // forward limit. ENDLIST is added once the entire video has been
+        // exposed (final window).
         const lines: string[] = [
           "#EXTM3U",
           "#EXT-X-VERSION:3",
-          ...(gated ? [] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
+          ...(gated ? ["#EXT-X-PLAYLIST-TYPE:EVENT"] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
           `#EXT-X-TARGETDURATION:${cached.targetDuration}`,
           `#EXT-X-MEDIA-SEQUENCE:${windowStart}`,
         ];
@@ -2861,16 +2876,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ttls = getSessionTokenTTL(sid);
       const totalSegs = cached.segments.length;
       const gated = session.hardening.serverGatedWindowEnabled;
-      const windowStart = gated ? Math.max(0, session.currentSegmentIndex - 2) : 0;
+      // EVENT-style window (see legacy /hls/ handler for full rationale):
+      // playlist always starts at 0 with MEDIA-SEQUENCE:0, grows monotonically.
+      // Fixes backward-seek freeze caused by MEDIA-SEQUENCE going backward.
+      const windowSegsStealth = getWindowSegs(session);
+      const windowStart = 0;
       const windowEnd = gated
-        ? Math.min(totalSegs - 1, session.currentSegmentIndex + getWindowSegs(session))
+        ? Math.min(totalSegs - 1, Math.max(session.maxSegmentExposed, session.currentSegmentIndex + windowSegsStealth))
         : totalSegs - 1;
+      // Commit the high-water mark with throttled cross-instance persistence.
+      if (gated) bumpMaxSegmentExposed(sid, windowEnd);
       const isFinalWindow = windowEnd >= totalSegs - 1;
 
       const lines: string[] = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
-        ...(gated ? [] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
+        ...(gated ? ["#EXT-X-PLAYLIST-TYPE:EVENT"] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
         `#EXT-X-TARGETDURATION:${cached.targetDuration}`,
         `#EXT-X-MEDIA-SEQUENCE:${windowStart}`,
       ];

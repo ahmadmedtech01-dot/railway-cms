@@ -331,6 +331,16 @@ export interface VideoSession {
   // pre-seek currentSegmentIndex (race between in-flight chunk requests and
   // the seekTo POST). 0 means no seek has occurred this session.
   lastSeekAt: number;
+  // ── EVENT-style sliding window (monotonic growth) ─────────────────────
+  // Highest segment index ever exposed in any playlist response for this
+  // session. The variant playlist windowEnd is `max(maxSegmentExposed,
+  // currentSegmentIndex + windowSegs)` so the playlist NEVER shrinks. This
+  // is required for `#EXT-X-PLAYLIST-TYPE:EVENT` compliance — EVENT
+  // playlists may only append segments, never remove them. Without this,
+  // backward seeks would cause windowEnd to drop, hls.js would observe a
+  // shrunken playlist and reject it as stale, leaving the player frozen
+  // with a permanent buffering spinner.
+  maxSegmentExposed: number;
   variantCache: Map<string, PlaylistCache>;
 
   ephemeralKey: Buffer;
@@ -441,6 +451,7 @@ function deserializeSession(raw: any): VideoSession {
     breachEvents: raw.breachEvents ?? 0,
     outOfWindowCount: raw.outOfWindowCount ?? 0,
     lastSeekAt: raw.lastSeekAt ?? 0,
+    maxSegmentExposed: raw.maxSegmentExposed ?? 0,
     keyIssuedCount: raw.keyIssuedCount ?? 0,
     clientSecurityEvents: raw.clientSecurityEvents ?? 0,
   } as VideoSession;
@@ -681,6 +692,7 @@ export function createSession(
     lastProgressAt: Date.now(),
     outOfWindowCount: 0,
     lastSeekAt: 0,
+    maxSegmentExposed: 0,
     variantCache: new Map(),
     ephemeralKey: crypto.randomBytes(16),
     ephemeralIV: crypto.randomBytes(16),
@@ -764,6 +776,9 @@ export function rotateSession(oldSid: string): string | null {
     concurrentSegments: 0,
     outOfWindowCount: 0,
     lastSeekAt: 0,
+    // Inherit max exposed from rotated session so the new playlist doesn't
+    // appear to shrink relative to what the client/HLS.js already observed.
+    maxSegmentExposed: old.maxSegmentExposed,
     variantCache: new Map(),
     ephemeralKey: crypto.randomBytes(16),
     ephemeralIV: crypto.randomBytes(16),
@@ -1288,8 +1303,29 @@ export function buildStableKeyUrl(baseUrl: string, sid: string, session: VideoSe
 export function updateProgress(sid: string, segmentIndex: number, seekTo: boolean = false): boolean {
   const s = sessions.get(sid);
   if (!s || s.revoked) return false;
-  const clamped = Math.max(0, segmentIndex);
+  let clamped = Math.max(0, segmentIndex);
   if (seekTo) {
+    // ── FORWARD-SEEK EXPOSURE CAP ───────────────────────────────────────
+    // EVENT-style playlists expose all segments in [0, max(maxSegmentExposed,
+    // currentSegmentIndex + windowSegs)]. A forged `seekTo:true` with a
+    // very large `currentTime` would otherwise let a holder of the SID
+    // immediately set currentSegmentIndex to the last segment, causing the
+    // next playlist response to expose the ENTIRE video in a single
+    // request. To bound that risk, we cap how far a single seek can
+    // advance the high-water mark beyond what has already been earned.
+    //
+    // SEEK_FORWARD_CAP_SEGS = 900 = 30 min of 2s segments — comfortably
+    // larger than any legitimate scrub jump a user makes manually, but
+    // small enough that scraping the whole video via repeated forged
+    // seeks still has to clear `bulk_download` / `velocity_abuse` /
+    // rate-limit abuse detection. Backward seeks are NOT capped.
+    const windowSegs = getWindowSegs(s);
+    const earnedCeiling = Math.max(s.currentSegmentIndex, s.maxSegmentExposed) + windowSegs;
+    const SEEK_FORWARD_CAP_SEGS = 900;
+    const seekCeiling = earnedCeiling + SEEK_FORWARD_CAP_SEGS;
+    if (clamped > seekCeiling) {
+      clamped = seekCeiling;
+    }
     s.currentSegmentIndex = clamped;
     // Mark the seek timestamp so validateSegmentWindow can grant a brief
     // grace period covering the race between the seekTo POST landing and
@@ -1347,11 +1383,38 @@ function oowGraceSegsFor(s: VideoSession): number {
   return Math.max(2, Math.ceil((s.hardening.windowOverlapGraceSec || 0) / SEG_DURATION_SEC));
 }
 
+/**
+ * Bump the EVENT-playlist high-water mark and persist it across instances.
+ *
+ * Called by the playlist handlers after computing `windowEnd`. Persistence is
+ * required so that in a multi-instance / non-sticky deployment, another node
+ * hydrating the same session from Postgres doesn't emit a *shrunk* playlist
+ * relative to what HLS.js already observed — which would re-trigger the EVENT
+ * protocol violation this whole fix is designed to prevent.
+ *
+ * Persistence is throttled to growths of >= 4 segments (≈8s of content) so we
+ * don't hammer the DB on every playlist refresh. The in-memory value is
+ * always updated; only the DB write is batched.
+ */
+export function bumpMaxSegmentExposed(sid: string, newEnd: number): void {
+  const s = sessions.get(sid);
+  if (!s) return;
+  if (newEnd <= s.maxSegmentExposed) return;
+  const grew = newEnd - s.maxSegmentExposed;
+  s.maxSegmentExposed = newEnd;
+  if (grew >= 4) {
+    persistSession(sid);
+  }
+}
+
 export function getWindowRange(sid: string): { start: number; end: number } {
   const s = sessions.get(sid);
   if (!s) return { start: 0, end: ABUSE_THRESHOLDS.windowSize };
-  const start = Math.max(0, s.currentSegmentIndex - 1);
-  const end = s.currentSegmentIndex + getWindowSegs(s);
+  // EVENT-style window: start is always 0 (backward seek allowed to any
+  // previously-exposed segment). End is the monotonically growing
+  // high-water mark so backward seeks don't shrink the playlist.
+  const start = 0;
+  const end = Math.max(s.maxSegmentExposed, s.currentSegmentIndex + getWindowSegs(s));
   return { start, end };
 }
 
@@ -1366,11 +1429,14 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
   // hls.js prefetch / seek / quality-switch bursts. Only sustained out-of-window
   // patterns (clear scraper behaviour) score abuse points.
   if (s.hardening.serverGatedWindowEnabled) {
-    // Widen the upstream window so seeks + buffer prefetch don't constantly trip it.
-    // Window size is driven by admin-configured maxPrebufferSec (single source of truth).
+    // EVENT-style window: backward seek is always allowed (start=0). The
+    // forward limit is the high-water mark of what has actually been
+    // exposed in playlist responses, so scrapers can't request segments
+    // that haven't been advertised yet. The high-water mark grows
+    // monotonically with playback progress.
     const windowSegs = getWindowSegs(s);
-    const start = Math.max(0, s.currentSegmentIndex - 5);
-    const end = s.currentSegmentIndex + windowSegs;
+    const start = 0;
+    const end = Math.max(s.maxSegmentExposed, s.currentSegmentIndex + windowSegs);
 
     // ── SEEK GRACE ──────────────────────────────────────────────────────
     // After a user seek, hls.js issues a burst of chunk requests around the
@@ -1384,8 +1450,11 @@ export function validateSegmentWindow(sid: string, segIndex: number): { allowed:
     if (s.lastSeekAt > 0) {
       const seekGraceMs = Math.max(3000, (s.hardening.windowOverlapGraceSec || 3) * 1000);
       if (Date.now() - s.lastSeekAt < seekGraceMs) {
-        const wideStart = Math.max(0, s.currentSegmentIndex - 2 * windowSegs);
-        const wideEnd = s.currentSegmentIndex + 2 * windowSegs;
+        // During seek grace, allow any past segment (start=0) plus the
+        // forward overshoot hls.js does while re-buffering at the new
+        // position.
+        const wideStart = 0;
+        const wideEnd = Math.max(s.maxSegmentExposed, s.currentSegmentIndex + 2 * windowSegs);
         if (segIndex >= wideStart && segIndex <= wideEnd) {
           return { allowed: true };
         }
