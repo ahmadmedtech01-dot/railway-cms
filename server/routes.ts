@@ -4525,8 +4525,92 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (parsed.host !== allowedHost) {
       return res.status(400).json({ message: `url must point at ${allowedHost}` });
     }
-    if (!parsed.pathname.startsWith("/seg/")) {
-      return res.status(400).json({ message: "Only /seg/ paths are cacheable; probe only those" });
+
+    // Determine route type: legacy /seg/ or stealth /stream/chunk/
+    const isSegRoute = parsed.pathname.startsWith("/seg/");
+    const stealthChunkMatch = parsed.pathname.match(/^\/api\/player\/([^/]+)\/stream\/chunk\/([^/?#]+)\/?$/);
+    const isStealthChunk = !!stealthChunkMatch;
+
+    if (!isSegRoute && !isStealthChunk) {
+      return res.status(400).json({
+        message: "Only /seg/ and /api/player/:id/stream/chunk/:opaqueId paths are cacheable; probe only those",
+      });
+    }
+
+    // Pre-flight diagnostics for stealth chunks ─────────────────────────────
+    // These tell you WHY the Worker might bypass the cache before the first
+    // request is even fired, so you can fix config issues without waiting for
+    // all N probes to complete.
+    let preflight: Record<string, unknown> | null = null;
+    if (isStealthChunk && stealthChunkMatch) {
+      const opaqueId = stealthChunkMatch[2];
+      const stParam = parsed.searchParams.get("st");
+      const expParam = parsed.searchParams.get("exp");
+      const STABLE_PREFIX_LEN = 16;
+      const HEX_RE = /^[0-9a-f]+$/i;
+
+      const hasStParam = !!stParam;
+      const hasExpParam = !!expParam;
+      const idLengthOk = opaqueId.length > STABLE_PREFIX_LEN + 60;
+      const idHexOk = HEX_RE.test(opaqueId);
+      const stablePrefix = idLengthOk && idHexOk ? opaqueId.slice(0, STABLE_PREFIX_LEN) : null;
+
+      // Recompute the expected st value if we have the signing secret, so we
+      // can tell the caller whether the Worker's HMAC check would pass.
+      let stValid: boolean | "no_signing_secret" = "no_signing_secret";
+      const signingSecret = process.env.SIGNING_SECRET;
+      if (signingSecret && stablePrefix && stParam && expParam) {
+        const expNum = parseInt(expParam, 10);
+        const expected = signChunkCacheToken(stealthChunkMatch[1], stablePrefix, expNum);
+        stValid = expected === stParam;
+      }
+
+      const expNum = expParam ? parseInt(expParam, 10) : null;
+      const nowSec = Math.floor(Date.now() / 1000);
+      const expOk = expNum !== null && Number.isFinite(expNum) && nowSec <= expNum + 15 && expNum - nowSec <= 3600;
+
+      // canEdgeCache mirrors the Worker's exact boolean
+      const canEdgeCache =
+        idLengthOk &&
+        idHexOk &&
+        hasStParam &&
+        hasExpParam &&
+        stValid === true &&
+        expOk;
+
+      preflight = {
+        routeType: "stealth_chunk",
+        publicId: stealthChunkMatch[1],
+        opaqueIdLength: opaqueId.length,
+        opaqueIdHex: idHexOk,
+        opaqueIdLengthOk: idLengthOk,
+        stablePrefix,
+        syntheticCacheKey: stablePrefix ? `https://cache.internal/stealth-chunk/${stealthChunkMatch[1]}/${stablePrefix}` : null,
+        hasStParam,
+        hasExpParam,
+        stTokenValid: stValid,
+        expSecondsRemaining: expNum !== null ? expNum - nowSec : null,
+        expOk,
+        canEdgeCache,
+        workerWillCache: canEdgeCache,
+        diagnosis: !idLengthOk
+          ? "FAIL: opaqueId too short — old session without 16-hex prefix; get a fresh chunk URL"
+          : !idHexOk
+            ? "FAIL: opaqueId is not pure hex — URL may be malformed"
+            : !hasStParam
+              ? "FAIL: ?st= param missing — chunk URL minted before signed-cache-token was added; get a fresh chunk URL"
+              : !hasExpParam
+                ? "FAIL: ?exp= param missing — chunk URL minted before signed-cache-token was added; get a fresh chunk URL"
+                : stValid === "no_signing_secret"
+                  ? "WARN: SIGNING_SECRET not set server-side — cannot verify st token locally; also check Worker env vars"
+                  : !stValid
+                    ? "FAIL: st token mismatch — SIGNING_SECRET in Worker env likely differs from Railway; sync them and redeploy Worker"
+                    : !expOk
+                      ? "FAIL: URL is expired (exp + 15s < now) — fetch a fresh chunk URL from a live player session"
+                      : "OK: all Worker canEdgeCache conditions pass; expect MISS then HIT",
+      };
+    } else {
+      preflight = { routeType: "seg_legacy" };
     }
 
     const results: Array<{ idx: number; status: number; bytes: number; latencyMs: number; cfCache: string | null }> = [];
@@ -4549,12 +4633,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const hits = results.filter(r => r.cfCache === "HIT").length;
     const misses = results.filter(r => r.cfCache === "MISS").length;
     const avgLatency = Math.round(results.reduce((s, r) => s + r.latencyMs, 0) / results.length);
+    const allMiss = misses === n;
+    const expectation = isStealthChunk
+      ? "Expected: 1st = MISS (Worker fetches from Railway + stores), 2nd-5th = HIT (Worker returns cached bytes, Railway sees nothing)"
+      : "Expected: 1st = MISS (Worker fetches from B2 + stores), 2nd-5th = HIT (Worker returns cached bytes)";
     res.json({
       requests: n,
       hits,
       misses,
       hitRate: `${Math.round((hits / n) * 100)}%`,
       avgLatencyMs: avgLatency,
+      expectation,
+      cacheVerdict: hits >= n - 1 ? "PASS: cache is working" : allMiss ? "FAIL: all MISS — see preflight.diagnosis" : `PARTIAL: only ${hits}/${n} HITs`,
+      preflight,
       results,
     });
   });
