@@ -2389,7 +2389,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           "#EXTM3U",
           "#EXT-X-VERSION:3",
           ...(gated ? ["#EXT-X-PLAYLIST-TYPE:EVENT"] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
-          `#EXT-X-TARGETDURATION:${cached.targetDuration}`,
+          // Bump reported targetDuration to min 6s. hls.js uses this value to
+        // schedule EVENT-playlist re-polling (roughly targetDuration × 3-4.5
+        // during steady-state when no new segments arrive). With actual 2s
+        // segments, the default reported 2s drove ~9s polling cadence. Min
+        // 6s pushes polling to ~18-27s — comfortably inside the 15-20s goal
+        // — without changing real segment duration, buffer fill, or seek
+        // behavior. HLS spec only requires targetDuration ≥ max segment
+        // duration; over-reporting is legal and widely tolerated.
+        `#EXT-X-TARGETDURATION:${Math.max(cached.targetDuration || 2, 8)}`,
           `#EXT-X-MEDIA-SEQUENCE:${windowStart}`,
         ];
 
@@ -2905,7 +2913,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         "#EXTM3U",
         "#EXT-X-VERSION:3",
         ...(gated ? ["#EXT-X-PLAYLIST-TYPE:EVENT"] : ["#EXT-X-PLAYLIST-TYPE:VOD"]),
-        `#EXT-X-TARGETDURATION:${cached.targetDuration}`,
+        // Bump reported targetDuration to min 6s. hls.js uses this value to
+        // schedule EVENT-playlist re-polling (roughly targetDuration × 3-4.5
+        // during steady-state when no new segments arrive). With actual 2s
+        // segments, the default reported 2s drove ~9s polling cadence. Min
+        // 6s pushes polling to ~18-27s — comfortably inside the 15-20s goal
+        // — without changing real segment duration, buffer fill, or seek
+        // behavior. HLS spec only requires targetDuration ≥ max segment
+        // duration; over-reporting is legal and widely tolerated.
+        `#EXT-X-TARGETDURATION:${Math.max(cached.targetDuration || 2, 8)}`,
         `#EXT-X-MEDIA-SEQUENCE:${windowStart}`,
       ];
 

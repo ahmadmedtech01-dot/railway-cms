@@ -114,7 +114,12 @@ export const defaultHardening: SessionHardeningConfig = {
   tokenTtlPlaylistSec: 60,
   tokenTtlSegmentSec: 30,
   tokenTtlKeySec: 30,
-  heartbeatIntervalSec: 15,
+  // Heartbeat raised 15→30s. The heartbeat is pure session-keepalive — it
+  // does not refresh any URL, signed token, or playlist. Halving its rate
+  // cuts control-plane RPS without affecting playback, security, or
+  // revocation latency (revocation chokepoint is /stream/window, polled
+  // far more frequently). Matches the value already deployed in prod.
+  heartbeatIntervalSec: 30,
   // Allow hls.js to prefetch without false abuse. Real bulk-download scrapers
   // request hundreds in seconds and still get caught by velocity checks.
   downloadAheadLimit: 30,

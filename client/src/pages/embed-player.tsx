@@ -1622,7 +1622,13 @@ export default function EmbedPlayerPage(props: any = {}) {
       // Route through central sendProgress so dedup, same-segment skip,
       // and stale-zero guards all apply uniformly with every other site.
       sendProgress("interval", currentTime, { sid: currentSid, epoch: capturedEpoch, signal: ac.signal });
-    }, 10000);
+      // 20s interval (raised from 10s). The server's sliding-window check
+      // tolerates progress gaps up to (windowOverlapGraceSec ≈ 30s) so 20s
+      // is safely under threshold. Halves control-plane RPS without changing
+      // analytics resolution materially. Note: seek/pause/end paths POST
+      // progress immediately via sendProgress() callers, so the interval
+      // only governs the steady-state stable-playback cadence.
+    }, 20000);
     return () => {
       if (progressIntervalRef.current) {
         clearInterval(progressIntervalRef.current);
