@@ -452,6 +452,10 @@ export default function EmbedPlayerPage(props: any = {}) {
   const playerReadyRef = useRef(false);
   const pendingInitialSeekRef = useRef<number>(urlSeekTime);
   const pendingMessageSeekRef = useRef<number | null>(null);
+  // Active target of an in-flight performLocalSeek. Used by the 1.5s
+  // self-retry watchdog so a stale retry from an earlier seek can't
+  // clobber a newer seek the user has since issued.
+  const pendingSeekTargetRef = useRef<number | null>(null);
   const parentOriginRef = useRef<string>("");
   const seekOpIdRef = useRef(0);
   const isSeeking = useRef(false);
@@ -2012,52 +2016,104 @@ export default function EmbedPlayerPage(props: any = {}) {
     sendProgress("manual", time);
   };
 
-  // Shared seek routine. Routes ALL local seek interactions (skip buttons,
-  // timeline scrubber) through the same hardened path as applyPendingSeek:
-  //  1. Pre-emptively POST /progress with seekTo:true so server advances its
-  //     sliding window BEFORE our segment requests arrive — eliminates the
-  //     OUT_OF_WINDOW → full-rotation freeze (~5s).
-  //  2. Show buffering overlay immediately for user feedback.
-  //  3. Use hls.stopLoad() + startLoad(target) so the player flushes the
-  //     in-flight fragment queue cleanly instead of waiting on it.
-  const performLocalSeek = async (newTime: number) => {
+  // Shared seek routine for local interactions (skip buttons, scrubber).
+  //
+  // OPTIMISTIC EXECUTION — first-click responsiveness for backward seeks.
+  // Previous version awaited the pre-seek /progress POST before applying
+  // v.currentTime + hls.startLoad. With the POST timeout race (up to 1s)
+  // and any network blip, the user perceived the first click as a no-op
+  // and had to click 2-3 times. The user's report explicitly described
+  // this symptom for backward seeks.
+  //
+  // New flow:
+  //  1. Apply v.currentTime = newTime IMMEDIATELY (instant visual jump).
+  //  2. hls.stopLoad() + startLoad(newTime) IMMEDIATELY so HLS.js flushes
+  //     its in-flight fragment queue and begins loading from the target.
+  //  3. Fire the /progress POST in PARALLEL via seekProgressWithTimeout
+  //     (which raises isSeekingRef so the periodic loop yields).
+  //     - For backward seeks within already-exposed EVENT-playlist content
+  //       no window advance is needed — segments are already in window.
+  //     - For forward seeks beyond the window, the chunk request will get
+  //       a 403 and the HLS error handler's seek-recovery branch will
+  //       re-POST with seekTo:true and resume — no permanent freeze.
+  //  4. Auto-resume play when canplay/playing fires (or immediately if
+  //     buffer is already populated, e.g. small backward seek).
+  //  5. Self-retry watchdog at 1.5s: if pendingSeekTargetRef still matches
+  //     and the video is more than 2s away from target with low readyState,
+  //     re-apply currentTime + startLoad + seek-recovery POST. One retry
+  //     only — no infinite loop.
+  //
+  // Security invariants preserved: server still validates SID, EVENT
+  // playlist still append-only, signed URLs unchanged, no client trust of
+  // any unsigned data. Forward-seek scraping protection remains in place
+  // (updateProgress caps forward jumps at earnedCeiling + SEEK_FORWARD_CAP).
+  const performLocalSeek = (newTime: number) => {
     const v = videoRef.current;
     if (!v) return;
+    const hls = hlsRef.current;
+    const currentSid = streamSidRef.current;
+    const wasPlaying = !v.paused;
+
+    pendingSeekTargetRef.current = newTime;
     setCurrentTime(newTime);
     setIsBuffering(true);
     setBufferPct(0);
-    // Stamp the seek BEFORE issuing any network request so the HLS error
-    // handler can recognise post-seek 403s during the await window.
     lastSeekAtRef.current = Date.now();
     seekRecoveryCountRef.current = 0;
-    const currentSid = streamSidRef.current;
-    const hls = hlsRef.current;
-    if (hls) {
-      // Stop in-flight fragment requests IMMEDIATELY so they don't race
-      // against the pre-seek window and produce throw-away 403s the
-      // server then attributes to the new position.
-      hls.stopLoad();
+    sdbg("performLocalSeek — optimistic", { target: newTime, wasPlaying, fromTime: v.currentTime });
+
+    // 1. Apply position + flush HLS IMMEDIATELY. Order matters: stopLoad
+    //    first so HLS abandons the in-flight queue, then currentTime so
+    //    MSE buffer-flush targets the new position, then startLoad so
+    //    fetching resumes at the new offset.
+    if (hls) { try { hls.stopLoad(); } catch {} }
+    try { v.currentTime = newTime; } catch {}
+    if (hls) { try { hls.startLoad(newTime); } catch {} }
+
+    // 2. Fire-and-forget progress POST. seekProgressWithTimeout raises
+    //    isSeekingRef and routes through sendProgress("seek", ...) — both
+    //    of which the periodic loop's same-tick guard depends on.
+    if (currentSid) {
+      void seekProgressWithTimeout(currentSid, newTime);
     }
-    // AWAIT the progress POST so the server advances its sliding window
-    // BEFORE we restart segment loading at the new position. Without the
-    // await, hls.startLoad(newTime) raced the POST: chunk requests for the
-    // new segment arrived first and got 403'd as out-of-window, triggering
-    // the 30-45s retry storm + denial cascade the user reported.
-    const wasPlaying = hls ? !v.paused : false;
-    try {
-      if (currentSid) {
-        await seekProgressWithTimeout(currentSid, newTime);
-      }
-    } finally {
-      // Always resume loading even if the POST timed out — the seek-grace
-      // window on the server is forgiving enough, and the HLS error
-      // handler's seek-recovery branch will re-post on any 403.
-      v.currentTime = newTime;
-      if (hls) {
-        hls.startLoad(newTime);
-        if (wasPlaying) v.play().catch(() => {});
-      }
+
+    // 3. Auto-resume playback when the new position is playable. Use
+    //    once-listeners so they don't accumulate across rapid seeks.
+    if (wasPlaying) {
+      const tryPlay = () => { videoRef.current?.play().catch(() => {}); };
+      v.addEventListener("canplay", tryPlay, { once: true });
+      v.addEventListener("playing", tryPlay, { once: true });
+      // Best-effort immediate play in case the new position is already
+      // populated in the MSE source buffer (very small backward seek).
+      tryPlay();
     }
+
+    // 4. Self-retry watchdog. If the optimistic seek didn't take effect
+    //    within 1.5s and the user hasn't issued a newer seek in the
+    //    meantime, re-apply currentTime + startLoad once and post a
+    //    seek-recovery progress so the server re-anchors its window.
+    const retryTarget = newTime;
+    setTimeout(() => {
+      if (pendingSeekTargetRef.current !== retryTarget) return; // newer seek superseded
+      const cur = videoRef.current;
+      if (!cur) { pendingSeekTargetRef.current = null; return; }
+      const stuck = Math.abs(cur.currentTime - retryTarget) > 2 && cur.readyState < 3;
+      if (stuck) {
+        sdbg("performLocalSeek — retry (stuck after 1.5s)", { target: retryTarget, actual: cur.currentTime, readyState: cur.readyState });
+        const hlsNow = hlsRef.current;
+        if (hlsNow) { try { hlsNow.stopLoad(); } catch {} }
+        try { cur.currentTime = retryTarget; } catch {}
+        if (hlsNow) { try { hlsNow.startLoad(retryTarget); } catch {} }
+        const sidNow = streamSidRef.current;
+        if (sidNow) {
+          sendProgress("seek-recovery", retryTarget, { sid: sidNow, seekTo: true });
+        }
+        if (wasPlaying) cur.play().catch(() => {});
+      } else {
+        sdbg("performLocalSeek — landed", { target: retryTarget, actual: cur.currentTime, readyState: cur.readyState });
+      }
+      pendingSeekTargetRef.current = null;
+    }, 1500);
   };
 
   const seek = (delta: number) => {

@@ -1,0 +1,62 @@
+New logs show the remaining issue is session-rotation/currentTime restore.
+
+At 5:24:04 rotate-session succeeds.
+At 5:24:05 new manifest loads.
+Immediately after that, progress sends:
+- targetSegmentIndex 77
+- targetSegmentIndex 0
+
+This is wrong. After rotation/manifest reload, one progress path is resetting to 0 before the player restores the actual selected/current time.
+
+Do not change server security.
+Do not change signed URLs.
+Do not change EVENT playlist.
+Do not change Cloudflare Worker.
+Do not weaken session binding.
+
+Fix client rotation + manifest reload behavior.
+
+Requirements:
+
+1. Before rotate-session or manifest reload:
+- save lastStableTimeRef = video.currentTime
+- save pendingResumeTimeRef = selected seek time or currentTime
+- save wasPlayingRef
+
+2. During rotation/manifest reload:
+- pause progress sending
+- set suppressProgressRef true
+- do not send progress while video.currentTime is temporarily 0
+- do not let manifest attach trigger progress segment 0
+
+3. After new manifest is attached:
+- restore video.currentTime = pendingResumeTimeRef
+- call hls.startLoad(pendingResumeTimeRef)
+- wait for seeked/canplay/playing
+- then send exactly one progress update with reason "rotation_resume"
+- then resume normal progress interval
+
+4. Guard against false zero progress:
+Before sending any progress:
+if video.currentTime < 1 and lastStableTimeRef > 10 and reason is not "replay" or "intentional_start":
+  skip progress as stale-zero-after-reload
+
+5. On user replay from start:
+- allow targetSegmentIndex 0 only if reason is "replay" or user intentionally clicked near 0
+- not from automatic rotation/manifest reload
+
+6. Debug log:
+Log progress source/reason:
+- seek
+- interval
+- rotation_resume
+- manifest_attach
+- heartbeat
+
+Acceptance:
+- After rotate-session, no automatic progress targetSegmentIndex 0 unless user intentionally clicked start.
+- Rotation resumes from the same time.
+- Timeline click works on first click.
+- Backward seek works on first click.
+- No permanent spinner.
+- Security unchanged.

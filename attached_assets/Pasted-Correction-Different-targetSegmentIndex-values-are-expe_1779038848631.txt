@@ -1,0 +1,65 @@
+Correction:
+
+Different targetSegmentIndex values are expected because I am manually clicking different timeline positions forward and backward.
+
+Do not treat different targetSegmentIndex values as automatically wrong.
+
+The real bug:
+When I click any timeline position, especially backward, playback does not start from that selected time on the first click. It often needs 2–3 clicks.
+
+Server chunks are mostly 200, so do not focus on server 403/security now.
+
+Fix seek execution behavior on the client.
+
+Requirements:
+
+1. On every user timeline click:
+- immediately save selectedTime in pendingSeekTargetRef
+- set video.currentTime = selectedTime
+- call hls.startLoad(selectedTime)
+- show loader: “Loading selected position…”
+- send one progress update with reason: "seek"
+- refresh/reload manifest/window only if required
+- resume playback when canplay/playing fires
+
+2. Do not wait for periodic progress interval to move the window.
+The user click itself must actively prepare the selected segment/window.
+
+3. Backward seek is intentional.
+Do not treat backward seek as stale progress.
+Do not block it just because previous playback was ahead.
+
+4. If first seek attempt does not start within 1–2 seconds:
+- retry hls.startLoad(selectedTime)
+- reload manifest once
+- keep selectedTime
+- restore video.currentTime = selectedTime
+- do not require user to click again
+
+5. Canceled XHR during seek is normal.
+Do not show error.
+Do not revoke session.
+Do not count violation.
+Do not leave permanent spinner.
+
+6. Session rotation/manifest reload:
+- save current selectedTime before reload
+- suppress progress while video.currentTime temporarily becomes 0
+- after manifest attaches, restore selectedTime
+- call hls.startLoad(selectedTime)
+- then send progress reason: "rotation_resume"
+
+7. Allow targetSegmentIndex 0 only when:
+- user intentionally clicked near start
+- replay from start
+- initial playback start
+
+Do not send segment 0 automatically after rotation/manifest reload if selectedTime is not near start.
+
+Acceptance:
+- One click on any timeline position plays from that position.
+- Backward seek works on first click.
+- Forward seek works on first click.
+- Rapid manual forward/backward clicks do not permanently freeze.
+- Different targetSegmentIndex logs are okay when caused by my manual clicks.
+- No security layer should be weakened.
