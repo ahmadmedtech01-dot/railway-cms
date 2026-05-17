@@ -3018,6 +3018,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const anyCache = session.variantCache.values().next().value as PlaylistCache | undefined;
         if (anyCache && anyCache.targetDuration > 0) {
           idx = Math.floor(currentTime / anyCache.targetDuration);
+        } else if (seekTo === true && currentTime >= 0) {
+          // variantCache may be empty on a very early seek (before the first
+          // playlist has been fetched). Fall back to the fixed 2 s/segment
+          // duration used throughout this codebase so lastSeekAt is always
+          // stamped and the seek-grace window reliably opens on the server.
+          idx = Math.floor(currentTime / 2);
         }
       }
 
@@ -3030,7 +3036,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const { start, end } = getWindowRange(sid);
-      return res.json({ ok: true, windowStart: start, windowEnd: end });
+      // Return targetSegmentIndex explicitly so callers (and acceptance tests)
+      // can verify the invariant:  windowStart <= targetSegmentIndex <= windowEnd.
+      return res.json({ ok: true, windowStart: start, windowEnd: end, ...(idx >= 0 ? { targetSegmentIndex: idx } : {}) });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
