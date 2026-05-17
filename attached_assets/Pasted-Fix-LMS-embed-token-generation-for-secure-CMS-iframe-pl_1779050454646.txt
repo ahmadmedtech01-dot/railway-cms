@@ -1,0 +1,120 @@
+Fix LMS embed token generation for secure CMS iframe playback.
+
+Current issue:
+In LMS, the video iframe loads but player shows:
+“Failed to load video player”
+“Failed to generate embed token”
+
+Network shows:
+POST /api/video-courses/:courseId/embed-token
+500 Internal Server Error
+
+This is LMS backend failure, not Cloudflare cache issue.
+
+Goal:
+The LMS must generate a valid HMAC launch token server-side and send it to the CMS iframe via postMessage.
+
+Do not change Cloudflare Worker cache.
+Do not change HLS signed URLs.
+Do not weaken CMS security.
+Do not put the token in iframe URL for postMessage mode.
+Do not expose LMS_HMAC_SECRET to frontend.
+
+Fix requirements:
+
+1. Fix LMS backend endpoint:
+POST /api/video-courses/:courseId/embed-token
+
+It should:
+- authenticate current LMS user
+- verify user has access to this course/video
+- load the CMS publicId for this video
+- generate HMAC launch token server-side
+- return JSON:
+{
+  "token": "...",
+  "publicId": "uIjtPm_JyD",
+  "expiresAt": ...
+}
+
+2. Token payload must match CMS expected fields:
+{
+  publicId: "uIjtPm_JyD",
+  userId: authenticated LMS user id,
+  exp: now + 240 seconds maximum,
+  nonce: random unique nonce,
+  aud: "video-cms",
+  origin: LMS origin
+}
+
+3. Token signing:
+Use same shared secret configured in CMS/LMS integration:
+LMS_HMAC_SECRET
+
+Token format should match CMS docs:
+base64url(JSON payload).hex(HMAC-SHA256(payload, LMS_HMAC_SECRET))
+
+Make sure:
+- LMS_HMAC_SECRET exists in Render env vars
+- CMS has matching allowed LMS secret/origin config
+- secret is never sent to browser
+- token is generated only on server
+
+4. Fix frontend snippet:
+After iframe loads:
+- call LMS backend /embed-token
+- receive token
+- send to iframe:
+
+iframe.contentWindow.postMessage(
+  {
+    type: "LMS_LAUNCH_TOKEN",
+    token
+  },
+  "https://railway-cms-production.up.railway.app"
+);
+
+5. Fix 500 error logging:
+The LMS endpoint must log safe server-side reason:
+- missing LMS_HMAC_SECRET
+- missing publicId
+- user not authorized
+- course/video not found
+- token signing error
+- CMS origin mismatch
+
+Do not log:
+- full token
+- HMAC secret
+- private user data
+
+6. Return proper errors:
+- 401 if user not logged in
+- 403 if user lacks course/video access
+- 404 if course/video not found
+- 500 only for real server config/signing error
+
+7. CMS iframe behavior:
+If token not received yet, show:
+“Waiting for LMS authorization...”
+Do not show scary playback error immediately.
+If token fails, show:
+“LMS authorization failed. Please reload or contact support.”
+
+8. Admin preview:
+In postMessage mode, preview must either:
+- generate and send a test token automatically, OR
+- show clear message: “Preview requires LMS launch token”
+Do not show raw 400 Bad Request.
+
+Acceptance criteria:
+- LMS embed loads iframe.
+- LMS backend /embed-token returns 200 with token.
+- iframe receives LMS_LAUNCH_TOKEN via postMessage.
+- CMS player validates token.
+- Video plays inside LMS.
+- No token appears in iframe URL.
+- No LMS_HMAC_SECRET exposed to frontend.
+- Shareable link still works.
+- Query Param mode still works separately.
+- Cloudflare chunk cache remains unchanged.
