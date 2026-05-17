@@ -1,0 +1,70 @@
+Confirm Option A.
+
+Implement Worker synthetic cache only for the /seg/ route.
+
+Do not cache:
+- /hls/ playlists
+- /key/
+- /api/player/:pub/stream/chunk stealth route
+- /api/player/:pub/stream/window stealth playlist
+- any user-specific/session-reencrypted response
+
+Reason:
+Only /seg/ serves master-encrypted B2 segment bytes that are stable across users. The stealth chunk route may serve session-specific re-encrypted bytes, so caching it cross-user could break playback and weaken the design.
+
+Implement exactly this:
+
+1. cloudflare-worker/worker.js
+- Validate signed request first:
+  - sid
+  - st
+  - exp
+  - HMAC
+  - UA/device hash if currently used
+- If invalid, return 401/403 before cache lookup.
+- If valid and path is /seg/, build synthetic cache key:
+  https://cache.internal/seg/${publicId}${subPath}
+- Strip all per-user/per-request query params from cache key:
+  sid, st, exp, HMAC, query string
+- On cache HIT:
+  - return cached segment bytes
+  - do not call Railway
+  - do not call B2/R2
+  - browser response must still be Cache-Control: private, no-store
+- On cache MISS:
+  - use existing Railway → B2 flow
+  - cache only successful 200 responses
+  - skip cache for Range requests in v1
+  - store internal cached response with Cache-Control: public, max-age=86400, immutable
+  - return browser response with Cache-Control: private, no-store
+
+2. Do not cache:
+- manifests
+- keys
+- stealth chunks
+- stealth windows
+- 4xx/5xx responses
+- partial Range responses
+
+3. Add protected cache probe
+Add GET /api/_debug/cache-probe with:
+- admin-auth required
+- DEBUG_CACHE_PROBE_SECRET required
+- return 404 if env secret is missing
+- never expose signed tokens
+- never expose B2/R2 URLs
+- never expose storage credentials
+- never return segment bytes
+- only report status, latency, byte count, and cf-cache-status if available
+
+4. Update replit.md
+Add a short section explaining:
+- /seg/ uses synthetic Cloudflare cache
+- stealth chunk is intentionally not cached
+- manifests and keys are not cached
+- Railway is skipped on /seg/ cache hit
+- security validation happens before cache lookup
+
+Do not implement Option B.
+Do not remove per-session security.
+Do not weaken signed URLs, HMAC, session binding, LMS iframe protection, key protection, or global/per-video security settings.

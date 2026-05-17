@@ -183,6 +183,34 @@ Signing secret: `SIGNING_SECRET` env var (REQUIRED in production). No fallbacks 
 
 ### Debug (dev mode only)
 - `GET /api/_debug/secure-hls/selftest?videoId=...` — Runs automated checks (transcode, masking, token expiry, rate limit, block, iOS compatibility)
+- `GET /api/_debug/cache-probe?url=<signedSegUrl>&n=5&secret=<DEBUG_CACHE_PROBE_SECRET>` — Admin-only. Fetches a signed `/seg/` URL N times through the Worker and reports `cf-cache-status` + latency per request. Requires `DEBUG_CACHE_PROBE_SECRET` env var (404 if absent). Never returns segment bytes or echoes the signed URL.
+
+### Cloudflare Edge Cache (Worker)
+The Worker (`cloudflare-worker/worker.js`) implements synthetic-key edge caching **only for the `/seg/` route**, which serves master-encrypted B2 segment bytes that are identical across all viewers.
+
+**Order of operations (validation always first):**
+1. Parse `sid`, `st`, `exp` from query params. Reject 401 if any missing.
+2. Expiry check with 15s skew tolerance for segments/keys, 30s for playlists. Reject 403 if expired.
+3. Compute UA device hash, verify HMAC signature against candidate paths. Reject 403 if invalid.
+4. **Only after auth passes**, for `/seg/` GET requests without `Range`: cache lookup.
+
+**Cache key:** `https://cache.internal/seg/${publicId}${subPath}` — strips `sid`, `st`, `exp`, and the entire query string. Stable across users. Same segment of same video at same quality always hits the same key.
+
+**What is cached:** Only `/seg/` segment responses with status 200, no Range header. Stored internally with `Cache-Control: public, max-age=86400, immutable` (segments are content-addressed and never change).
+
+**What is NOT cached (intentional):**
+- `/hls/` variant playlists — contain per-session signed URLs
+- `/key/` AES keys — per-session ephemeral
+- `/api/player/.../stream/chunk` stealth route — Railway re-encrypts per session, cross-user cache would break decryption
+- `/api/player/.../stream/window` stealth playlist — user/window-specific
+- All 4xx/5xx responses
+- All Range requests (v1 limitation; HLS.js doesn't issue Range on `.ts` segments)
+
+**Railway is skipped entirely on `/seg/` cache HIT.** Worker returns cached bytes directly from Cloudflare edge — zero calls to Railway, zero calls to B2/R2.
+
+**Browser response always carries `Cache-Control: private, no-store`** regardless of HIT or MISS, so token rotation, session binding, and per-user revocation stay enforceable. Only the *internal* cached copy uses `public, max-age=86400, immutable`.
+
+**Security preserved:** HMAC validation, SID/session binding, expiry, UA/device hash, signed-URL contract, master-key protection (`/key` never cached), LMS iframe enforcement (client-side, untouched), one-session-per-user (Railway-enforced), global/per-video security settings (Railway-enforced), abuse detection (Railway-enforced on `/hls/` and stealth routes which are never cached).
 
 ## Environment Variables
 

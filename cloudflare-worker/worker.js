@@ -1,5 +1,5 @@
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -69,6 +69,75 @@ export default {
       return jsonResponse(403, { code: "INVALID_TOKEN", message: "Invalid signature" });
     }
 
+    // ── SYNTHETIC EDGE CACHE FOR /seg/ ONLY ───────────────────────────
+    // Master-encrypted segment bytes from B2 are identical for every
+    // viewer of the same video. Caching them at the edge collapses
+    // 1000 viewers × N segments into N origin fetches.
+    // Hard scoping:
+    //   • Only /seg/ — never /hls/ (per-session URLs) or /key/ (per-session keys).
+    //   • Only GET — Range requests bypass cache in v1 (HLS.js doesn't issue them on .ts).
+    //   • Only 200 responses cached — 4xx/5xx/206 never cached.
+    //   • Cache key strips ALL per-request params (sid, st, exp) — stable across users.
+    //   • Validation already ran above; cache lookup happens AFTER auth.
+    // Browser always receives `Cache-Control: private, no-store` so token
+    // rotation and per-user binding stay enforceable.
+    //
+    // ── REVOCATION LATENCY (accepted trade-off) ───────────────────────
+    // On cache HIT, the Worker does NOT consult Railway, so session
+    // revocations enforced ONLY at the segment endpoint are delayed by
+    // up to TOKEN_TTL (15s skew window above). This is acceptable because:
+    //   1. Segment signed URLs have 60s TTL max — a revoked session can
+    //      replay at most the segments it already holds signed URLs for.
+    //   2. The /hls/ variant playlist is NEVER cached, is fetched every
+    //      few seconds by hls.js (EVENT-style), and is the chokepoint
+    //      where Railway enforces SESSION_REVOKED / abuse blocks / kill
+    //      switch. Once the playlist is denied, no new signed segment
+    //      URLs are issued — existing tokens expire within seconds and
+    //      the player gets no further URLs to even attempt cache lookup.
+    //   3. The AES /key/ endpoint is NEVER cached — re-fetched per session.
+    //      A revoked session loses key access immediately, making any
+    //      cached bytes undecryptable to a fresh browser context.
+    // Net effect: max ~15s of continued playback on already-issued URLs
+    // after revocation — same window the short-TTL design accepts today.
+    const canEdgeCache =
+      routeType === "seg" &&
+      request.method === "GET" &&
+      !request.headers.get("range");
+
+    let edgeCache = null;
+    let cacheKeyReq = null;
+    if (canEdgeCache) {
+      edgeCache = caches.default;
+      // Synthetic cache URL — stable identity = publicId + subPath (which
+      // already encodes variant/quality + segment index). No query string,
+      // no token, no expiry. Two viewers of segment 042 of video XYZ at
+      // 720p will hit the same key regardless of their individual sids.
+      const syntheticUrl = `https://cache.internal/seg/${publicId}${subPath}`;
+      cacheKeyReq = new Request(syntheticUrl, { method: "GET" });
+
+      const cached = await edgeCache.match(cacheKeyReq);
+      if (cached) {
+        // HIT — return cached bytes WITHOUT touching Railway or B2.
+        // Synthesize fresh per-request headers (CORS + no-store for browser).
+        const respHeaders = new Headers();
+        const passthrough = ["content-type", "content-length", "accept-ranges"];
+        for (const h of passthrough) {
+          const v = cached.headers.get(h);
+          if (v) respHeaders.set(h, v);
+        }
+        if (!respHeaders.has("content-type")) {
+          respHeaders.set("content-type", "application/octet-stream");
+        }
+        respHeaders.set("Access-Control-Allow-Origin", "*");
+        respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
+        respHeaders.set("Cache-Control", "private, no-store");
+        respHeaders.set("cf-cache-status", "HIT");
+        console.log(`[gw] seg ${publicId}${subPath} CACHE HIT`);
+        return new Response(cached.body, { status: 200, headers: respHeaders });
+      }
+    }
+
     const upstream = `${env.ORIGIN_BASE.replace(/\/+$/, "")}${url.pathname}${url.search}`;
 
     try {
@@ -88,16 +157,56 @@ export default {
         if (!location) {
           return new Response("Missing redirect location", { status: 502 });
         }
-        const b2Resp = await fetch(location, { method: "GET" });
+        // Forward Range header to B2 so partial-content (206) requests
+        // behave correctly. Without this, an iOS Safari Range request would
+        // get a full 200 body instead of the requested byte range.
+        const b2Headers = {};
+        const rangeHeader = request.headers.get("range");
+        if (rangeHeader) b2Headers["Range"] = rangeHeader;
+        const b2Resp = await fetch(location, { method: "GET", headers: b2Headers });
         const respHeaders = new Headers();
         respHeaders.set("Content-Type", b2Resp.headers.get("Content-Type") || "application/octet-stream");
         if (b2Resp.headers.get("Content-Length")) {
           respHeaders.set("Content-Length", b2Resp.headers.get("Content-Length"));
         }
+        if (b2Resp.headers.get("Content-Range")) {
+          respHeaders.set("Content-Range", b2Resp.headers.get("Content-Range"));
+        }
+        if (b2Resp.headers.get("Accept-Ranges")) {
+          respHeaders.set("Accept-Ranges", b2Resp.headers.get("Accept-Ranges"));
+        }
         respHeaders.set("Access-Control-Allow-Origin", "*");
         respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
         respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
-        respHeaders.set("Cache-Control", "no-store");
+        respHeaders.set("Cache-Control", "private, no-store");
+
+        // ── CACHE MISS → STORE ────────────────────────────────────────
+        // Only successful 200 responses for /seg/ get cached. The cached
+        // copy carries INTERNAL `public, max-age=86400, immutable` headers
+        // (it's content-addressed — segment_042 of video XYZ at 720p
+        // never changes). The browser response (above) stays no-store.
+        // We tee the body: one stream to the browser, one to the cache.
+        if (edgeCache && cacheKeyReq && b2Resp.status === 200 && b2Resp.body) {
+          const [browserStream, cacheStream] = b2Resp.body.tee();
+          const cacheHeaders = new Headers();
+          cacheHeaders.set("Content-Type", b2Resp.headers.get("Content-Type") || "application/octet-stream");
+          if (b2Resp.headers.get("Content-Length")) {
+            cacheHeaders.set("Content-Length", b2Resp.headers.get("Content-Length"));
+          }
+          cacheHeaders.set("Cache-Control", "public, max-age=86400, immutable");
+          const cacheable = new Response(cacheStream, { status: 200, headers: cacheHeaders });
+          // ctx.waitUntil keeps the cache write alive past response return,
+          // giving deterministic cache fill instead of best-effort.
+          const putPromise = edgeCache.put(cacheKeyReq, cacheable)
+            .catch(e => console.log(`[gw] cache.put failed: ${e.message}`));
+          if (ctx && typeof ctx.waitUntil === "function") {
+            ctx.waitUntil(putPromise);
+          }
+          respHeaders.set("cf-cache-status", "MISS");
+          console.log(`[gw] seg ${publicId}${subPath} CACHE MISS → stored (${b2Resp.headers.get("Content-Length") || "?"} bytes)`);
+          return new Response(browserStream, { status: 200, headers: respHeaders });
+        }
+
         console.log(`[gw] ${routeType} ${publicId}${subPath} -> 302 -> B2 ${b2Resp.status}`);
         return new Response(b2Resp.body, { status: b2Resp.status, headers: respHeaders });
       }

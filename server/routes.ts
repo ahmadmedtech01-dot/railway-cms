@@ -4471,6 +4471,81 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(value);
   });
 
+  // ── Cache Probe (admin + DEBUG_CACHE_PROBE_SECRET required) ────────────────
+  // Fetches a single segment URL N times through the Cloudflare Worker and
+  // reports cf-cache-status + latency for each request. Used to verify the
+  // synthetic edge cache is working in production.
+  //
+  // SAFETY:
+  //  • Requires admin session AND a matching DEBUG_CACHE_PROBE_SECRET query param.
+  //  • Returns 404 if DEBUG_CACHE_PROBE_SECRET env var is missing.
+  //  • The caller must supply a fully-signed segment URL (grab from devtools
+  //    while a video plays). The probe does NOT mint tokens — that keeps
+  //    signing logic out of this endpoint entirely.
+  //  • The supplied URL must point at HLS_GATEWAY_BASE — no arbitrary URLs.
+  //  • Never returns segment bytes (only byte count + latency + cf-cache-status).
+  //  • Never logs or echoes the signed URL back in the response.
+  app.get("/api/_debug/cache-probe", requireAuth, async (req: any, res: any) => {
+    const probeSecret = process.env.DEBUG_CACHE_PROBE_SECRET;
+    if (!probeSecret) {
+      return res.status(404).json({ message: "Not available" });
+    }
+    if (req.query.secret !== probeSecret) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const gateway = process.env.HLS_GATEWAY_BASE;
+    if (!gateway) {
+      return res.status(400).json({ message: "HLS_GATEWAY_BASE not configured" });
+    }
+    const targetUrl = String(req.query.url || "");
+    const n = Math.max(1, Math.min(20, parseInt(String(req.query.n || "5"), 10) || 5));
+    if (!targetUrl) {
+      return res.status(400).json({ message: "url query param required (full signed segment URL)" });
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(targetUrl);
+    } catch {
+      return res.status(400).json({ message: "Invalid url" });
+    }
+    const allowedHost = new URL(gateway).host;
+    if (parsed.host !== allowedHost) {
+      return res.status(400).json({ message: `url must point at ${allowedHost}` });
+    }
+    if (!parsed.pathname.startsWith("/seg/")) {
+      return res.status(400).json({ message: "Only /seg/ paths are cacheable; probe only those" });
+    }
+
+    const results: Array<{ idx: number; status: number; bytes: number; latencyMs: number; cfCache: string | null }> = [];
+    for (let i = 0; i < n; i++) {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(targetUrl, { method: "GET" });
+        const buf = await r.arrayBuffer();
+        results.push({
+          idx: i,
+          status: r.status,
+          bytes: buf.byteLength,
+          latencyMs: Date.now() - t0,
+          cfCache: r.headers.get("cf-cache-status"),
+        });
+      } catch (e: any) {
+        results.push({ idx: i, status: 0, bytes: 0, latencyMs: Date.now() - t0, cfCache: null });
+      }
+    }
+    const hits = results.filter(r => r.cfCache === "HIT").length;
+    const misses = results.filter(r => r.cfCache === "MISS").length;
+    const avgLatency = Math.round(results.reduce((s, r) => s + r.latencyMs, 0) / results.length);
+    res.json({
+      requests: n,
+      hits,
+      misses,
+      hitRate: `${Math.round((hits / n) * 100)}%`,
+      avgLatencyMs: avgLatency,
+      results,
+    });
+  });
+
   // ── Self-Test Endpoint (dev mode only) ─────────────────────────────────────
   app.get("/api/_debug/secure-hls/selftest", requireAuth, async (req: any, res: any) => {
     if (process.env.NODE_ENV === "production") return res.status(404).json({ message: "Not available in production" });
