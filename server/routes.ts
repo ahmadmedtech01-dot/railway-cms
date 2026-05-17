@@ -546,6 +546,21 @@ async function transcodeAndStoreHls(videoId: string, inputPath: string, qualitie
   }
   log(`AES-128 validation passed: ${variantPlaylists.length} variant playlist(s) all contain EXT-X-KEY METHOD=AES-128`);
 
+  // PART 2 diagnostic: surface what was actually generated — selected qualities,
+  // generated variants, master playlist path, and a content summary so we can
+  // verify end-to-end that admin's quality selection became real HLS variants.
+  const masterPath = path.join(hlsOutputDir, "master.m3u8");
+  if (fs.existsSync(masterPath)) {
+    const masterContent = fs.readFileSync(masterPath, "utf8");
+    const streamInfCount = (masterContent.match(/#EXT-X-STREAM-INF/g) || []).length;
+    log(`[transcode] video=${videoId} selectedQualities=[${qualities.join(",")}] generatedVariants=${variantPlaylists.length} streamInfInMaster=${streamInfCount} masterPath=${masterPath}`);
+    if (streamInfCount !== qualities.length) {
+      log(`[transcode] WARNING video=${videoId} master has ${streamInfCount} STREAM-INF entries but ${qualities.length} qualities were requested — some renditions may have been skipped by ffmpeg`);
+    }
+  } else {
+    log(`[transcode] WARNING video=${videoId} master.m3u8 NOT generated at ${masterPath} — stealth master endpoint will 404`);
+  }
+
   if (videoId) transcodeProgress.set(videoId, { time: "", speed: "", stage: "uploading" });
   const activeConn = connOverride ?? await storage.getActiveStorageConnection();
 
@@ -1571,6 +1586,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.updateVideo(video.id, { status: "uploading" });
 
       const qualities = req.body.qualities ? JSON.parse(req.body.qualities) : [720];
+      // Persist the qualities the admin actually selected so video.qualities in
+      // the DB matches what ffmpeg will produce. Without this, the video record
+      // shows no qualities even though multiple HLS variants exist on storage.
+      try { await storage.updateVideo(video.id, { qualities } as any); } catch {}
+      log(`[upload] video=${video.id} selectedQualities=[${qualities.join(",")}]`);
       // Use explicitly selected connection, or fall back to active
       const selectedConnId = req.body.connectionId as string | undefined;
       const conn = selectedConnId
@@ -2694,11 +2714,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const masterRes = await fetch(originUrl);
-      if (!masterRes.ok) return res.status(404).json({ message: "Master playlist not found" });
+      if (!masterRes.ok) {
+        log(`[stream/master] UPSTREAM_NOT_FOUND pub=${req.params.publicId} sid=${sid} key=${masterKey} status=${masterRes.status}`);
+        return res.status(404).json({ message: "Master playlist not found" });
+      }
       const masterText = await masterRes.text();
+
+      // PART 4 diagnostic: count STREAM-INF entries in the upstream master so we
+      // can immediately see whether the issue is upstream (only 1 variant
+      // produced by ffmpeg / uploaded) vs downstream (rewrite stripped variants).
+      const upstreamStreamInfCount = (masterText.match(/#EXT-X-STREAM-INF/g) || []).length;
+      log(`[stream/master] UPSTREAM pub=${req.params.publicId} sid=${sid} key=${masterKey} bytes=${masterText.length} streamInfCount=${upstreamStreamInfCount}`);
+      if (upstreamStreamInfCount <= 1) {
+        log(`[stream/master] WARNING: upstream master has ${upstreamStreamInfCount} variant(s) — quality selector will be hidden. Re-transcode this video with multiple qualities selected.`);
+      }
 
       const ttls = getSessionTokenTTL(sid);
       const outLines: string[] = [];
+      let rewrittenVariantCount = 0;
       const lines = masterText.split("\n");
       // Rewrites any URI="..." attribute inside an HLS tag (e.g.
       // #EXT-X-MEDIA, #EXT-X-I-FRAME-STREAM-INF). Without this, an
@@ -2746,15 +2779,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // Rewrite each relative variant playlist to a fresh stealth level URL.
         if (/\.m3u8(\?|$)/i.test(line)) {
           outLines.push(buildStealthLevelUrl(req.params.publicId, sid, line.replace(/^\//, ""), ttls.manifest));
+          rewrittenVariantCount++;
         } else {
           outLines.push(raw);
         }
       }
 
+      const responseBody = outLines.join("\n");
+      log(`[stream/master] DONE pub=${req.params.publicId} sid=${sid} upstreamVariants=${upstreamStreamInfCount} rewrittenVariants=${rewrittenVariantCount} responseBytes=${responseBody.length}`);
+      if (rewrittenVariantCount !== upstreamStreamInfCount) {
+        log(`[stream/master] MISMATCH variant rewrite count differs from upstream — some variants may have been stripped (external URL or unsupported scheme)`);
+      }
+
       res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.setHeader("X-Content-Type-Options", "nosniff");
-      return res.send(outLines.join("\n"));
+      return res.send(responseBody);
     } catch (e: any) {
       log(`stream/master error for ${req.params.publicId}: ${e.message}`);
       return res.status(500).json({ message: "Stream master error" });

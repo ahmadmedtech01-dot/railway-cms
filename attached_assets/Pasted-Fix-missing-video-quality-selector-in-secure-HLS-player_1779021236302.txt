@@ -1,0 +1,118 @@
+Fix missing video quality selector in secure HLS player.
+
+Current issue:
+Admin uploads video and selects multiple output qualities such as 360p, 480p, 720p during conversion/transcoding. Video plays, but player does not show quality options. Quality menu should show Auto, 360p, 480p, 720p etc.
+
+Investigate end-to-end from upload/transcode to player UI.
+
+PART 1 — Verify transcoding output
+1. Check upload/transcode code where selected output qualities are received from admin upload form.
+2. Verify selected qualities are saved/passed correctly from frontend to backend.
+3. Verify backend ffmpeg/transcode job actually creates separate HLS variants for each selected quality:
+   - 360p playlist
+   - 480p playlist
+   - 720p playlist
+4. Verify output folder/storage contains:
+   - master.m3u8
+   - variant playlist for each selected quality
+   - segment files for each quality
+5. If admin selects 360p, 480p, 720p, master.m3u8 must include 3 #EXT-X-STREAM-INF entries.
+
+Expected master example:
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+360p/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=854x480
+480p/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
+720p/index.m3u8
+
+PART 2 — Verify master playlist generation
+1. Find where master.m3u8 is generated.
+2. Ensure it is generated dynamically from selected output qualities, not hardcoded to one quality.
+3. Ensure the selected qualities from admin upload are respected.
+4. If the source video resolution is lower than selected quality, skip only invalid upscales, but still include valid lower/equal qualities.
+5. Add logs after transcode:
+   - selectedQualities
+   - generatedVariants
+   - masterPlaylistPath
+   - master playlist content summary
+6. Do not mark video as ready until master playlist and selected variant playlists exist.
+
+PART 3 — Verify storage upload
+1. Check uploadHlsDir or equivalent storage upload function.
+2. Confirm master.m3u8 and all variant playlists are uploaded to active storage.
+3. Confirm all variant segment folders are uploaded.
+4. Confirm upload does not accidentally upload only one rendition.
+5. Confirm storage keys match the paths written inside master.m3u8.
+
+PART 4 — Verify secure master endpoint
+1. Open the secure master endpoint:
+   /api/player/:publicId/stream/master/:opaqueId
+2. Response must contain multiple #EXT-X-STREAM-INF entries.
+3. The endpoint must rewrite every variant URL to secure stealth level URLs.
+4. It must not collapse the master into one variant.
+5. It must not return a media playlist directly as master.
+6. Log:
+   - upstream master URL/path
+   - count of variants found
+   - rewritten variants count
+   - final master response preview
+
+Pass condition:
+If admin selected 360p, 480p, 720p, secure master response should contain 3 #EXT-X-STREAM-INF entries.
+
+PART 5 — Verify HLS.js levels
+In client/src/pages/embed-player.tsx:
+1. Listen to HLS.Events.MANIFEST_PARSED.
+2. Log hls.levels:
+   - level.height
+   - level.width
+   - level.bitrate
+   - level.url
+3. Build quality options from hls.levels, not from admin settings only.
+4. Show:
+   - Auto
+   - 360p
+   - 480p
+   - 720p
+5. If hls.levels.length is 1, log warning:
+   "Only one HLS level detected — quality selector hidden because master has one variant"
+6. Do not hide quality selector if allowQuality=true and hls.levels.length > 1.
+
+PART 6 — Verify player settings
+1. Confirm /api/player/:publicId/settings returns allowQuality:true.
+2. Confirm UI does not accidentally hide quality button due to:
+   - allowQuality false
+   - isMobile condition
+   - fullscreen condition
+   - custom control state
+   - levels state not updating
+3. Quality menu should be visible in:
+   - shareable link player
+   - LMS embed player
+   - admin preview player if allowed
+
+PART 7 — Manual quality switching
+Implement/verify:
+1. Auto sets hls.currentLevel = -1.
+2. Manual 360p/480p/720p sets hls.currentLevel to the correct level index.
+3. UI updates selected quality label.
+4. Switching quality does not reload whole player or break session.
+5. Seeking after quality switch still works.
+
+PART 8 — Acceptance tests
+Use a newly uploaded/transcoded video with 360p, 480p, 720p selected.
+
+Test:
+1. After transcode, inspect raw master.m3u8. It must have 3 variants.
+2. Inspect secure /stream/master/:opaqueId. It must have 3 rewritten variants.
+3. Browser console after MANIFEST_PARSED must show hls.levels.length = 3.
+4. Player must show quality selector.
+5. Quality menu must show Auto, 360p, 480p, 720p.
+6. Select 360p, 480p, 720p manually and confirm playback continues.
+7. Seek after changing quality; no freeze and no 403 storm.
+8. Test shareable link and LMS embed.
+
+Do not mark complete if hls.levels.length is 1. In that case, trace backward:
+player -> secure master -> upstream master -> transcode output -> admin selected qualities.

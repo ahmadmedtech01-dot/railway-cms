@@ -913,6 +913,23 @@ export default function EmbedPlayerPage(props: any = {}) {
           let mediaErrorRecoveries = 0;
 
           hls.on(Hls.Events.MANIFEST_PARSED, (_, hlsData) => {
+            // PART 5 diagnostic: surface every HLS level so we can see at a
+            // glance whether the master had multiple variants. If this logs a
+            // single level, the issue is upstream (transcode / master rewrite),
+            // NOT the UI selector logic.
+            try {
+              const levelSummary = hlsData.levels.map((l: any, i: number) => ({
+                i,
+                height: l.height,
+                width: l.width,
+                bitrate: l.bitrate,
+                url: Array.isArray(l.url) ? l.url[0] : l.url,
+              }));
+              console.info("[HLS] MANIFEST_PARSED levels=", levelSummary.length, levelSummary);
+              if (hlsData.levels.length <= 1) {
+                console.warn("[HLS] Only one HLS level detected — quality selector hidden because master has one variant. Check /api/player/:publicId/stream/master response for #EXT-X-STREAM-INF count.");
+              }
+            } catch {}
             setQualities(hlsData.levels.map((l, i) => ({ height: l.height, index: i })));
             setStatus("ready");
             playerReadyRef.current = true;
