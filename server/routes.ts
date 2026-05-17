@@ -4613,19 +4613,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       preflight = { routeType: "seg_legacy" };
     }
 
-    const results: Array<{ idx: number; status: number; bytes: number; latencyMs: number; cfCache: string | null }> = [];
+    // For stealth chunks: the opaque ID encodes a session ID with a bound
+    // UA hash. The probe MUST send the same User-Agent the browser used or
+    // Railway's validateUserAgent will reject with 403 "Device mismatch" —
+    // which is not cacheable, so the cache stays empty and every request is
+    // a MISS that the Worker can't store. Accept ?ua= override; default to
+    // a modern Chrome UA which matches what most embed players send.
+    const uaOverride = String(req.query.ua || "");
+    const probeUa = uaOverride ||
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+    const results: Array<{ idx: number; status: number; bytes: number; latencyMs: number; cfCache: string | null; errorSnippet?: string }> = [];
     for (let i = 0; i < n; i++) {
       const t0 = Date.now();
       try {
-        const r = await fetch(targetUrl, { method: "GET" });
+        const r = await fetch(targetUrl, {
+          method: "GET",
+          headers: { "User-Agent": probeUa },
+        });
         const buf = await r.arrayBuffer();
-        results.push({
+        const entry: any = {
           idx: i,
           status: r.status,
           bytes: buf.byteLength,
           latencyMs: Date.now() - t0,
           cfCache: r.headers.get("cf-cache-status"),
-        });
+        };
+        // For non-2xx, surface the first 200 chars of the body so the caller
+        // can see WHICH 403 (UA mismatch, session revoked, abuse block, etc.)
+        if (r.status >= 400 && buf.byteLength > 0 && buf.byteLength < 2000) {
+          try {
+            entry.errorSnippet = new TextDecoder().decode(buf).slice(0, 200);
+          } catch {}
+        }
+        results.push(entry);
       } catch (e: any) {
         results.push({ idx: i, status: 0, bytes: 0, latencyMs: Date.now() - t0, cfCache: null });
       }
