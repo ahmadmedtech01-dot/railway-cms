@@ -236,6 +236,22 @@ export default function EmbedPlayerPage(props: any = {}) {
   // Aborting it on seek prevents the old-position request from reaching the
   // server (or at minimum cancels response processing on the client side).
   const progressAbortRef = useRef<AbortController | null>(null);
+  // ── SEEK GUARD ──────────────────────────────────────────────────────
+  // True from the moment any seek begins (user scrubber, skip button,
+  // postMessage, native HTML5 seek) until the video element fires the
+  // `seeked` / `playing` event OR a 1s safety timer expires. While true:
+  //   • the 10-second periodic progress interval skips its tick (so the
+  //     intermediate / pre-seek currentTime is never reported)
+  //   • the native `onNativeSeeking` handler bails out (the in-flight
+  //     `seekProgressWithTimeout` already covers it — no duplicate POST)
+  // Fixes the duplicated alternating progress reports the user observed
+  // (e.g. "idx 5, idx 41, idx 5, idx 41" within a single second after a
+  // backward seek).
+  const isSeekingRef = useRef<boolean>(false);
+  // Debug logger guarded by an env flag so production stays silent.
+  // Enable in dev or by setting `VITE_SECURE_PLAYER_DEBUG=true`.
+  const SECURE_PLAYER_DEBUG = (import.meta as any).env?.VITE_SECURE_PLAYER_DEBUG === "true" || (import.meta as any).env?.DEV === true;
+  const sdbg = (...args: any[]) => { if (SECURE_PLAYER_DEBUG) console.debug("[player]", ...args); };
   // Set to true when the video element fires "ended". Cleared whenever a seek
   // or replay resets the position. Prevents the progress interval from
   // sending the end-of-video position after playback finishes, which would
@@ -258,14 +274,36 @@ export default function EmbedPlayerPage(props: any = {}) {
       progressAbortRef.current = null;
     }
     // Bump playback epoch so any concurrent interval tick that spawns a new
-    // request after this point carries the new epoch in its body.
+    // request after this point carries the new epoch in its body, and the
+    // periodic interval's capture-and-recheck pattern drops stale sends.
     playbackEpochRef.current += 1;
+    const epoch = playbackEpochRef.current;
+    sdbg("seek epoch incremented", { epoch, currentTime });
     // Seeking always clears the ended flag — we are now at a new position.
     videoEndedRef.current = false;
+    // Raise the seek guard so the periodic progress interval and the
+    // native `seeking` listener both skip until playback resumes.
+    isSeekingRef.current = true;
+    const v = videoRef.current;
+    const clearGuard = () => {
+      if (!isSeekingRef.current) return;
+      isSeekingRef.current = false;
+      try { v?.removeEventListener("seeked", clearGuard); } catch {}
+      try { v?.removeEventListener("playing", clearGuard); } catch {}
+      clearTimeout(guardTimer);
+      sdbg("seek guard cleared");
+    };
+    if (v) {
+      v.addEventListener("seeked", clearGuard, { once: true });
+      v.addEventListener("playing", clearGuard, { once: true });
+    }
+    // Safety fallback — `seeked`/`playing` can be deferred or skipped under
+    // network stall. Hard-clear after 1s so the periodic loop resumes.
+    const guardTimer = setTimeout(clearGuard, 1000);
     const req = fetch(`/api/stream/${publicId}/progress`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sid, currentTime, seekTo: true, epoch: playbackEpochRef.current }),
+      body: JSON.stringify({ sid, currentTime, seekTo: true, epoch }),
     }).then(() => undefined).catch(() => undefined);
     return Promise.race([
       req,
@@ -923,7 +961,15 @@ export default function EmbedPlayerPage(props: any = {}) {
           // wasn't initiated by our own helpers (isSeeking.current=false)
           // and reproduces the same proactive window advance.
           const onNativeSeeking = () => {
-            if (isSeeking.current) return; // our own helper already handled it
+            // Skip if EITHER of our internal seek helpers is already
+            // driving this seek — they have already fired the POST and
+            // raised the seek guard. Without this check, every call to
+            // `performLocalSeek` / `applyPendingSeek` produced TWO
+            // /progress posts: one from the helper, one re-entered here
+            // when `v.currentTime = newTime` synthesised a native
+            // `seeking` event. That was the source of the alternating
+            // `targetSegmentIndex` values the user observed in the logs.
+            if (isSeeking.current || isSeekingRef.current) return;
             const sid = streamSidRef.current;
             if (!sid || !publicId) return;
             const target = video.currentTime;
@@ -933,6 +979,7 @@ export default function EmbedPlayerPage(props: any = {}) {
             if (hls) hls.stopLoad();
             const resume = () => { if (hls) hls.startLoad(target); };
             // Bounded wait so a stalled POST cannot leave the player frozen.
+            // seekProgressWithTimeout raises isSeekingRef internally.
             seekProgressWithTimeout(sid, target).then(resume, resume);
           };
           video.addEventListener("seeking", onNativeSeeking);
@@ -1408,9 +1455,27 @@ export default function EmbedPlayerPage(props: any = {}) {
     return () => { if (pingIntervalRef.current) clearInterval(pingIntervalRef.current); };
   }, [sessionCode, secondsWatched, publicId]);
 
-  // Progress reporting for sliding window — every 10 seconds
+  // Progress reporting for sliding window — every 10 seconds.
+  //
+  // SINGLE-LOOP INVARIANT: there is exactly one progress interval alive at
+  // any time. Effect cleanup tears down the timer AND nulls the ref, and
+  // the effect body explicitly clears any pre-existing interval before
+  // creating a new one (defensive — under React StrictMode the effect
+  // body can run before the previous cleanup in some hot-reload paths).
+  //
+  // STALE-EPOCH SKIP: every tick captures `playbackEpochRef.current` BEFORE
+  // any async work, then re-checks immediately before the fetch dispatch.
+  // If a seek has incremented the epoch in the meantime, the tick is
+  // discarded — preventing the duplicated `targetSegmentIndex 5 / 41 / 5
+  // / 41` pattern caused by an old interval closure beating the seek POST
+  // to the server.
   useEffect(() => {
     if (!streamSidRef.current || !publicId) return;
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+    sdbg("progress interval created");
     progressIntervalRef.current = setInterval(() => {
       const v = videoRef.current;
       const currentSid = streamSidRef.current;
@@ -1420,6 +1485,15 @@ export default function EmbedPlayerPage(props: any = {}) {
       // would reset the new session's sliding window to [0, windowSegs] and
       // cause the next chunk to 403 with out_of_window, freezing playback.
       if (isRotatingRef.current) return;
+      // Skip while a seek is in progress — `seekProgressWithTimeout` has
+      // already POSTed the authoritative new position with seekTo:true.
+      // Anything we sent now would be either the OLD currentTime (read
+      // before the seek applied) or a transitional value, both of which
+      // confuse the server's sliding window.
+      if (isSeekingRef.current) {
+        sdbg("progress skipped — seeking");
+        return;
+      }
       // Defensive: even on the same SID, a near-zero currentTime during the
       // earliest moments after attach is not a real playback position.
       // Genuine seeks to 0 go through performLocalSeek with seekTo:true.
@@ -1428,28 +1502,40 @@ export default function EmbedPlayerPage(props: any = {}) {
       // position would be a stale high-index value that jumps the server
       // window far ahead, causing 403s when the user replays from the start.
       if (videoEndedRef.current) return;
-      // Snapshot the epoch at fire time. If a seek fires concurrently and
-      // bumps the epoch, the new epoch value is carried on the seekTo POST;
-      // THIS request's old epoch still goes out but the server's
-      // stale-advance guard (SEEK_STALE_GUARD_MS) will drop it if the jump
-      // is too large. Abort any previously-issued interval POST first.
+      // Capture epoch at tick fire and re-check before the fetch dispatch.
+      // The re-check is needed because state evaluation above is sync but
+      // a microtask interleave (e.g. a seek event handler running between
+      // our checks) can still bump the epoch. Belt + suspenders.
+      const capturedEpoch = playbackEpochRef.current;
       if (progressAbortRef.current) {
         try { progressAbortRef.current.abort(); } catch {}
       }
+      if (capturedEpoch !== playbackEpochRef.current) {
+        sdbg("progress skipped — stale epoch", { capturedEpoch, current: playbackEpochRef.current });
+        return;
+      }
       const ac = new AbortController();
       progressAbortRef.current = ac;
+      const currentTime = v.currentTime;
+      sdbg("progress sent", { currentTime, epoch: capturedEpoch });
       fetch(`/api/stream/${publicId}/progress`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sid: currentSid,
-          currentTime: v.currentTime,
-          epoch: playbackEpochRef.current,
+          currentTime,
+          epoch: capturedEpoch,
         }),
         signal: ac.signal,
       }).catch(() => {});
     }, 10000);
-    return () => { if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); };
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+        sdbg("progress interval cleared");
+      }
+    };
   }, [publicId, status]);
 
   // Session heartbeat — ping every 3 minutes to extend the session TTL.

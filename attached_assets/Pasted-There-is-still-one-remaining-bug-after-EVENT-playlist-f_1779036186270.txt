@@ -1,0 +1,64 @@
+There is still one remaining bug after EVENT playlist fix.
+
+Logs show progress is still being sent from two different playback positions at the same time:
+
+Example:
+- targetSegmentIndex 5
+- targetSegmentIndex 41
+- targetSegmentIndex 5
+- targetSegmentIndex 41
+
+And later:
+- targetSegmentIndex 11
+- targetSegmentIndex 40
+- targetSegmentIndex 11
+- targetSegmentIndex 40
+
+This means old progress interval / old HLS callback / stale seek timer is still alive after seek and is fighting with the current playback position.
+
+Do not change the EVENT playlist fix.
+Do not weaken security.
+Do not disable signed URLs.
+Do not disable Cloudflare Worker.
+Do not disable session binding.
+
+Fix only the frontend stale progress sender issue.
+
+Requirements:
+
+1. In embed-player.tsx, ensure only one progress loop exists.
+- Use progressIntervalRef.
+- Before starting a new progress interval, clear the old one.
+- On seek, replay, manifest reload, session rotation, and component unmount, clear old progress timers.
+
+2. Add playbackEpochRef.
+- Increment epoch on seek, replay, manifest reload, and session rotation.
+- Every progress send must capture the epoch.
+- If captured epoch !== playbackEpochRef.current, do not send progress.
+- Every async callback must ignore stale epoch.
+
+3. During seek:
+- pause normal progress sending.
+- abort pending progress request.
+- wait until seeked/canplay/playing or 500–1000ms.
+- send exactly one progress update for the new selected currentTime.
+- then resume one normal progress loop.
+
+4. Heartbeat must use latest currentTime/segment only.
+- Heartbeat should not send old segment index.
+- If seeking is active, heartbeat should pause briefly or use latest seek target.
+
+5. Add debug logs behind SECURE_PLAYER_DEBUG=true:
+- progress interval created/cleared
+- progress skipped due to stale epoch
+- progress sent with currentTime and segmentIndex
+- seek epoch incremented
+
+Acceptance:
+- No more alternating progress targetSegmentIndex values like 5/41/5/41.
+- Backward seek works on first click.
+- Forward/backward repeated seek works.
+- Replay works.
+- No permanent spinner.
+- Only one progress interval exists.
+- Security remains active.
