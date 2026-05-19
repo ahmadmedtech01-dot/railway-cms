@@ -1,0 +1,47 @@
+What's Already in Place
+✅ Admin UI — Mode selector + all fields exist
+components/admin/topic-content/VideoTab.tsx already has:
+
+A Mode dropdown: postMessage (Secure) vs Query Param (Static) (line 431-433)
+CMS Embed URL field (line 425)
+Public Video ID field (line 414)
+Target Origin field
+Live preview iframe that already does the postMessage handshake (lines 129-168 — sends {type: 'LMS_LAUNCH_TOKEN', token} to the iframe on PLAYER_READY)
+Help text, code snippets, mobile-app caveat ("WebViews cannot use postMessage")
+✅ Schema — fields exist on the right table
+topicVideos table has: publicVideoId, embedUrl, targetOrigin, tokenMode, provider. Per-topic, not per-course. No migration needed.
+
+✅ Backend endpoint — exists, auth-checked, topic-aware
+POST /api/video-courses/:courseId/embed-token (server/routes/video-public.ts line 495):
+
+Looks up the specific video via resolveCourseVideoRecord(videoId, courseId) (topic-level)
+Checks admin OR hasActiveVideoCourseAccess OR isVideoAllowedForUser
+Mints HMAC launch token (300s TTL, random jti, includes iss/aud/sub/publicId/exp)
+Calls CMS mint endpoint, gets back embedToken
+Returns {embedToken, publicVideoId, embedUrl, manifestUrl}
+✅ Student player — has the postMessage plumbing (origin guard, message listener, PLAYER_READY/SEEKED handling)
+The Actual Gap (2 small changes)
+Gap 1 — Backend endpoint always puts token in URL (line 600):
+
+embedUrl: `${cmsBase}/embed/${vid.publicVideoId}?embedToken=${encodeURIComponent(embedToken)}`
+
+This works for query_param mode but defeats postMessage mode (token leaks into page source). It also doesn't return the tokenMode value so the player can't branch.
+
+Gap 2 — Student player blindly uses that URL (line 334):
+
+setEmbedUrl(data.embedUrl);  // always has token in it
+
+It never checks tokenMode, never sends LMS_LAUNCH_TOKEN via postMessage.
+
+Proposed Minimal Change
+Backend (server/routes/video-public.ts, ~10 lines):
+
+Add tokenMode to response (from vid.tokenMode, defaulting to 'postMessage')
+Add bareEmbedUrl: ${cmsBase}/embed/${vid.publicVideoId} (no token)
+Keep embedUrl field as-is (token in URL) for backward compat with query_param
+Student player (StudentTopicVideoPlayer.tsx, ~30 lines):
+
+After fetching token, branch on tokenMode:
+query_param → use data.embedUrl (current behavior, no change)
+postMessage → use data.bareEmbedUrl as iframe src, store embedToken in a ref, post {type:'LMS_LAUNCH_TOKEN', token} to iframe on PLAYER_READY (plus a retry loop, mirroring the admin preview pattern at VideoTab.tsx:129-168)
+No schema changes. No new endpoints. No admin UI changes. Query Param mode continues working identically.
