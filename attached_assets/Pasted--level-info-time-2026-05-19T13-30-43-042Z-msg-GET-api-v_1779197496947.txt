@@ -1,0 +1,22 @@
+{"level":"info","time":"2026-05-19T13:30:43.042Z","msg":"GET /api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/curriculum 304 1326ms","requestId":"38fde003","method":"GET","url":"/api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/curriculum","status":304,"duration":1326}
+{"level":"info","time":"2026-05-19T13:30:43.759Z","msg":"GET /api/security/status?moduleType=video 304 430ms","requestId":"a0e077f6","method":"GET","url":"/api/security/status?moduleType=video","status":304,"duration":430}
+Menu
+{"level":"info","time":"2026-05-19T13:30:43.775Z","msg":"GET /api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/topics/6acdd52c-3921-4d6a-b9ae-bd3ca54191fb/content 304 2042ms","requestId":"c88daa15","method":"GET","url":"/api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/topics/6acdd52c-3921-4d6a-b9ae-bd3ca54191fb/content","status":304,"duration":2042}
+{"level":"info","time":"2026-05-19T13:30:44.260Z","msg":"GET /api/security/global-lock 304 418ms","requestId":"6851b0e7","method":"GET","url":"/api/security/global-lock","status":304,"duration":418}
+{"level":"info","time":"2026-05-19T13:30:44.567Z","msg":"POST /api/video-analytics/activity 200 475ms","requestId":"1de5b4ad","method":"POST","url":"/api/video-analytics/activity","status":200,"duration":475}
+[Embed Token] Minting embed token for publicId=mjakYG627Y, userId=cdf17969-35f4-4f91-bfe7-17cd76f49b6f
+[Embed Token] Payload: {"iss":"syan-lms","aud":"cms-player","sub":"cdf17969-35f4-4f91-bfe7-17cd76f49b6f","publicId":"mjakYG627Y","iat":1779197446,"exp":1779197746,"jti":"797cb45f-5d07-48e5-ad5f-35772c6520b3","name":"Ahmad","email":"ahmadmsa488@gmail.com"}
+[Embed Token] Token structure: payloadB64Len=310, sigLen=64, secretPrefix=176753af...
+[Embed Token] Mint URL: https://railway-cms-production.up.railway.app/api/integrations/player/mjakYG627Y/mint
+[Embed Token] Using Origin header: https://complete-video-hr-syan-exams-test-final-dww7.onrender.com
+[Embed Token] CMS status: 200
+[Embed Token] CMS response keys: ok,integrationSessionId,embedToken,expiresIn,manifestUrl,refreshUrl,pingUrl,eventUrl,metadata,playerConfig
+[Embed Token] Success: publicId=mjakYG627Y, tokenLen=541, hasManifest=true, tokenMode=postMessage
+{"level":"info","time":"2026-05-19T13:30:48.434Z","msg":"POST /api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/embed-token 200 4340ms","requestId":"f4c37311","method":"POST","url":"/api/video-courses/b489af65-7dd8-464b-80e2-ddd860e23c4c/embed-token","status":200,"duration":4340}
+{"level":"info","time":"2026-05-19T13:30:49.280Z","msg":"GET /api/security/global-lock 304 436ms","requestId":"753c310a","method":"GET","url":"/api/security/global-lock","status":304,"duration":436}
+{"level":"info","time":"2026-05-19T13:30:54.390Z","msg":"GET /api/security/global-lock 304 531ms","requestId":"f6ad6587","method":"GET","url":"/api/security/global-lock","status":304,"duration":531}
+{"level":"info","time":"2026-05-19T13:30:59.306Z","msg":"GET /api/security/global-lock 304 421ms","requestId":"edc7d372","method":"GET","url":"/api/security/global-lock","status":304,"duration":421}
+{"level":"info","time":"2026-05-19T13:31:04.870Z","msg":"GET /api/security/global-lock 304 417ms","requestId":"d1ab0709","method":"GET","url":"/api/security/global-lock","status":304,"duration":417}
+{"level":"info","time":"2026-05-19T13:31:10.126Z","msg":"GET /api/security/global-lock 304 686ms","requestId":"372a6ab9","method":"GET","url":"/api/security/global-lock","status":304,"duration":686}
+{"level":"info","time":"2026-05-19T13:31:14.885Z","msg":"GET /api/security/global-lock 304 431ms","requestId":"4e3ac7c2","method":"GET","url":"/api/security/global-lock","status":304,"duration":431}
+{"level":"info","time":"2026-05-19T13:31:19.847Z","msg":"GET /api/security/global-lock 304 418ms","requestId":"23b6a45b","method":"GET","url":"/api/security/global-lock","status":304,"duration":418}

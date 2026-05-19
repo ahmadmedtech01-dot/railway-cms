@@ -1,0 +1,39 @@
+App restarted cleanly with all changes. Here's the summary:
+
+What Was Changed
+server/routes/video-public.ts (~10 lines)
+
+/embed-token now returns tokenMode + bareEmbedUrl alongside the existing embedUrl
+tokenMode is strictly validated to 'postMessage' | 'query_param' (unknown/empty → 'postMessage')
+services/videoCourseService.ts (1 line)
+
+getEmbedToken return type extended with bareEmbedUrl, tokenMode, manifestUrl
+components/student/courses/StudentTopicVideoPlayer.tsx (~60 lines)
+
+Added refs: embedTokenRef, tokenModeRef, tokenSentRef, tokenRetryTimeoutRef
+fetchToken branches on data.tokenMode:
+postMessage → iframe src = bareEmbedUrl (no token), token stored in ref
+query_param → iframe src = embedUrl (token in URL, unchanged behavior)
+Existing PLAYER_READY case now posts {type: 'LMS_LAUNCH_TOKEN', token} to iframe targeting cmsOrigin (never '*'), with a tracked 1s retry, guarded against duplicates
+Retry button uses the same branching logic (was leaking token in URL — code review caught this)
+Retry timeout is cleared on topic switch, embed URL change, and component unmount
+Test Plan (as you specified)
+postMessage video (the hugugff topic with publicVideoId=uIjtPm_JyD):
+
+DevTools → Network: POST /api/video-courses/.../embed-token returns 200 with tokenMode: "postMessage" and bareEmbedUrl
+DevTools → Elements: iframe src = https://railway-cms-production.up.railway.app/embed/uIjtPm_JyD (no ?embedToken=)
+DevTools → Console: [LMS] LMS_LAUNCH_TOKEN posted to iframe appears, no errors
+Video plays
+query_param video (the test video):
+
+Network response has tokenMode: "query_param"
+Iframe src still contains ?embedToken=... (unchanged from before)
+Video plays exactly as today
+DB Sanity Check You Should Run
+Since I can't reach your Supabase DB from here, please run this on Supabase to confirm the topic's token_mode is exactly the string 'postMessage':
+
+SELECT public_video_id, token_mode, embed_url
+FROM topic_videos
+WHERE public_video_id = 'uIjtPm_JyD';
+
+If token_mode is anything other than 'postMessage' or 'query_param' (e.g., NULL, '', or a label string), my hardened server now defaults to 'postMessage' — but it's better to have a clean value in the DB.
