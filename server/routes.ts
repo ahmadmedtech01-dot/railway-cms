@@ -19,7 +19,7 @@ import os from "os";
 import { vimeoFetchVideo, vimeoExtractFileLinks, vimeoDiagnoseNoFileAccess } from "./vimeo";
 import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
-import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl } from "./bunny";
+import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl, getBunnyStorageKey } from "./bunny";
 import QRCode from "qrcode";
 import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, mintOpaqueChunkId, computeChunkStableKey, signChunkCacheToken, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, bumpMaxSegmentExposed, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
@@ -4481,8 +4481,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       if (conn.provider === "bunny_net") {
         const cfg = conn.config as any;
-        if (!process.env.BUNNY_API_KEY) {
-          return res.status(400).json({ ok: false, message: "BUNNY_API_KEY is not set. Add it as an environment variable (your Bunny.net Storage Zone Password)." });
+        if (!(process.env.BUNNY_STORAGE_ACCESS_KEY || "").trim()) {
+          return res.status(400).json({ ok: false, message: "BUNNY_STORAGE_ACCESS_KEY is not set. Add it as a secret (your Bunny.net Storage Zone Password — found at Storage → syanvideocms → Access → Password)." });
         }
         if (!cfg.storageZoneName) {
           return res.status(400).json({ ok: false, message: "Storage Zone Name not configured in this connection." });
