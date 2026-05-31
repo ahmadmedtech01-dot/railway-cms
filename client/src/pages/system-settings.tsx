@@ -303,7 +303,7 @@ export default function SystemSettingsPage() {
                       <span className="col-span-2">Pull Zone: <span className="text-foreground font-mono text-[11px]">{cfg.pullZoneUrl || "—"}</span></span>
                       <span>Raw prefix: <code className="bg-muted px-1 rounded">{cfg.rawPrefix || "raw/"}</code></span>
                       <span>HLS prefix: <code className="bg-muted px-1 rounded">{cfg.hlsPrefix || "hls/"}</code></span>
-                      <span className="col-span-2 text-muted-foreground">Credentials: BUNNY_API_KEY from server environment. Optional: BUNNY_TOKEN_AUTH_KEY for signed CDN URLs.</span>
+                      <span className="col-span-2 text-muted-foreground">Credentials: BUNNY_STORAGE_ACCESS_KEY from server environment. Optional: BUNNY_TOKEN_AUTH_KEY for signed CDN URLs.</span>
                     </>
                   ) : (
                     <>
@@ -417,7 +417,7 @@ export default function SystemSettingsPage() {
                     <Key className="h-4 w-4 shrink-0 mt-0.5" />
                     <div className="space-y-1">
                       <p className="font-medium text-foreground">Bunny credentials are stored in server secrets (never in UI)</p>
-                      <p>Set <code className="bg-background px-1 rounded">BUNNY_API_KEY</code> to your Storage Zone Password in Replit Secrets.</p>
+                      <p>Set <code className="bg-background px-1 rounded">BUNNY_STORAGE_ACCESS_KEY</code> to your Storage Zone Password in Replit Secrets.</p>
                       <p>Optional: set <code className="bg-background px-1 rounded">BUNNY_TOKEN_AUTH_KEY</code> to your Pull Zone Token Auth Security Key for signed CDN URLs (recommended for private content).</p>
                     </div>
                   </div>
