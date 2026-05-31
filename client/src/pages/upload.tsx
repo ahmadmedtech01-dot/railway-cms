@@ -14,7 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Upload, Link as LinkIcon, X, CloudUpload, CheckCircle, AlertCircle, Info, Video, HardDrive } from "lucide-react";
-import type { StorageConnection } from "@shared/schema";
+import type { StorageConnection, VideoCategory } from "@shared/schema";
 
 const QUALITY_OPTIONS = [
   { value: 240, label: "240p" },
@@ -73,9 +73,14 @@ export default function UploadPage() {
   const [sourceUrl, setSourceUrl] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>("");
+  const [categoryId, setCategoryId] = useState<string>("");
 
   const { data: storageConnections = [] } = useQuery<StorageConnection[]>({
     queryKey: ["/api/storage-connections"],
+  });
+
+  const { data: categories = [] } = useQuery<VideoCategory[]>({
+    queryKey: ["/api/admin/categories"],
   });
 
   useEffect(() => {
@@ -141,6 +146,7 @@ export default function UploadPage() {
         author,
         tags: tags ? tags.split(",").map(t => t.trim()).filter(Boolean) : [],
         sourceType: "upload",
+        categoryId: categoryId || null,
       });
 
       const formData = new FormData();
@@ -186,6 +192,7 @@ export default function UploadPage() {
         title, description, author,
         tags: tags ? tags.split(",").map(t => t.trim()).filter(Boolean) : [],
         sourceUrl,
+        categoryId: categoryId || null,
       });
       qc.invalidateQueries({ queryKey: ["/api/videos"] });
       toast({ title: result.status === "processing" ? "Ingestion started!" : "Video imported!", description: result.status === "processing" ? "Your video is being downloaded and converted. Check the video page for progress." : undefined });
@@ -222,6 +229,27 @@ export default function UploadPage() {
               <Input id="tags" value={tags} onChange={e => setTags(e.target.value)} placeholder="tutorial, demo" data-testid="input-tags" />
             </div>
           </div>
+          {categories.length > 0 && (
+            <div className="space-y-1.5">
+              <Label htmlFor="category">Category <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Select value={categoryId} onValueChange={setCategoryId}>
+                <SelectTrigger id="category" data-testid="select-category">
+                  <SelectValue placeholder="No category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">No category</SelectItem>
+                  {categories.map(cat => (
+                    <SelectItem key={cat.id} value={cat.id}>
+                      <span className="flex items-center gap-2">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                        {cat.name}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label htmlFor="description">Description</Label>
             <Textarea id="description" value={description} onChange={e => setDescription(e.target.value)} placeholder="Video description..." rows={3} data-testid="input-description" />
