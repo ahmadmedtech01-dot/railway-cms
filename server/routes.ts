@@ -4672,6 +4672,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           integrationSecret: !!process.env.INTEGRATION_MASTER_SECRET,
           bunnyStorage: !!(process.env.BUNNY_STORAGE_ACCESS_KEY || "").trim(),
           bunnyToken: !!(process.env.BUNNY_TOKEN_AUTH_KEY || "").trim(),
+          b2KeyId: !!(process.env.B2_KEY_ID || "").trim(),
+          b2AppKey: !!(process.env.B2_APPLICATION_KEY || "").trim(),
+          b2Endpoint: !!(process.env.B2_S3_ENDPOINT || "").trim(),
+          r2AccessKey: !!(process.env.R2_ACCESS_KEY_ID || "").trim(),
+          r2SecretKey: !!(process.env.R2_SECRET_ACCESS_KEY || "").trim(),
+          r2Endpoint: !!(process.env.R2_ENDPOINT || "").trim(),
         };
       }),
     ]);
@@ -4730,10 +4736,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const bunnyWarn = k.bunnyStorage && !k.bunnyToken;
       const bunnyMissing = !k.bunnyStorage;
       const activeConnProvider = storageResult.status === "fulfilled" ? (storageResult.value.result as any).provider : null;
-      if (activeConnProvider === "bunny_net" || k.bunnyStorage) {
-        checks.push({ key: "bunny_secrets", name: "Bunny.net Secrets", status: bunnyMissing ? "error" : bunnyWarn ? "warn" : "ok",
-          message: bunnyMissing ? "BUNNY_STORAGE_ACCESS_KEY missing" : bunnyWarn ? "Storage key set, Token Auth key missing (CDN signing disabled)" : "Storage key + Token Auth key both set" });
-      }
+      // Bunny.net — always show
+      checks.push({ key: "bunny_secrets", name: "Bunny.net Secrets",
+        status: bunnyMissing ? "warn" : bunnyWarn ? "warn" : "ok",
+        message: bunnyMissing ? "Not configured (BUNNY_STORAGE_ACCESS_KEY not set)"
+          : bunnyWarn ? "Storage key set — Token Auth key missing (CDN token signing disabled)"
+          : "Storage key + Token Auth key both set" });
+      // Backblaze B2 — always show
+      const b2HasKeys = k.b2KeyId && k.b2AppKey;
+      const b2Status: "ok" | "warn" | "error" = b2HasKeys && k.b2Endpoint ? "ok" : b2HasKeys ? "warn" : "warn";
+      const b2Msg = !k.b2KeyId && !k.b2AppKey ? "Not configured (B2_KEY_ID / B2_APPLICATION_KEY not set)"
+        : !k.b2KeyId ? "B2_KEY_ID missing"
+        : !k.b2AppKey ? "B2_APPLICATION_KEY missing"
+        : !k.b2Endpoint ? "Keys set — B2_S3_ENDPOINT missing"
+        : "B2_KEY_ID + B2_APPLICATION_KEY + B2_S3_ENDPOINT all set";
+      checks.push({ key: "b2_secrets", name: "Backblaze B2 Secrets", status: b2HasKeys && k.b2Endpoint ? "ok" : b2HasKeys ? "warn" : "warn", message: b2Msg });
+      // Cloudflare R2 — always show
+      const r2HasKeys = k.r2AccessKey && k.r2SecretKey;
+      const r2Msg = !k.r2AccessKey && !k.r2SecretKey ? "Not configured (R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY not set)"
+        : !k.r2AccessKey ? "R2_ACCESS_KEY_ID missing"
+        : !k.r2SecretKey ? "R2_SECRET_ACCESS_KEY missing"
+        : !k.r2Endpoint ? "Keys set — R2_ENDPOINT missing"
+        : "R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY + R2_ENDPOINT all set";
+      checks.push({ key: "r2_secrets", name: "Cloudflare R2 Secrets", status: r2HasKeys && k.r2Endpoint ? "ok" : r2HasKeys ? "warn" : "warn", message: r2Msg });
     } else {
       checks.push({ key: "secrets", name: "Environment Secrets", status: "error", message: killResult.reason?.message || "Could not read settings" });
     }
