@@ -18,3 +18,9 @@ id = "IqNPoPSRtkAPpMdLL8VrM"
 uri = "file://docs/integration-guide.md"
 type = "text"
 title = "Integration API — Complete Guide & Flow"
+
+[[outputs]]
+id = "FeQMw9Hpb8gwvZcp1JAgl"
+uri = "file://docs/LMS_SETUP_GUIDE.md"
+type = "text"
+title = "LMS Integration Setup Guide"
