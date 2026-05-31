@@ -3,13 +3,13 @@ import {
   adminUsers, videos, videoPlayerSettings, videoWatermarkSettings,
   videoSecuritySettings, embedTokens, playbackSessions, auditLogs, systemSettings, storageConnections, mediaAssets, videoBanners,
   integrationClients, integrationClientVideoAccess, integrationLaunchLogs, integrationPlaybackSessions, integrationEventLogs, integrationApiKeys,
-  videoShareLinks,
+  videoShareLinks, videoCategories,
   type AdminUser, type Video, type VideoPlayerSettings, type VideoWatermarkSettings,
   type VideoSecuritySettings, type EmbedToken, type PlaybackSession, type AuditLog,
   type SystemSetting, type StorageConnection, type MediaAsset, type VideoBanner,
   type IntegrationClient, type IntegrationClientVideoAccess, type IntegrationLaunchLog,
   type IntegrationPlaybackSession, type IntegrationEventLog, type IntegrationApiKey,
-  type VideoShareLink,
+  type VideoShareLink, type VideoCategory,
 } from "@shared/schema";
 import { eq, desc, and, sql, asc, like, inArray, lt } from "drizzle-orm";
 
@@ -534,5 +534,29 @@ export const storage = {
     return db.select().from(integrationEventLogs)
       .where(eq(integrationEventLogs.integrationPlaybackSessionId, sessionId))
       .orderBy(asc(integrationEventLogs.createdAt));
+  },
+
+  // Video Categories
+  async getCategories(): Promise<VideoCategory[]> {
+    return db.select().from(videoCategories).orderBy(asc(videoCategories.name));
+  },
+
+  async getCategoryById(id: string): Promise<VideoCategory | undefined> {
+    const [c] = await db.select().from(videoCategories).where(eq(videoCategories.id, id));
+    return c;
+  },
+
+  async createCategory(data: { name: string; color?: string }): Promise<VideoCategory> {
+    const [c] = await db.insert(videoCategories).values(data as any).returning();
+    return c;
+  },
+
+  async updateCategory(id: string, data: { name?: string; color?: string }): Promise<VideoCategory | undefined> {
+    const [c] = await db.update(videoCategories).set(data).where(eq(videoCategories.id, id)).returning();
+    return c;
+  },
+
+  async deleteCategory(id: string): Promise<void> {
+    await db.delete(videoCategories).where(eq(videoCategories.id, id));
   },
 };

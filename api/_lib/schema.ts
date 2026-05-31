@@ -23,9 +23,17 @@ export const adminUsers = pgTable("admin_users", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const videoCategories = pgTable("video_categories", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  color: text("color").notNull().default("#6366f1"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const videos = pgTable("videos", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   publicId: text("public_id").notNull().unique(),
+  categoryId: uuid("category_id").references(() => videoCategories.id, { onDelete: "set null" }),
   title: text("title").notNull(),
   description: text("description").default(""),
   author: text("author").default(""),
@@ -407,6 +415,10 @@ export const sdkBuildMetadata = pgTable("sdk_build_metadata", {
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+export const insertVideoCategorySchema = createInsertSchema(videoCategories).omit({ id: true, createdAt: true });
+export type VideoCategory = typeof videoCategories.$inferSelect;
+export type InsertVideoCategory = z.infer<typeof insertVideoCategorySchema>;
 
 export const insertVideoSchema = createInsertSchema(videos).omit({
   id: true,

@@ -1353,11 +1353,79 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.put("/api/videos/:id", requireAuth, async (req, res) => {
     try {
-      const { title, description, author, tags, available, sourceType, sourceUrl } = req.body;
-      const v = await storage.updateVideo(req.params.id, { title, description, author, tags, available, sourceType, sourceUrl });
+      const { title, description, author, tags, available, sourceType, sourceUrl, categoryId } = req.body;
+      const v = await storage.updateVideo(req.params.id, { title, description, author, tags, available, sourceType, sourceUrl, categoryId: categoryId ?? undefined });
       if (!v) return res.status(404).json({ message: "Not found" });
       await storage.createAuditLog({ action: "video_updated", meta: { videoId: v.id }, ip: req.ip });
       res.json(v);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Video download — returns a time-limited presigned URL to the raw source file
+  app.get("/api/videos/:id/download", requireAuth, async (req, res) => {
+    try {
+      const video = await storage.getVideoById(req.params.id);
+      if (!video) return res.status(404).json({ message: "Not found" });
+      if (!video.rawS3Key) return res.status(400).json({ message: "No source file stored for this video" });
+
+      const conn = await storage.getActiveStorageConnection();
+      if (!conn) return res.status(400).json({ message: "No active storage connection" });
+      const cfg = conn.config as any;
+
+      let url: string;
+      const ttl = 3600; // 1 hour download link
+
+      if (conn.provider === "bunny_net") {
+        url = bunnyCdnUrl(cfg.pullZoneUrl, video.rawS3Key, ttl);
+      } else if (conn.provider === "backblaze_b2") {
+        url = await b2PresignGetObject(cfg.bucket, video.rawS3Key, cfg.endpoint, ttl);
+      } else if (conn.provider === "cloudflare_r2") {
+        url = await r2PresignGetObject(cfg.bucket, video.rawS3Key, cfg.endpoint, ttl);
+      } else {
+        return res.status(400).json({ message: "Download not supported for this storage provider" });
+      }
+
+      const ext = video.rawS3Key.split(".").pop() || "mp4";
+      const filename = `${video.title.replace(/[^a-z0-9_\-]/gi, "_")}.${ext}`;
+      res.json({ url, filename, qualities: video.qualities || [] });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Video Categories CRUD
+  app.get("/api/admin/categories", requireAuth, async (_req, res) => {
+    res.json(await storage.getCategories());
+  });
+
+  app.post("/api/admin/categories", requireAuth, async (req, res) => {
+    try {
+      const { name, color } = req.body;
+      if (!name?.trim()) return res.status(400).json({ message: "Name is required" });
+      const cat = await storage.createCategory({ name: name.trim(), color: color || "#6366f1" });
+      res.json(cat);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/admin/categories/:id", requireAuth, async (req, res) => {
+    try {
+      const { name, color } = req.body;
+      const cat = await storage.updateCategory(req.params.id, { name: name?.trim(), color });
+      if (!cat) return res.status(404).json({ message: "Not found" });
+      res.json(cat);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/admin/categories/:id", requireAuth, async (req, res) => {
+    try {
+      await storage.deleteCategory(req.params.id);
+      res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
