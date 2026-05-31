@@ -4479,6 +4479,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.json({ ok: true, message: "Cloudflare R2 connection working — test file written successfully." });
       }
 
+      if (conn.provider === "bunny_net") {
+        const cfg = conn.config as any;
+        if (!process.env.BUNNY_API_KEY) {
+          return res.status(400).json({ ok: false, message: "BUNNY_API_KEY is not set. Add it as an environment variable (your Bunny.net Storage Zone Password)." });
+        }
+        if (!cfg.storageZoneName) {
+          return res.status(400).json({ ok: false, message: "Storage Zone Name not configured in this connection." });
+        }
+        const { bunnyTestConnection } = await import("./bunny");
+        const result = await bunnyTestConnection(cfg.storageZoneName, cfg.storageRegion);
+        if (result.ok) {
+          return res.json({ ok: true, message: `Bunny.net connection working — zone "${cfg.storageZoneName}" reachable.` });
+        }
+        return res.status(400).json({ ok: false, message: result.error || "Bunny.net connection failed." });
+      }
+
       const client = await getS3Client();
       const cfg = await getS3Config();
       if (!client || !cfg.bucket) return res.status(400).json({ ok: false, message: "AWS S3 credentials not configured in System Settings" });
