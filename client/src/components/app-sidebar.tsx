@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   LayoutDashboard, Library, Upload, Shield, Code2, Settings,
-  ScrollText, LogOut, ChevronRight, ChevronLeft, Zap, Plug,
+  ScrollText, LogOut, ChevronRight, ChevronLeft, Zap, Plug, Activity,
 } from "lucide-react";
 import { useAuth, useLogout } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ const navItems = [
   { title: "Global Security", url: "/security", icon: Shield },
   { title: "Integrations", url: "/integrations", icon: Plug },
   { title: "Audit Logs", url: "/audit", icon: ScrollText },
+  { title: "System Health", url: "/health", icon: Activity },
   { title: "System Settings", url: "/settings", icon: Settings },
 ];
 

@@ -4591,6 +4591,167 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  // ── System Health ─────────────────────────────────────────────────────────────
+  app.get("/api/admin/health", requireAuth, async (req, res) => {
+    const checkedAt = new Date().toISOString();
+    type CheckStatus = "ok" | "warn" | "error";
+    interface HealthCheck {
+      key: string;
+      name: string;
+      status: CheckStatus;
+      message: string;
+      detail?: any;
+      latencyMs?: number;
+    }
+
+    async function timed<T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }> {
+      const t = Date.now();
+      const result = await fn();
+      return { result, ms: Date.now() - t };
+    }
+
+    // Run all checks in parallel
+    const [dbResult, storageResult, workerResult, vimeoResult, killResult] = await Promise.allSettled([
+      // 1. Database
+      timed(async () => {
+        const vids = await storage.getVideos();
+        const conns = await storage.getStorageConnections();
+        const cats = await storage.getCategories();
+        return { videos: vids.length, ready: vids.filter(v => v.status === "ready").length, processing: vids.filter(v => v.status === "processing").length, failed: vids.filter(v => v.status === "failed").length, storageConns: conns.length, categories: cats.length };
+      }),
+      // 2. Active storage connection
+      timed(async () => {
+        const conns = await storage.getStorageConnections();
+        const active = conns.find(c => c.isActive);
+        if (!active) return { ok: false, message: "No active storage connection" };
+        const cfg = active.config as any;
+        if (active.provider === "bunny_net") {
+          const { bunnyTestConnection } = await import("./bunny");
+          const r = await bunnyTestConnection(cfg.storageZoneName, cfg.storageRegion);
+          return { ok: r.ok, provider: active.provider, name: active.name, message: r.ok ? `Zone "${cfg.storageZoneName}" reachable` : (r.error || "Connection failed") };
+        }
+        if (active.provider === "backblaze_b2") {
+          const endpoint = cfg.endpoint || process.env.B2_S3_ENDPOINT || "";
+          const hasKeys = !!(process.env.B2_KEY_ID && process.env.B2_APPLICATION_KEY);
+          return { ok: hasKeys && !!endpoint, provider: active.provider, name: active.name, message: hasKeys ? "Credentials set" : "B2_KEY_ID / B2_APPLICATION_KEY missing" };
+        }
+        if (active.provider === "cloudflare_r2") {
+          const hasKeys = !!(process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY);
+          return { ok: hasKeys, provider: active.provider, name: active.name, message: hasKeys ? "Credentials set" : "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY missing" };
+        }
+        return { ok: true, provider: active.provider, name: active.name, message: "Configured" };
+      }),
+      // 3. Cloudflare Worker
+      timed(async () => {
+        const gateway = process.env.HLS_GATEWAY_BASE;
+        if (!gateway) return { ok: false, message: "HLS_GATEWAY_BASE not set" };
+        const r = await fetch(`${gateway}/seg/__probe.ts`, { signal: AbortSignal.timeout(6000) }).catch(e => ({ status: 0, ok: false, _err: e.message })) as any;
+        const status = r.status ?? 0;
+        if (status === 401 || status === 403) return { ok: true, gateway, message: `Online — auth enforced (${status})` };
+        if (status === 404) return { ok: true, gateway, message: "Online (404 on probe path — normal)" };
+        if (status === 0) return { ok: false, gateway, message: `Unreachable: ${r._err || "timeout"}` };
+        return { ok: false, gateway, message: `Unexpected status ${status}` };
+      }),
+      // 4. Vimeo (optional)
+      timed(async () => {
+        const token = process.env.VIMEO_ACCESS_TOKEN || (await storage.getSetting("vimeo_access_token")) || "";
+        if (!token) return { configured: false };
+        const r = await fetch("https://api.vimeo.com/me", { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) }).catch(() => null);
+        if (!r) return { configured: true, ok: false, message: "Request failed" };
+        if (!r.ok) return { configured: true, ok: false, message: `Token rejected (${r.status})` };
+        const me = await r.json().catch(() => ({})) as any;
+        return { configured: true, ok: true, message: `Token valid — ${me.name || "authenticated"}` };
+      }),
+      // 5. Kill switch + secrets
+      timed(async () => {
+        const killed = await storage.getSetting("global_kill_switch");
+        return {
+          killSwitch: killed === "true",
+          signingSecret: !!process.env.SIGNING_SECRET,
+          lmsSecret: !!process.env.LMS_HMAC_SECRET,
+          integrationSecret: !!process.env.INTEGRATION_MASTER_SECRET,
+          bunnyStorage: !!(process.env.BUNNY_STORAGE_ACCESS_KEY || "").trim(),
+          bunnyToken: !!(process.env.BUNNY_TOKEN_AUTH_KEY || "").trim(),
+        };
+      }),
+    ]);
+
+    const checks: HealthCheck[] = [];
+
+    // Database
+    if (dbResult.status === "fulfilled") {
+      const { result: d, ms } = dbResult.value;
+      checks.push({ key: "database", name: "Database", status: "ok", latencyMs: ms,
+        message: `Connected — ${d.videos} videos (${d.ready} ready, ${d.processing} processing${d.failed > 0 ? `, ${d.failed} failed` : ""}), ${d.storageConns} storage connection${d.storageConns !== 1 ? "s" : ""}`,
+        detail: d });
+    } else {
+      checks.push({ key: "database", name: "Database", status: "error", message: `Query failed: ${dbResult.reason?.message || "unknown error"}` });
+    }
+
+    // Storage
+    if (storageResult.status === "fulfilled") {
+      const { result: s, ms } = storageResult.value;
+      checks.push({ key: "storage", name: "Active Storage", status: s.ok ? "ok" : "error", latencyMs: ms,
+        message: s.ok ? `${s.name} — ${s.message}` : (s.message || "No active connection"),
+        detail: { provider: (s as any).provider, name: (s as any).name } });
+    } else {
+      checks.push({ key: "storage", name: "Active Storage", status: "error", message: storageResult.reason?.message || "Check failed" });
+    }
+
+    // Worker
+    if (workerResult.status === "fulfilled") {
+      const { result: w, ms } = workerResult.value;
+      checks.push({ key: "worker", name: "Cloudflare Worker", status: w.ok ? "ok" : "error", latencyMs: ms,
+        message: w.message, detail: { gateway: (w as any).gateway } });
+    } else {
+      checks.push({ key: "worker", name: "Cloudflare Worker", status: "error", message: workerResult.reason?.message || "Check failed" });
+    }
+
+    // Vimeo
+    if (vimeoResult.status === "fulfilled") {
+      const { result: v, ms } = vimeoResult.value;
+      if (v.configured) {
+        checks.push({ key: "vimeo", name: "Vimeo Integration", status: v.ok ? "ok" : "error", latencyMs: ms, message: v.message || "" });
+      }
+    }
+
+    // Secrets + Kill Switch
+    if (killResult.status === "fulfilled") {
+      const { result: k } = killResult.value;
+      checks.push({ key: "kill_switch", name: "Kill Switch", status: k.killSwitch ? "warn" : "ok",
+        message: k.killSwitch ? "⚠ ACTIVE — all video playback is blocked" : "Inactive (video playback enabled)" });
+      checks.push({ key: "signing_secret", name: "Signing Secret", status: k.signingSecret ? "ok" : "error",
+        message: k.signingSecret ? "Set" : "Missing — HLS token signing will fail in production" });
+      checks.push({ key: "lms_secret", name: "LMS HMAC Secret", status: k.lmsSecret ? "ok" : "warn",
+        message: k.lmsSecret ? "Set" : "Not set — LMS embed launch tokens will not work" });
+      checks.push({ key: "integration_secret", name: "Integration Master Secret", status: k.integrationSecret ? "ok" : "warn",
+        message: k.integrationSecret ? "Set" : "Not set — integration API tokens may not work" });
+      const bunnyOk = k.bunnyStorage && k.bunnyToken;
+      const bunnyWarn = k.bunnyStorage && !k.bunnyToken;
+      const bunnyMissing = !k.bunnyStorage;
+      const activeConnProvider = storageResult.status === "fulfilled" ? (storageResult.value.result as any).provider : null;
+      if (activeConnProvider === "bunny_net" || k.bunnyStorage) {
+        checks.push({ key: "bunny_secrets", name: "Bunny.net Secrets", status: bunnyMissing ? "error" : bunnyWarn ? "warn" : "ok",
+          message: bunnyMissing ? "BUNNY_STORAGE_ACCESS_KEY missing" : bunnyWarn ? "Storage key set, Token Auth key missing (CDN signing disabled)" : "Storage key + Token Auth key both set" });
+      }
+    } else {
+      checks.push({ key: "secrets", name: "Environment Secrets", status: "error", message: killResult.reason?.message || "Could not read settings" });
+    }
+
+    // Recent errors from audit log
+    let recentErrors: any[] = [];
+    try {
+      const logs = await storage.getAuditLogs();
+      recentErrors = logs.filter(l => ["error", "security_breach", "stream_denied", "abuse_detected", "upload_failed"].some(k => l.action.includes(k))).slice(0, 10);
+    } catch {}
+
+    const errorCount = checks.filter(c => c.status === "error").length;
+    const warnCount = checks.filter(c => c.status === "warn").length;
+    const overall = errorCount > 0 ? "error" : warnCount > 0 ? "degraded" : "healthy";
+
+    res.json({ checkedAt, overall, checks, recentErrors });
+  });
+
   // ── Global & Per-Video Client Security Settings ──────────────────────────────
   const { getSecurityRepo } = await import("./security/securityRepoFactory");
   const secRepo = getSecurityRepo();
