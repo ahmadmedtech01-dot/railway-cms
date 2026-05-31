@@ -3069,6 +3069,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         originUrl = await b2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
       } else if (storageProvider === "cloudflare_r2") {
         originUrl = await r2PresignGetObject(storageConfig.bucket, fileKey, storageConfig.endpoint, 20);
+      } else if (storageProvider === "bunny_net") {
+        originUrl = bunnyCdnUrl(storageConfig.pullZoneUrl, fileKey, 20);
       } else {
         const c = await getS3Client();
         const s3cfg = await getS3Config();
