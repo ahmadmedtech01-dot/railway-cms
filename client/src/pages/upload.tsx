@@ -73,7 +73,7 @@ export default function UploadPage() {
   const [sourceUrl, setSourceUrl] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>("");
-  const [categoryId, setCategoryId] = useState<string>("");
+  const [categoryId, setCategoryId] = useState<string>("__none");
 
   const { data: storageConnections = [] } = useQuery<StorageConnection[]>({
     queryKey: ["/api/storage-connections"],
@@ -147,7 +147,7 @@ export default function UploadPage() {
         author,
         tags: tags ? tags.split(",").map(t => t.trim()).filter(Boolean) : [],
         sourceType: "upload",
-        categoryId: categoryId || null,
+        categoryId: (categoryId && categoryId !== "__none") ? categoryId : null,
       });
 
       const formData = new FormData();
@@ -193,7 +193,7 @@ export default function UploadPage() {
         title, description, author,
         tags: tags ? tags.split(",").map(t => t.trim()).filter(Boolean) : [],
         sourceUrl,
-        categoryId: categoryId || null,
+        categoryId: (categoryId && categoryId !== "__none") ? categoryId : null,
       });
       qc.invalidateQueries({ queryKey: ["/api/videos"] });
       toast({ title: result.status === "processing" ? "Ingestion started!" : "Video imported!", description: result.status === "processing" ? "Your video is being downloaded and converted. Check the video page for progress." : undefined });
@@ -237,7 +237,7 @@ export default function UploadPage() {
                 <SelectValue placeholder="No category" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">No category</SelectItem>
+                <SelectItem value="__none">No category</SelectItem>
                 {categories.map(cat => (
                   <SelectItem key={cat.id} value={cat.id}>
                     <span className="flex items-center gap-2">
