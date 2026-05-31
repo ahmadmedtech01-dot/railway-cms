@@ -370,6 +370,7 @@ export default function LibraryPage() {
 
   const { data: categories = [] } = useQuery<VideoCategory[]>({
     queryKey: ["/api/admin/categories"],
+    staleTime: 0,
   });
 
   const toggle = useMutation({

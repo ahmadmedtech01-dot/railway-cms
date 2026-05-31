@@ -81,6 +81,7 @@ export default function UploadPage() {
 
   const { data: categories = [] } = useQuery<VideoCategory[]>({
     queryKey: ["/api/admin/categories"],
+    staleTime: 0,
   });
 
   useEffect(() => {
@@ -229,27 +230,28 @@ export default function UploadPage() {
               <Input id="tags" value={tags} onChange={e => setTags(e.target.value)} placeholder="tutorial, demo" data-testid="input-tags" />
             </div>
           </div>
-          {categories.length > 0 && (
-            <div className="space-y-1.5">
-              <Label htmlFor="category">Category <span className="text-muted-foreground font-normal">(optional)</span></Label>
-              <Select value={categoryId} onValueChange={setCategoryId}>
-                <SelectTrigger id="category" data-testid="select-category">
-                  <SelectValue placeholder="No category" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">No category</SelectItem>
-                  {categories.map(cat => (
-                    <SelectItem key={cat.id} value={cat.id}>
-                      <span className="flex items-center gap-2">
-                        <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
-                        {cat.name}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          <div className="space-y-1.5">
+            <Label htmlFor="category">Category <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <Select value={categoryId} onValueChange={setCategoryId}>
+              <SelectTrigger id="category" data-testid="select-category">
+                <SelectValue placeholder="No category" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">No category</SelectItem>
+                {categories.map(cat => (
+                  <SelectItem key={cat.id} value={cat.id}>
+                    <span className="flex items-center gap-2">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                      {cat.name}
+                    </span>
+                  </SelectItem>
+                ))}
+                {categories.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">No categories yet — create them in Video Library</div>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="space-y-1.5">
             <Label htmlFor="description">Description</Label>
             <Textarea id="description" value={description} onChange={e => setDescription(e.target.value)} placeholder="Video description..." rows={3} data-testid="input-description" />
