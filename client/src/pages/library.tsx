@@ -206,7 +206,7 @@ interface CategoryManagerProps {
   onClose: () => void;
 }
 
-function CategoryManager({ categories, onClose }: CategoryManagerProps) {
+function CategoryManager({ onClose }: Omit<CategoryManagerProps, "categories">) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [newName, setNewName] = useState("");
@@ -215,11 +215,16 @@ function CategoryManager({ categories, onClose }: CategoryManagerProps) {
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("");
 
+  const { data: categories = [] } = useQuery<VideoCategory[]>({
+    queryKey: ["/api/admin/categories"],
+    staleTime: 0,
+  });
+
   const create = useMutation({
     mutationFn: (data: { name: string; color: string }) =>
       apiRequest("POST", "/api/admin/categories", data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/categories"] });
+      qc.refetchQueries({ queryKey: ["/api/admin/categories"] });
       setNewName("");
       toast({ title: "Category created" });
     },
@@ -230,7 +235,7 @@ function CategoryManager({ categories, onClose }: CategoryManagerProps) {
     mutationFn: ({ id, ...data }: { id: string; name: string; color: string }) =>
       apiRequest("PUT", `/api/admin/categories/${id}`, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/categories"] });
+      qc.refetchQueries({ queryKey: ["/api/admin/categories"] });
       qc.invalidateQueries({ queryKey: ["/api/videos"] });
       setEditingId(null);
       toast({ title: "Category updated" });
@@ -241,7 +246,7 @@ function CategoryManager({ categories, onClose }: CategoryManagerProps) {
   const remove = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/admin/categories/${id}`),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/categories"] });
+      qc.refetchQueries({ queryKey: ["/api/admin/categories"] });
       qc.invalidateQueries({ queryKey: ["/api/videos"] });
       toast({ title: "Category deleted" });
     },
@@ -745,7 +750,7 @@ export default function LibraryPage() {
 
       {/* Category manager */}
       {showCategoryManager && (
-        <CategoryManager categories={categories} onClose={() => setShowCategoryManager(false)} />
+        <CategoryManager onClose={() => setShowCategoryManager(false)} />
       )}
 
       {/* Download single */}
