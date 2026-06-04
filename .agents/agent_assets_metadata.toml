@@ -24,3 +24,9 @@ id = "FeQMw9Hpb8gwvZcp1JAgl"
 uri = "file://docs/LMS_SETUP_GUIDE.md"
 type = "text"
 title = "LMS Integration Setup Guide"
+
+[[outputs]]
+id = "i3r2ZPVxjcYI8uEmG8DdK"
+uri = "file://docs/RXCOMPENDIUM_LMS_INTEGRATION.md"
+type = "text"
+title = "RxCompendium LMS Integration Guide"
