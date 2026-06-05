@@ -377,7 +377,13 @@ export function registerIntegrationRoutes(app: Express) {
 
       await storage.updateIntegrationPlaybackSession(integrationSessionId, updates);
 
-      return res.json({ ok: true, sessionState: ended ? "ended" : "active", tokenExpiresIn: EMBED_TOKEN_TTL });
+      // Return actual remaining seconds so the LMS can schedule proactive refresh accurately.
+      // session.startedAt marks when the token was issued (same TTL as the embed token).
+      const elapsedSec = session.startedAt
+        ? Math.floor((Date.now() - new Date(session.startedAt).getTime()) / 1000)
+        : 0;
+      const tokenExpiresIn = Math.max(0, EMBED_TOKEN_TTL - elapsedSec);
+      return res.json({ ok: true, sessionState: ended ? "ended" : "active", tokenExpiresIn });
     } catch (e: any) {
       log(`PING_ERROR: ${e.message}`);
       return res.status(500).json(errorJson("INTERNAL_ERROR", "Internal server error"));
@@ -533,11 +539,13 @@ export function registerIntegrationRoutes(app: Express) {
       if (!video || !video.available) return res.status(404).json(errorJson("VIDEO_NOT_FOUND", "Video not found or unavailable"));
       if (video.status !== "ready") return res.status(400).json(errorJson("VIDEO_NOT_READY", "Video is not ready for playback"));
 
-      // Phase 2 (parallel): access check + player/security settings at the same time
-      const [allowed, playerSettings, securitySettings] = await Promise.all([
+      // Phase 2 (parallel): access check + player/security settings + previous session for auto-resume
+      const [allowed, playerSettings, securitySettings, prevSession] = await Promise.all([
         storage.isVideoAllowedForClient(client.id, video.id, client.allowedVideoIdsMode),
         storage.getPlayerSettings(video.id),
         storage.getSecuritySettings(video.id),
+        // Look up previous session so we can auto-resume even if LMS didn't pass startAt
+        storage.getLatestIntegrationPlaybackSessionForUser(videoId, String(studentId), client.id),
       ]);
 
       if (!allowed) return res.status(403).json(errorJson("VIDEO_NOT_ALLOWED", "Video not allowed for this client"));
@@ -591,13 +599,17 @@ export function registerIntegrationRoutes(app: Express) {
       }, EMBED_TOKEN_TTL);
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-      // Append ?t=<startAt> so the embed player seeks to the correct position on
-      // load. The player reads ?t= / ?start= as urlSeekTime → pendingInitialSeekRef.
-      const startAtSec = startAt !== undefined && startAt !== null ? Math.max(0, Math.floor(Number(startAt))) : 0;
-      const iframeUrl = `${cmsBase}/embed/${videoId}?token=${tokenValue}${startAtSec > 0 ? `&t=${startAtSec}` : ""}`;
+      // Explicit startAt wins; if absent, fall back to the previous session's maxPositionSeconds
+      // so the embed player auto-resumes even when the LMS doesn't pass startAt.
+      // The player reads ?t= as urlSeekTime → pendingInitialSeekRef → hls.startLoad(t).
+      const explicitStartAt = startAt !== undefined && startAt !== null ? Math.max(0, Math.floor(Number(startAt))) : 0;
+      const autoResumeAt = explicitStartAt > 0
+        ? explicitStartAt
+        : (prevSession && prevSession.maxPositionSeconds > 5 ? Math.floor(prevSession.maxPositionSeconds) : 0);
+      const iframeUrl = `${cmsBase}/embed/${videoId}?token=${tokenValue}${autoResumeAt > 0 ? `&t=${autoResumeAt}` : ""}`;
       const manifestUrl = `${cmsBase}/api/player/${videoId}/manifest?token=${tokenValue}`;
 
-      log(`SIMPLE_EMBED: client=${client.slug} user=${studentId} video=${videoId} session=${integrationSession.id}`);
+      log(`SIMPLE_EMBED: client=${client.slug} user=${studentId} video=${videoId} session=${integrationSession.id} resume=${autoResumeAt > 0 ? `${autoResumeAt}s` : "start"}`);
 
       // Respond immediately — the token is a self-contained signed JWT so the
       // embed player can validate it cryptographically even before the DB row

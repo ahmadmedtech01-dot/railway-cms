@@ -498,6 +498,18 @@ export const storage = {
     return s;
   },
 
+  async getLatestIntegrationPlaybackSessionForUser(publicId: string, lmsUserId: string, clientId: string): Promise<IntegrationPlaybackSession | undefined> {
+    const [s] = await db.select().from(integrationPlaybackSessions)
+      .where(and(
+        eq(integrationPlaybackSessions.publicId, publicId),
+        eq(integrationPlaybackSessions.lmsUserId, lmsUserId),
+        eq(integrationPlaybackSessions.integrationClientId, clientId),
+      ))
+      .orderBy(desc(integrationPlaybackSessions.startedAt))
+      .limit(1);
+    return s;
+  },
+
   async getIntegrationPlaybackSessions(limit = 100, offset = 0, filters?: { clientId?: string; status?: string; publicId?: string; lmsUserId?: string }): Promise<{ sessions: IntegrationPlaybackSession[]; total: number }> {
     let conditions: any[] = [];
     if (filters?.clientId) conditions.push(eq(integrationPlaybackSessions.integrationClientId, filters.clientId));
