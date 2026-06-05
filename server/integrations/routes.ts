@@ -318,7 +318,9 @@ export function registerIntegrationRoutes(app: Express) {
         userId: `integration:${clientSlug}:${session.lmsUserId}`,
       } as any);
 
-      await storage.updateIntegrationPlaybackSession(integrationSessionId, { lastPingAt: new Date() } as any);
+      // Reset startedAt so the tokenExpiresIn calculation in /ping
+      // reads as a full TTL again after a successful refresh, not 0.
+      await storage.updateIntegrationPlaybackSession(integrationSessionId, { lastPingAt: new Date(), startedAt: new Date() } as any);
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || "";
       const manifestUrl = `${cmsBase}/api/player/${publicId}/manifest?token=${newTokenValue}`;

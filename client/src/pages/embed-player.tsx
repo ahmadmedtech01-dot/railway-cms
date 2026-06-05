@@ -166,8 +166,9 @@ export default function EmbedPlayerPage(props: any = {}) {
   // URL-based start time: ?t=SECONDS takes priority over ?start=SECONDS
   const urlSeekTime = (() => {
     const raw = urlParams.get("t") || urlParams.get("start") || "";
+    if (!raw) return -1;
     const n = parseFloat(raw);
-    if (!isFinite(n) || n < 0 || n > 86400) return 0;
+    if (!isFinite(n) || n < 0 || n > 86400) return -1;
     return n;
   })();
 
@@ -604,7 +605,7 @@ export default function EmbedPlayerPage(props: any = {}) {
     const clampedTime = isFinite(dur) && dur > 0
       ? Math.max(0, Math.min(seekTime, dur - 0.5))
       : Math.max(0, seekTime);
-    pendingInitialSeekRef.current = 0;
+    pendingInitialSeekRef.current = -1;
     pendingMessageSeekRef.current = null;
     if (import.meta.env.DEV) console.debug("[EmbedControl] applied seek", clampedTime);
 
@@ -979,6 +980,12 @@ export default function EmbedPlayerPage(props: any = {}) {
           const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false,
+            // Prevent HLS.js from auto-starting segment loads on MANIFEST_PARSED.
+            // Rotation handlers call hls.startLoad(resumeAt) explicitly so that
+            // call is the ONLY startLoad and is always honoured. Without this,
+            // HLS.js's internal handler fires first, starts loading from seg 0,
+            // and our stopLoad()+startLoad(resumeAt) races/loses.
+            autoStartLoad: false,
 
             // ── BUFFER (YouTube-style aggressive pre-load) ─────────────
             // Buffer up to 60s ahead. When internet is good the player
@@ -1168,8 +1175,15 @@ export default function EmbedPlayerPage(props: any = {}) {
             const dur = (hlsData as any).totalduration || (hlsData.levels[0]?.details?.totalduration) || 0;
             if (import.meta.env.DEV) console.debug("[EmbedControl] PLAYER_READY");
             postToParent({ type: "PLAYER_READY", publicId, duration: dur });
-            // Apply any pending seek (URL-based or queued postMessage seek)
-            setTimeout(() => applyPendingSeek(), 80);
+            // With autoStartLoad:false HLS.js never auto-starts. For the initial
+            // (non-rotation) load we kick off loading here. Rotation once-handlers
+            // call hls.startLoad(resumeAt) instead — skipped by the guard below.
+            if (!isRotatingRef.current) {
+              hls.startLoad(-1);
+              // Apply any pending URL-based or postMessage seek after a short
+              // delay so the manifest details are available to hls.js.
+              setTimeout(() => applyPendingSeek(), 80);
+            }
             // Suppress autoplay during rotation — the rotation handler restores position and plays
             if (playerSettings.autoplayAllowed && !isRotatingRef.current) video.play().catch(() => {});
           });
@@ -1288,29 +1302,23 @@ export default function EmbedPlayerPage(props: any = {}) {
                     isRotatingRef.current = false;
                     lastRotationAtRef.current = Date.now();
                     const resumeAt = pendingMessageSeekRef.current ?? savedTime;
-                    if (vid) {
-                      hls.stopLoad();
-                      hls.startLoad(resumeAt);
-                      vid.currentTime = resumeAt;
-                      // Belt-and-braces: re-apply the seek once the new
-                      // MediaSource has had a chance to attach. Without this
-                      // second assignment, fast back-to-back rotations can
-                      // leave currentTime at 0 because the first assignment
-                      // happens before MSE is ready and gets discarded.
-                      const targetTime = resumeAt;
-                      setTimeout(() => {
-                        if (vid && Math.abs((vid.currentTime || 0) - targetTime) > 1) {
-                          try { vid.currentTime = targetTime; } catch {}
-                        }
-                      }, 250);
-                      vid.play().catch(() => {});
-                    }
+                    // autoStartLoad:false — this is the ONLY startLoad call,
+                    // so HLS.js fetches from resumeAt without any race.
+                    // Do NOT set vid.currentTime here: the MSE buffer is empty
+                    // at MANIFEST_PARSED so the seek would be silently ignored.
+                    // Instead apply it in FRAG_BUFFERED once a segment near
+                    // resumeAt has been appended and the range is seekable.
+                    hls.startLoad(resumeAt);
+                    const doSeekAndPlay = () => {
+                      if (vid) {
+                        try { vid.currentTime = resumeAt; } catch {}
+                        vid.play().catch(() => {});
+                      }
+                    };
+                    hls.once(Hls.Events.FRAG_BUFFERED, doSeekAndPlay);
                     if (pendingMessageSeekRef.current !== null) {
                       applyPendingSeek();
                     }
-                    // Authoritative re-anchor after rotation. Routed through
-                    // sendProgress so the stale-zero guard catches the case
-                    // where savedTime was captured before a later user seek.
                     sendProgress("rotation", resumeAt, { sid: rd.sessionId, seekTo: true });
                   });
                 } else {
@@ -1463,12 +1471,14 @@ export default function EmbedPlayerPage(props: any = {}) {
                         if (opId !== rotationOpIdRef.current) return;
                         isRotatingRef.current = false;
                         const resumeAt = pendingMessageSeekRef.current ?? savedTime;
-                        if (vid) {
-                          hls.stopLoad();
-                          hls.startLoad(resumeAt);
-                          vid.currentTime = resumeAt;
-                          vid.play().catch(() => {});
-                        }
+                        hls.startLoad(resumeAt);
+                        const doSeekAndPlay = () => {
+                          if (vid) {
+                            try { vid.currentTime = resumeAt; } catch {}
+                            vid.play().catch(() => {});
+                          }
+                        };
+                        hls.once(Hls.Events.FRAG_BUFFERED, doSeekAndPlay);
                         reanchorProgress(resumeAt);
                         if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                       });
@@ -2083,14 +2093,13 @@ export default function EmbedPlayerPage(props: any = {}) {
                     if (opId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
                     const resumeAt = pendingMessageSeekRef.current ?? savedTime;
-                    hls.stopLoad();
                     hls.startLoad(resumeAt);
-                    v.currentTime = resumeAt;
-                    v.play().catch(() => {});
+                    const doSeekAndPlay = () => {
+                      try { v.currentTime = resumeAt; } catch {}
+                      v.play().catch(() => {});
+                    };
+                    hls.once(Hls.Events.FRAG_BUFFERED, doSeekAndPlay);
                     if (pendingMessageSeekRef.current !== null) applyPendingSeek();
-                    // Authoritative re-anchor after the pause-resume
-                    // rotation. Routed through sendProgress for guard
-                    // uniformity.
                     sendProgress("pause-resume", resumeAt, { sid: data.sessionId, seekTo: true });
                   });
                 } else {
