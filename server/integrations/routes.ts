@@ -576,19 +576,42 @@ export function registerIntegrationRoutes(app: Express) {
         resolvedPermissions: resolvedPerms,
       } as any);
 
-      const integrationSession = await storage.createIntegrationPlaybackSession({
-        integrationClientId: client.id,
-        integrationLaunchLogId: launchLog.id,
-        videoId: video.id,
-        publicId: videoId,
-        lmsUserId: String(studentId),
-        lmsCourseId: courseId || null,
-        lmsLessonId: lessonId || null,
-        studentName: studentName || null,
-        studentEmail: studentEmail || null,
-        status: "active",
-        sessionMetadata: { clientKey: client.clientKey, authMode: "api_key", apiKeyPrefix: verified.key.apiKeyPrefix },
-      } as any);
+      // ── Session reuse: if there is already an active session for this
+      // client+user+video, renew its token instead of creating a brand-new
+      // session. This prevents the "restart from 0" problem that happens when
+      // the LMS calls embed-url every ~5 min because the token is expiring:
+      //   old behaviour → new session created → new iframe URL → iframe reloads
+      //                   → HLS re-initialises → video restarts from 0
+      //   new behaviour → same session reused → new JWT issued → iframe reloads
+      //                   → player seeks to maxPositionSeconds → seamless resume
+      //
+      // We reset startedAt to now so that the tokenExpiresIn calculation in
+      // subsequent /ping calls reads as a full TTL again (not 0 immediately).
+      const activeSession = prevSession?.status === "active" ? prevSession : null;
+
+      let integrationSession: any;
+      if (activeSession) {
+        await storage.updateIntegrationPlaybackSession(activeSession.id, {
+          startedAt: new Date(),
+          lastPingAt: new Date(),
+        });
+        integrationSession = { ...activeSession, startedAt: new Date() };
+        log(`SIMPLE_EMBED_RENEW: client=${client.slug} user=${studentId} video=${videoId} session=${activeSession.id} pos=${activeSession.maxPositionSeconds}s`);
+      } else {
+        integrationSession = await storage.createIntegrationPlaybackSession({
+          integrationClientId: client.id,
+          integrationLaunchLogId: launchLog.id,
+          videoId: video.id,
+          publicId: videoId,
+          lmsUserId: String(studentId),
+          lmsCourseId: courseId || null,
+          lmsLessonId: lessonId || null,
+          studentName: studentName || null,
+          studentEmail: studentEmail || null,
+          status: "active",
+          sessionMetadata: { clientKey: client.clientKey, authMode: "api_key", apiKeyPrefix: verified.key.apiKeyPrefix },
+        } as any);
+      }
 
       const tokenValue = generateToken({
         videoId: video.id,
@@ -599,13 +622,15 @@ export function registerIntegrationRoutes(app: Express) {
       }, EMBED_TOKEN_TTL);
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-      // Explicit startAt wins; if absent, fall back to the previous session's maxPositionSeconds
-      // so the embed player auto-resumes even when the LMS doesn't pass startAt.
-      // The player reads ?t= as urlSeekTime → pendingInitialSeekRef → hls.startLoad(t).
+      // Explicit startAt wins; if absent, use the session's saved position
+      // (set by /tick every 20 s via touchIntegrationSessionPosition, so it
+      // reflects where the player actually was even if the LMS ping omits
+      // currentTime). The player reads ?t= → pendingInitialSeekRef → seek.
+      const sessionForResume = activeSession || prevSession;
       const explicitStartAt = startAt !== undefined && startAt !== null ? Math.max(0, Math.floor(Number(startAt))) : 0;
       const autoResumeAt = explicitStartAt > 0
         ? explicitStartAt
-        : (prevSession && prevSession.maxPositionSeconds > 5 ? Math.floor(prevSession.maxPositionSeconds) : 0);
+        : (sessionForResume && sessionForResume.maxPositionSeconds > 5 ? Math.floor(sessionForResume.maxPositionSeconds) : 0);
       const iframeUrl = `${cmsBase}/embed/${videoId}?token=${tokenValue}${autoResumeAt > 0 ? `&t=${autoResumeAt}` : ""}`;
       const manifestUrl = `${cmsBase}/api/player/${videoId}/manifest?token=${tokenValue}`;
 

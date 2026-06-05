@@ -498,6 +498,18 @@ export const storage = {
     return s;
   },
 
+  // Fire-and-forget: advance maxPositionSeconds using GREATEST so seek-back
+  // never overwrites a larger value. Called from the /tick handler so position
+  // is always persisted even when the LMS ping omits currentTime.
+  async touchIntegrationSessionPosition(id: string, seconds: number): Promise<void> {
+    await db.update(integrationPlaybackSessions)
+      .set({
+        maxPositionSeconds: sql`GREATEST(max_position_seconds, ${Math.floor(seconds)})`,
+        lastPingAt: new Date(),
+      })
+      .where(eq(integrationPlaybackSessions.id, id));
+  },
+
   async getLatestIntegrationPlaybackSessionForUser(publicId: string, lmsUserId: string, clientId: string): Promise<IntegrationPlaybackSession | undefined> {
     const [s] = await db.select().from(integrationPlaybackSessions)
       .where(and(

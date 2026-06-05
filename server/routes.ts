@@ -3374,6 +3374,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // heartbeat verification may depend on (currentSegmentIndex).
       if (wantProgress) {
         response.progress = _runProgressLogic(sid, session, body);
+
+        // Keep the integration session's maxPositionSeconds in sync so that
+        // embed-url auto-resume works correctly even when the LMS ping omits
+        // currentTime. We use GREATEST in the SQL so seek-back never
+        // overwrites a larger recorded max. Fire-and-forget — never blocks tick.
+        if (session.integrationSessionId) {
+          const approxSec = Math.max(
+            typeof body.currentTime === "number" ? body.currentTime : 0,
+            ((response.progress as any)?.targetSegmentIndex ?? 0) * 2,
+          );
+          if (approxSec > 0) {
+            storage.touchIntegrationSessionPosition(session.integrationSessionId, approxSec)
+              .catch(() => {});
+          }
+        }
       }
 
       // Heartbeat — performs UA validation + replay protection + extends TTL.
