@@ -11,7 +11,320 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Copy, RotateCw, Eye, Trash2, Shield, Activity, FileText, PlayCircle, XCircle, Key, Zap } from "lucide-react";
+import { Plus, Copy, RotateCw, Trash2, Shield, Activity, FileText, PlayCircle, XCircle, Key, Zap, Download } from "lucide-react";
+
+function generateGuide(cmsBase: string): string {
+  return `# Syan CMS — LMS Integration Developer Guide
+
+> **Hand this document to your LMS developer.**  
+> Everything they need to integrate Syan Video CMS into your LMS is on this page.
+
+---
+
+## 1. What Is This?
+
+Syan CMS is a secure video hosting platform. Your LMS embeds videos from Syan CMS using short-lived iframe URLs. Students never get a direct video link — every playback session is tracked and time-limited.
+
+---
+
+## 2. Prerequisites (Admin Does This Once)
+
+Before the developer starts, the **CMS admin** must:
+
+1. Log in to the CMS at \`${cmsBase}\`
+2. Go to **Integrations → Clients** and click **Create Client**
+   - Name: e.g. \`SyanRx LMS\`
+   - Slug: e.g. \`syanrx-lms\`
+   - Allowed Origins: \`https://syanrx.com, https://www.syanrx.com\`
+   - Video Access Mode: \`All Videos\` (or \`Selected Videos Only\`)
+3. Go to **Integrations → API Keys**, select the client, and click **Create Key**
+   - Label: e.g. \`production\`
+   - **Copy the key immediately** — it is shown only once
+   - It starts with \`syan_ak_...\`
+4. Share the following with the developer:
+
+| Item | Value |
+|---|---|
+| CMS Base URL | \`${cmsBase}\` |
+| API Key | \`syan_ak_xxxxxxxxxxxxxxxxxx...\` (from step 3) |
+
+---
+
+## 3. Environment Variable (LMS Server)
+
+Add one environment variable to your LMS server:
+
+\`\`\`
+SYAN_API_KEY=syan_ak_xxxxxxxxxxxxxxxxxx...
+SYAN_CMS_BASE=\${cmsBase}
+\`\`\`
+
+---
+
+## 4. How to Upload Videos to the CMS
+
+1. Log in to CMS at \`${cmsBase}\`
+2. Go to **Video Library → Upload**
+3. Upload your video file (MP4 recommended)
+4. Wait for processing to complete (status becomes **Ready**)
+5. Open the video — copy its **Public ID** (looks like \`sm_AbCdEfGh\`)
+6. Store this Public ID in your LMS database alongside the course/lesson it belongs to
+
+> **The Public ID is what you pass in the API call to get the embed URL.**
+
+---
+
+## 5. The One API Call (Server-Side)
+
+Your LMS **server** calls this endpoint **every time a student opens a video page**:
+
+\`\`\`
+POST \${cmsBase}/api/integrations/embed-url
+\`\`\`
+
+### Request
+
+| Header | Value |
+|---|---|
+| \`Content-Type\` | \`application/json\` |
+| \`X-Api-Key\` | \`syan_ak_...\` (your API key) |
+
+### Body
+
+\`\`\`json
+{
+  "videoId":     "sm_AbCdEfGh",   // required — CMS video Public ID
+  "studentId":   "user_123",      // required — unique student ID in your LMS
+  "courseId":    "course_45",     // optional — for your analytics
+  "lessonId":    "lesson_7",      // optional — for your analytics
+  "studentName": "John Doe",      // optional — shown in CMS session logs
+  "studentEmail":"john@example.com" // optional
+}
+\`\`\`
+
+### Response
+
+\`\`\`json
+{
+  "ok": true,
+  "iframeUrl": "\${cmsBase}/embed/sm_AbCdEfGh?token=eyJ...",
+  "embedToken": "eyJ...",
+  "expiresIn": 300,
+  "integrationSessionId": "uuid",
+  "video": {
+    "title": "Lecture 1: Introduction",
+    "durationSeconds": 1240,
+    "posterUrl": null,
+    "publicId": "sm_AbCdEfGh"
+  }
+}
+\`\`\`
+
+> **Important:** The \`iframeUrl\` expires in **5 minutes**. Generate it server-side on each page load — do NOT cache it or store it.
+
+---
+
+## 6. Code Examples
+
+### Node.js / Express
+
+\`\`\`javascript
+// In your route handler — runs on the server, NOT in the browser
+app.get('/course/:courseId/lesson/:lessonId', async (req, res) => {
+  const lesson = await db.lessons.findById(req.params.lessonId);
+
+  // Get a fresh embed URL from Syan CMS
+  const response = await fetch(\`\${process.env.SYAN_CMS_BASE}/api/integrations/embed-url\`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Api-Key': process.env.SYAN_API_KEY,
+    },
+    body: JSON.stringify({
+      videoId:     lesson.syanVideoId,   // the Public ID you stored
+      studentId:   req.user.id,
+      courseId:    req.params.courseId,
+      lessonId:    req.params.lessonId,
+      studentName: req.user.name,
+    }),
+  });
+
+  if (!response.ok) {
+    return res.status(500).send('Could not load video');
+  }
+
+  const { iframeUrl } = await response.json();
+
+  // Pass iframeUrl to your template
+  res.render('lesson', { lesson, iframeUrl });
+});
+\`\`\`
+
+### HTML Template (after getting iframeUrl from server)
+
+\`\`\`html
+<!-- Paste the iframeUrl from the server response here -->
+<div class="video-container" style="position:relative; padding-bottom:56.25%; height:0;">
+  <iframe
+    src="<%= iframeUrl %>"
+    style="position:absolute; top:0; left:0; width:100%; height:100%; border:none;"
+    allowfullscreen
+    allow="autoplay; fullscreen; picture-in-picture"
+    referrerpolicy="strict-origin"
+  ></iframe>
+</div>
+\`\`\`
+
+### PHP (Laravel / plain PHP)
+
+\`\`\`php
+<?php
+// In your controller
+$response = Http::withHeaders([
+    'X-Api-Key' => env('SYAN_API_KEY'),
+])->post(env('SYAN_CMS_BASE') . '/api/integrations/embed-url', [
+    'videoId'     => $lesson->syan_video_id,
+    'studentId'   => auth()->id(),
+    'courseId'    => $course->id,
+    'lessonId'    => $lesson->id,
+    'studentName' => auth()->user()->name,
+]);
+
+$iframeUrl = $response->json('iframeUrl');
+
+// In your Blade template:
+// <iframe src="{{ $iframeUrl }}" width="100%" height="450" allowfullscreen></iframe>
+\`\`\`
+
+### Python (Django / Flask)
+
+\`\`\`python
+import requests, os
+
+def get_video_embed_url(video_id, student_id, course_id=None, lesson_id=None):
+    resp = requests.post(
+        os.environ['SYAN_CMS_BASE'] + '/api/integrations/embed-url',
+        headers={'X-Api-Key': os.environ['SYAN_API_KEY']},
+        json={
+            'videoId':   video_id,
+            'studentId': str(student_id),
+            'courseId':  course_id,
+            'lessonId':  lesson_id,
+        },
+        timeout=10
+    )
+    resp.raise_for_status()
+    return resp.json()['iframeUrl']
+\`\`\`
+
+---
+
+## 7. Error Handling
+
+| HTTP Status | Code | Meaning |
+|---|---|---|
+| 401 | \`UNAUTHORIZED\` | No \`X-Api-Key\` header sent |
+| 401 | \`INVALID_API_KEY\` | Key is wrong or revoked |
+| 403 | \`INTEGRATION_CLIENT_DISABLED\` | Client was disabled in CMS admin |
+| 403 | \`VIDEO_NOT_ALLOWED\` | This video is not accessible by your client |
+| 404 | \`VIDEO_NOT_FOUND\` | Wrong \`videoId\`, or video is unpublished |
+| 400 | \`VIDEO_NOT_READY\` | Video is still processing — try again later |
+| 400 | \`VALIDATION_ERROR\` | Missing \`videoId\` or \`studentId\` |
+
+Always check for \`"ok": true\` in the response before using \`iframeUrl\`.
+
+---
+
+## 8. Tracking Completion (Optional)
+
+The embed player automatically tracks watch progress internally. If you want to receive a **completion event** in your LMS:
+
+Listen for a \`postMessage\` from the iframe:
+
+\`\`\`javascript
+window.addEventListener('message', (event) => {
+  // Only trust messages from the CMS
+  if (!event.origin.startsWith('${cmsBase}')) return;
+
+  const { type, data } = event.data || {};
+
+  if (type === 'PLAYER_COMPLETE') {
+    console.log('Student finished video:', data);
+    // Mark lesson complete in your LMS
+    markLessonComplete(data.publicId, data.userId);
+  }
+
+  if (type === 'PLAYER_PROGRESS') {
+    console.log('Progress:', data.percent + '%', 'watched:', data.watchedSeconds + 's');
+  }
+});
+\`\`\`
+
+---
+
+## 9. Security Rules
+
+- **Never expose the API key to the browser.** The \`/api/integrations/embed-url\` call must be made server-to-server only.
+- The \`iframeUrl\` is safe to put in your HTML — it contains a short-lived token (5 min), not the API key.
+- If a key is compromised, revoke it in **Integrations → API Keys** and create a new one. Update your LMS env var.
+- The iframe blocks top-level navigation — it cannot be opened directly as a page by students.
+
+---
+
+## 10. Quick Checklist
+
+- [ ] CMS admin created an Integration Client
+- [ ] CMS admin created an API Key and shared it securely
+- [ ] LMS server has \`SYAN_API_KEY\` and \`SYAN_CMS_BASE\` env vars set
+- [ ] Videos are uploaded to CMS and their Public IDs are stored in the LMS database
+- [ ] Server-side code calls \`/api/integrations/embed-url\` on each video page load
+- [ ] Frontend renders the iframe using the returned \`iframeUrl\`
+- [ ] Error handling in place (check \`ok === true\` before using \`iframeUrl\`)
+
+---
+
+## 11. All Relevant API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| \`POST\` | \`/api/integrations/embed-url\` | **Main endpoint** — get ready-to-use iframe URL |
+| \`GET\` | \`/api/integrations/videos/:publicId\` | Get video metadata (title, duration, poster) |
+
+---
+
+## 12. Support
+
+Contact the CMS admin to:
+- Add new video IDs to the allowed list (if client is in "Selected Videos" mode)
+- Rotate/revoke API keys
+- View session logs (which students watched what, when)
+- View analytics per video
+
+CMS Admin Panel: \`${cmsBase}\`
+`;
+}
+
+function DownloadGuideButton() {
+  const cmsBase = window.location.origin;
+  const handleDownload = () => {
+    const content = generateGuide(cmsBase);
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "Syan_CMS_LMS_Integration_Guide.md";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <Button onClick={handleDownload} variant="outline" data-testid="button-download-guide">
+      <Download className="h-4 w-4 mr-2" />
+      Download Developer Guide (.md)
+    </Button>
+  );
+}
 
 function CopyButton({ text }: { text: string }) {
   const { toast } = useToast();
@@ -650,12 +963,15 @@ const { iframeUrl } = await fetch('${cmsBase}/api/integrations/embed-url', {
 export default function IntegrationsPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <Shield className="h-6 w-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-bold" data-testid="text-integrations-heading">Integrations</h1>
-          <p className="text-sm text-muted-foreground">Manage LMS integration clients, API keys, and view session logs</p>
+      <div className="flex items-start justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <Shield className="h-6 w-6 text-primary" />
+          <div>
+            <h1 className="text-2xl font-bold" data-testid="text-integrations-heading">Integrations</h1>
+            <p className="text-sm text-muted-foreground">Manage LMS integration clients, API keys, and view session logs</p>
+          </div>
         </div>
+        <DownloadGuideButton />
       </div>
 
       <Tabs defaultValue="apikeys">
