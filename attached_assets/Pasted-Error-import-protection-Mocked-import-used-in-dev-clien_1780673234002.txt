@@ -1,0 +1,24 @@
+Error: [import-protection] Mocked import used in dev client
+
+Denied import: "src/lib/auth.server.ts"
+Importer: /app/src/lib/auth.server.ts
+Access: mock.requireAuth.options.middleware.forEach() (call)
+
+Fix: Use createServerFn().handler(() => ...) to keep the logic on the server and call it from the client via an RPC bridge. Use createServerOnlyFn(() => ...) to mark it as server-only (it will throw if accidentally called from the client). Use createIsomorphicFn().client(() => ...).server(() => ...) to provide separate client and server implementations. Move the server-only import out of this file into a separate .server.ts module that is not imported by any client code. To disable these runtime diagnostics, set importProtection.mockAccess: "off".
+    at __report (__x00__tanstack-start-import-protection:mock-runtime:eyJlbnYiOiJjbGllbnQiLCJpbXBvcnRlciI6Ii9hcHAvc3JjL2xpYi9hdXRoLnNlcnZlci50cyIsInNwZWNpZmllciI6InNyYy9saWIvYXV0aC5zZXJ2ZXIudHMiLCJ0cmFjZSI6W10sIm1vZGUiOiJlcnJvciJ9:24:15)
+    at Object.apply (__x00__tanstack-start-import-protection:mock-runtime:eyJlbnYiOiJjbGllbnQiLCJpbXBvcnRlciI6Ii9hcHAvc3JjL2xpYi9hdXRoLnNlcnZlci50cyIsInNwZWNpZmllciI6InNyYy9saWIvYXV0aC5zZXJ2ZXIudHMiLCJ0cmFjZSI6W10sIm1vZGUiOiJlcnJvciJ9:63:7)
+    at recurse (createServerFn.js?v=9ee9d4c0:152:14)
+    at createServerFn.js?v=9ee9d4c0:153:30
+    at Array.forEach (<anonymous>)
+    at recurse (createServerFn.js?v=9ee9d4c0:152:14)
+    at flattenMiddlewares (createServerFn.js?v=9ee9d4c0:160:2)
+    at executeMiddleware (createServerFn.js?v=9ee9d4c0:86:29)
+    at Object.assign (createServerFn.js?v=9ee9d4c0:43:26)
+    at useServerFn.js?v=9ee9d4c0:8:22
+__report @ __x00__tanstack-start-import-protection:mock-runtime:eyJlbnYiOiJjbGllbnQiLCJpbXBvcnRlciI6Ii9hcHAvc3JjL2xpYi9hdXRoLnNlcnZlci50cyIsInNwZWNpZmllciI6InNyYy9saWIvYXV0aC5zZXJ2ZXIudHMiLCJ0cmFjZSI6W10sIm1vZGUiOiJlcnJvciJ9:28Understand this error
+2@tanstack_router-core.js?v=9ee9d4c0:2789 TypeError: Cannot read properties of undefined (reading '_nonReactive')
+    at loadRouteMatch (@tanstack_router-core.js?v=9ee9d4c0:1897:11)
+    at async Promise.all (index 2)
+    at async loadMatches (@tanstack_router-core.js?v=9ee9d4c0:1939:5)
+    at async RouterCore.preloadRoute (@tanstack_router-core.js?v=9ee9d4c0:2770:19)
+RouterCore.preloadRoute @ @tanstack_router-core.js?v=9ee9d4c0:2789Understand this error
