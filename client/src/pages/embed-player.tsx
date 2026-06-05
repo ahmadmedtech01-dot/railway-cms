@@ -480,6 +480,9 @@ export default function EmbedPlayerPage(props: any = {}) {
   // mid-playback (seek targets, network stalls, post-rotation re-buffer).
   const [isBuffering, setIsBuffering] = useState(false);
   const [bufferPct, setBufferPct] = useState(0);
+  // Absolute buffered-end position as % of total duration — drives the
+  // YouTube-style light buffer bar on the seek track.
+  const [bufferedEndPct, setBufferedEndPct] = useState(0);
   // Failsafe: auto-clear the buffering overlay if no `playing`/`canplay`
   // event arrives within 15s after we flipped it true. Prevents a stuck
   // spinner in pathological stalls where playback events never fire but
@@ -1066,21 +1069,25 @@ export default function EmbedPlayerPage(props: any = {}) {
           const onPlaying = () => { clearWaitingTimer(); setIsBuffering(false); };
           const onCanPlay = () => { clearWaitingTimer(); setIsBuffering(false); };
           const onProgress = () => {
-            // Approximate fill % as: (buffered ahead of currentTime) /
-            // (maxBufferLength target). Caps at 100. Drives the % label.
+            // bufferPct  — fill % of the 30s HLS buffer window (spinner label)
+            // bufferedEndPct — how far along the timeline is buffered (seek bar)
             try {
               const v = videoRef.current;
               if (!v || !v.buffered || v.buffered.length === 0) return;
               const ct = v.currentTime;
+              const dur = v.duration;
               let ahead = 0;
+              let bufferedEnd = 0;
               for (let i = 0; i < v.buffered.length; i++) {
                 if (v.buffered.start(i) <= ct && v.buffered.end(i) >= ct) {
                   ahead = v.buffered.end(i) - ct;
+                  bufferedEnd = v.buffered.end(i);
                   break;
                 }
               }
               const pct = Math.max(0, Math.min(100, Math.round((ahead / 30) * 100)));
               setBufferPct(pct);
+              if (dur > 0) setBufferedEndPct(Math.min(100, (bufferedEnd / dur) * 100));
             } catch {}
           };
           video.addEventListener("waiting", onWaiting);
@@ -2709,22 +2716,42 @@ export default function EmbedPlayerPage(props: any = {}) {
 
             {/* Controls dock */}
             <div className="relative z-[1] mx-2 mb-2 sm:mx-3 sm:mb-3 rounded-xl bg-[#1a1a1f]/85 backdrop-blur-md border border-white/[0.08] shadow-[0_4px_24px_rgba(0,0,0,0.5)]">
-              {/* Seek Bar */}
+              {/* Seek Bar — YouTube-style: dark track → light buffer → red played → thumb */}
               {(playerSettings.allowSkip !== false) && (
                 <div className="px-3 pt-2.5 pb-0 group/seek">
-                  <input
-                    type="range"
-                    min={0}
-                    max={duration || 100}
-                    step={0.1}
-                    value={currentTime}
-                    onChange={handleSeekBar}
-                    className="player-seek w-full h-1 group-hover/seek:h-1.5 cursor-pointer transition-all duration-200 rounded-full"
-                    style={{
-                      background: duration ? `linear-gradient(to right, #EF6A77 0%, #EF6A77 ${(currentTime / duration) * 100}%, rgba(255,255,255,0.2) ${(currentTime / duration) * 100}%, rgba(255,255,255,0.2) 100%)` : "rgba(255,255,255,0.2)",
-                    }}
-                    data-testid="input-seek-bar"
-                  />
+                  <div className="relative w-full cursor-pointer" style={{ height: "12px" }}>
+                    {/* Track rail */}
+                    <div className="absolute inset-x-0 rounded-full bg-white/[0.12] transition-all duration-150"
+                      style={{ height: "4px", top: "50%", transform: "translateY(-50%)" }}
+                    >
+                      {/* Buffer layer — light white, shows preloaded range */}
+                      <div
+                        className="absolute inset-y-0 left-0 rounded-full bg-white/30 transition-[width] duration-300 ease-out"
+                        style={{ width: `${bufferedEndPct}%` }}
+                      />
+                      {/* Played layer — brand red */}
+                      <div
+                        className="absolute inset-y-0 left-0 rounded-full bg-[#EF6A77]"
+                        style={{ width: `${duration ? Math.min(100, (currentTime / duration) * 100) : 0}%` }}
+                      />
+                    </div>
+                    {/* Thumb — appears on hover */}
+                    <div
+                      className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow-[0_0_4px_rgba(0,0,0,0.5)] pointer-events-none opacity-0 group-hover/seek:opacity-100 transition-opacity duration-150"
+                      style={{ left: `calc(${duration ? Math.min(100, (currentTime / duration) * 100) : 0}% - 6px)` }}
+                    />
+                    {/* Transparent range input — handles all mouse/touch interaction */}
+                    <input
+                      type="range"
+                      min={0}
+                      max={duration || 100}
+                      step={0.1}
+                      value={currentTime}
+                      onChange={handleSeekBar}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      data-testid="input-seek-bar"
+                    />
+                  </div>
                 </div>
               )}
 
