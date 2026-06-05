@@ -542,8 +542,19 @@ function downloadMarkdown(content: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+const PRODUCTION_CMS_BASE = "https://railway-cms-production.up.railway.app";
+
+function getDocsCmsBase(): string {
+  const origin = window.location.origin;
+  // Use production domain in docs unless already on a real production host
+  if (origin.includes("replit.dev") || origin.includes("localhost") || origin.includes("127.0.0.1")) {
+    return PRODUCTION_CMS_BASE;
+  }
+  return origin;
+}
+
 function DownloadGuideButton() {
-  const cmsBase = window.location.origin;
+  const cmsBase = getDocsCmsBase();
   return (
     <div className="flex flex-col gap-2 items-end">
       <Button
