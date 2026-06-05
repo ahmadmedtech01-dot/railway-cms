@@ -52,7 +52,7 @@ SIGNING_SECRET = "0e7c24aec7dc6c97057b791e5d7e25893c04bbd5b9eccea0ad47d2d9ecf361
 SUPABASE_DATABASE_URL = "postgresql://postgres.ttnoggyuysgjtbstaxvr:LBi3Wp3Xw%HiDPn@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres"
 VIMEO_ACCESS_TOKEN = "76be4d0b2eafc460ea82fc0be41e522c"
 LMS_HMAC_SECRET = "a41afc36c3216bc49b9e780ed4004dfa847a3c26446d1a216be6cecf836bf5d6"
-ALLOWED_LMS_ORIGINS = "https://simple-lmstest-production.up.railway.app,https://complete-video-hr-syan-exams-test-final-dww7.onrender.com,https://syanacademy.com"
+ALLOWED_LMS_ORIGINS = "https://simple-lmstest-production.up.railway.app,https://complete-video-hr-syan-exams-test-final-dww7.onrender.com,https://syanacademy.com,https://syanrx.com,https://www.syanrx.com"
 B2_APPLICATION_KEY = "K006ZfDUjKf6VzQy7AzoaSwWsJRooqI"
 B2_KEY_ID = "006a54c2d7114110000000002"
 R2_ACCESS_KEY_ID = "be01a2c65c60151a37bd6345a29a8069"
@@ -65,6 +65,7 @@ INTEGRATION_MASTER_SECRET = "176753af2436a1cdbb2d10c9a81e48723f018c892c305a8dbd8
 BUNNY_API_KEY = "67bd76df-09ce-4e67-ad3c-19b624931c233ec5ed7e-51a8-40ae-98f0-e9de2abf4267"
 DEBUG_CACHE_PROBE_SECRET = "998395096349df2a0bab315a2883941f45d7d9d5b34844ebd29a70ec85d2b3d6"
 CLOUDFLARE_ACCOUNT_ID = "e85e4b54f24a7b76dddcc285693f42ac"
+CMS_PUBLIC_BASE_URL = "https://railway-cms-production.up.railway.app"
 
 [agent]
 expertMode = true
