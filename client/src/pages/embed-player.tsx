@@ -1068,7 +1068,7 @@ export default function EmbedPlayerPage(props: any = {}) {
           };
           const onPlaying = () => { clearWaitingTimer(); setIsBuffering(false); };
           const onCanPlay = () => { clearWaitingTimer(); setIsBuffering(false); };
-          const onProgress = () => {
+          const updateBuffer = () => {
             // bufferPct  — fill % of the 30s HLS buffer window (spinner label)
             // bufferedEndPct — how far along the timeline is buffered (seek bar)
             try {
@@ -1079,7 +1079,7 @@ export default function EmbedPlayerPage(props: any = {}) {
               let ahead = 0;
               let bufferedEnd = 0;
               for (let i = 0; i < v.buffered.length; i++) {
-                if (v.buffered.start(i) <= ct && v.buffered.end(i) >= ct) {
+                if (v.buffered.start(i) <= ct + 0.1 && v.buffered.end(i) >= ct) {
                   ahead = v.buffered.end(i) - ct;
                   bufferedEnd = v.buffered.end(i);
                   break;
@@ -1090,12 +1090,14 @@ export default function EmbedPlayerPage(props: any = {}) {
               if (dur > 0) setBufferedEndPct(Math.min(100, (bufferedEnd / dur) * 100));
             } catch {}
           };
+          const onProgress = updateBuffer;
           video.addEventListener("waiting", onWaiting);
           video.addEventListener("seeking", onSeeking);
           video.addEventListener("seeked", onSeeked);
           video.addEventListener("playing", onPlaying);
           video.addEventListener("canplay", onCanPlay);
           video.addEventListener("progress", onProgress);
+          video.addEventListener("timeupdate", updateBuffer);
 
           // Control bridge: relay native video play/pause events to parent
           // Suppress PAUSE notifications that are caused by our internal seek
@@ -2724,9 +2726,9 @@ export default function EmbedPlayerPage(props: any = {}) {
                     <div className="absolute inset-x-0 rounded-full bg-white/[0.12] transition-all duration-150"
                       style={{ height: "4px", top: "50%", transform: "translateY(-50%)" }}
                     >
-                      {/* Buffer layer — light white, shows preloaded range */}
+                      {/* Buffer layer — light white, shows actual buffered range from video.buffered */}
                       <div
-                        className="absolute inset-y-0 left-0 rounded-full bg-white/30 transition-[width] duration-300 ease-out"
+                        className="absolute inset-y-0 left-0 rounded-full bg-white/30"
                         style={{ width: `${bufferedEndPct}%` }}
                       />
                       {/* Played layer — brand red */}
