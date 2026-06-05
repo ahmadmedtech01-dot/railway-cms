@@ -304,25 +304,265 @@ CMS Admin Panel: \`${cmsBase}\`
 `;
 }
 
+function generateHmacGuide(cmsBase: string): string {
+  return `# Syan CMS — LMS Integration Guide (HMAC / Advanced Method)
+
+> **Hand this document to your LMS developer.**  
+> This is the advanced method — it requires HMAC cryptographic token signing on the LMS server.  
+> For the simpler approach (no signing required), use the Simple API Key guide instead.
+
+---
+
+## 1. What Is This?
+
+Syan CMS is a secure video hosting platform. Your LMS generates signed launch tokens on the server, then the player exchanges them for embed URLs. This method gives you more control but requires HMAC-SHA256 signing code on the LMS side.
+
+---
+
+## 2. Prerequisites (Admin Does This Once)
+
+The **CMS admin** must:
+
+1. Log in to the CMS at \`${cmsBase}\`
+2. Go to **Integrations → Clients** → **Create Client**
+   - Name: e.g. \`SyanRx LMS\`
+   - Slug: e.g. \`syanrx-lms\`
+   - Allowed Origins: \`https://syanrx.com, https://www.syanrx.com\`
+3. Copy the **Client Key** (starts with \`syan_ck_...\`) from the client card
+4. Share these with the developer:
+
+| Item | Value |
+|---|---|
+| CMS Base URL | \`${cmsBase}\` |
+| Client Key | \`syan_ck_...\` |
+| Integration Master Secret | (from CMS server env: \`INTEGRATION_MASTER_SECRET\`) |
+
+---
+
+## 3. Environment Variables (LMS Server)
+
+\`\`\`
+SYAN_CLIENT_KEY=syan_ck_xxxxxxxxxxxxxxxxxxxx
+SYAN_INTEGRATION_SECRET=<shared HMAC secret from CMS admin>
+SYAN_CMS_BASE=${cmsBase}
+\`\`\`
+
+---
+
+## 4. How HMAC Token Signing Works
+
+The LMS server creates a JSON payload, base64url-encodes it, then signs it with HMAC-SHA256 using the shared secret. The result is a launch token the player can verify.
+
+**Token structure:** \`<base64url-payload>.<hex-signature>\`
+
+---
+
+## 5. Code: Generating a Launch Token
+
+### Node.js
+
+\`\`\`javascript
+const crypto = require('crypto');
+
+const CLIENT_KEY = process.env.SYAN_CLIENT_KEY;
+const SECRET = process.env.SYAN_INTEGRATION_SECRET;
+
+function generateLaunchToken(publicId, userId, courseId = null) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: CLIENT_KEY,          // your client key — must match exactly
+    aud: 'cms-player',        // must be exactly this string
+    sub: String(userId),      // student's unique ID
+    publicId: publicId,       // CMS video Public ID
+    courseId: courseId,       // optional
+    iat: now,
+    exp: now + 540,           // token valid for 9 minutes
+    jti: crypto.randomUUID(), // unique per token
+  };
+
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', SECRET).update(payloadB64).digest('hex');
+  return payloadB64 + '.' + sig;
+}
+\`\`\`
+
+### PHP
+
+\`\`\`php
+<?php
+function generateLaunchToken(string $publicId, string $userId, ?string $courseId = null): string {
+    $now = time();
+    $payload = [
+        'iss'      => env('SYAN_CLIENT_KEY'),
+        'aud'      => 'cms-player',
+        'sub'      => $userId,
+        'publicId' => $publicId,
+        'courseId' => $courseId,
+        'iat'      => $now,
+        'exp'      => $now + 540,
+        'jti'      => (string) Str::uuid(),
+    ];
+    $b64 = rtrim(strtr(base64_encode(json_encode($payload)), '+/', '-_'), '=');
+    $sig = hash_hmac('sha256', $b64, env('SYAN_INTEGRATION_SECRET'));
+    return $b64 . '.' . $sig;
+}
+\`\`\`
+
+### Python
+
+\`\`\`python
+import hmac, hashlib, json, base64, uuid, time, os
+
+def generate_launch_token(public_id, user_id, course_id=None):
+    now = int(time.time())
+    payload = {
+        'iss': os.environ['SYAN_CLIENT_KEY'],
+        'aud': 'cms-player',
+        'sub': str(user_id),
+        'publicId': public_id,
+        'courseId': course_id,
+        'iat': now,
+        'exp': now + 540,
+        'jti': str(uuid.uuid4()),
+    }
+    b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b'=').decode()
+    sig = hmac.new(os.environ['SYAN_INTEGRATION_SECRET'].encode(), b64.encode(), hashlib.sha256).hexdigest()
+    return b64 + '.' + sig
+\`\`\`
+
+---
+
+## 6. Using the Token — Two Options
+
+### Option A: Pass token to the JS SDK
+
+\`\`\`html
+<!-- In your LMS page template -->
+<div id="player"></div>
+<script src="${cmsBase}/sdk/player.js"></script>
+<script>
+  SyanPlayer.mount({
+    element: '#player',
+    publicId: 'sm_AbCdEfGh',              // CMS video Public ID
+    launchToken: '<%= launchToken %>',     // token from your server
+    cmsBase: '${cmsBase}',
+    autoplay: false,
+    controls: true,
+    onComplete: function() { console.log('done'); },
+    onError: function(e) { console.error(e); }
+  });
+</script>
+\`\`\`
+
+### Option B: Exchange token for iframe URL (server-side)
+
+\`\`\`javascript
+// Your server mints the embed URL
+const response = await fetch(\`${cmsBase}/api/integrations/player/\${publicId}/mint\`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ launchToken }),
+});
+const { embedToken } = await response.json();
+const iframeUrl = \`${cmsBase}/embed/\${publicId}?token=\${embedToken}\`;
+
+// Then render:
+// <iframe src="<%= iframeUrl %>" width="100%" height="450" allowfullscreen></iframe>
+\`\`\`
+
+---
+
+## 7. Uploading Videos
+
+1. Log in to CMS → **Video Library → Upload**
+2. Upload MP4, wait for status **Ready**
+3. Open the video → copy its **Public ID** (e.g. \`sm_AbCdEfGh\`)
+4. Store the Public ID in your LMS database linked to the lesson
+
+---
+
+## 8. Error Handling
+
+| HTTP Status | Meaning |
+|---|---|
+| 401 | Invalid or expired launch token |
+| 403 | Video not allowed for this client |
+| 404 | Video not found |
+| 400 | Token already used (replay attack blocked) |
+
+---
+
+## 9. Security Rules
+
+- **Never expose \`SYAN_INTEGRATION_SECRET\` to the browser.** Token signing must happen server-side only.
+- Tokens expire in 9 minutes — do not pre-generate and cache them.
+- The \`jti\` (unique ID) in each token must be different every time — use \`crypto.randomUUID()\`.
+
+---
+
+## 10. API Endpoints Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| \`POST\` | \`/api/integrations/player/:publicId/mint\` | Exchange launch token → embed token |
+| \`POST\` | \`/api/integrations/player/:publicId/refresh\` | Refresh embed token before expiry |
+| \`POST\` | \`/api/integrations/player/:publicId/ping\` | Report watch progress |
+| \`POST\` | \`/api/integrations/player/:publicId/complete\` | Mark video complete |
+| \`GET\` | \`/api/integrations/videos/:publicId\` | Get video metadata |
+
+---
+
+## 11. Quick Checklist
+
+- [ ] CMS admin created an Integration Client and shared the Client Key
+- [ ] CMS admin shared the \`INTEGRATION_MASTER_SECRET\`
+- [ ] LMS server has \`SYAN_CLIENT_KEY\`, \`SYAN_INTEGRATION_SECRET\`, \`SYAN_CMS_BASE\` set
+- [ ] Launch tokens are generated server-side (never in browser)
+- [ ] Each token has a unique \`jti\` (UUID)
+- [ ] Token expiry is set to 540 seconds (9 min) or less
+- [ ] Videos uploaded to CMS with Public IDs stored in LMS database
+
+---
+
+## 12. Support
+
+CMS Admin Panel: \`${cmsBase}\`
+`;
+}
+
+function downloadMarkdown(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function DownloadGuideButton() {
   const cmsBase = window.location.origin;
-  const handleDownload = () => {
-    const content = generateGuide(cmsBase);
-    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "Syan_CMS_LMS_Integration_Guide.md";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
   return (
-    <Button onClick={handleDownload} variant="outline" data-testid="button-download-guide">
-      <Download className="h-4 w-4 mr-2" />
-      Download Developer Guide (.md)
-    </Button>
+    <div className="flex flex-col gap-2 items-end">
+      <Button
+        onClick={() => downloadMarkdown(generateGuide(cmsBase), "Syan_CMS_Simple_API_Guide.md")}
+        variant="default"
+        data-testid="button-download-guide-simple"
+      >
+        <Download className="h-4 w-4 mr-2" />
+        Simple API Guide <span className="ml-1 text-xs opacity-75">(Recommended)</span>
+      </Button>
+      <Button
+        onClick={() => downloadMarkdown(generateHmacGuide(cmsBase), "Syan_CMS_HMAC_Advanced_Guide.md")}
+        variant="outline"
+        data-testid="button-download-guide-hmac"
+      >
+        <Download className="h-4 w-4 mr-2" />
+        HMAC Signing Guide <span className="ml-1 text-xs opacity-75">(Advanced)</span>
+      </Button>
+    </div>
   );
 }
 
