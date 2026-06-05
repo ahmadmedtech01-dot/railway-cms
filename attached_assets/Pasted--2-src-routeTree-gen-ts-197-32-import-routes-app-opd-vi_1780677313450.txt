@@ -1,0 +1,109 @@
+    2. src/routeTree.gen.ts:197:32 (import "./routes/app.opd-videos.watch.$videoId.lazy")
+    3. src/routes/app.opd-videos.watch.$videoId.lazy.tsx:13:73 (import "@/lib/video-favorites.functions")
+    4. src/lib/video-favorites.functions.ts:12:16 (import "@/lib/auth.server")
+  Code:
+    10 | 
+    11 | export const listVideoFavorites = createServerFn({ method: "GET" })
+  > 12 |   .middleware([requireAuth])
+       |                ^
+    13 |   .handler(async ({ context }) => {
+    14 |     const db = getDb();
+  src/lib/video-favorites.functions.ts:12:16
+  Suggestions:
+    - Use createServerFn().handler(() => ...) to keep the logic on the server and call it from the client via an RPC bridge
+    - Use createServerOnlyFn(() => ...) to mark it as server-only (it will throw if accidentally called from the client)
+    - Use createIsomorphicFn().client(() => ...).server(() => ...) to provide separate client and server implementations
+    - Move the server-only import out of this file into a separate .server.ts module that is not imported by any client code
+  Plugin: tanstack-start-core:import-protection
+4:32:18 PM [vite] (client) warning: 
+[import-protection] Import denied in client environment
+  Denied by file pattern: **/*.server.*
+  Importer: src/lib/video-analytics.functions.ts:12:16
+  Import: "@/lib/auth.server"
+  Resolved: src/lib/auth.server.ts
+  Trace:
+    1. src/router.tsx:3:27 (entry) (import "./routeTree.gen")
+    2. src/routeTree.gen.ts:197:32 (import "./routes/app.opd-videos.watch.$videoId.lazy")
+    3. src/routes/app.opd-videos.watch.$videoId.lazy.tsx:14:37 (import "@/lib/video-analytics.functions")
+    4. src/lib/video-analytics.functions.ts:12:16 (import "@/lib/auth.server")
+  Code:
+    10 | 
+    11 | export const trackAnalyticsEvent = createServerFn({ method: "POST" })
+  > 12 |   .middleware([requireAuth])
+       |                ^
+    13 |   .inputValidator((d: unknown) =>
+    14 |     z.object({
+  src/lib/video-analytics.functions.ts:12:16
+  Suggestions:
+    - Use createServerFn().handler(() => ...) to keep the logic on the server and call it from the client via an RPC bridge
+    - Use createServerOnlyFn(() => ...) to mark it as server-only (it will throw if accidentally called from the client)
+    - Use createIsomorphicFn().client(() => ...).server(() => ...) to provide separate client and server implementations
+4:32:18 PM [vite] (client) warning: 
+[import-protection] Import denied in client environment
+    - Move the server-only import out of this file into a separate .server.ts module that is not imported by any client code
+  Plugin: tanstack-start-core:import-protection
+    1. src/router.tsx:3:27 (entry) (import "./routeTree.gen")
+    2. src/routeTree.gen.ts:197:32 (import "./routes/app.opd-videos.watch.$videoId.lazy")
+  Code:
+    46 | 
+    3. src/routes/app.opd-videos.watch.$videoId.lazy.tsx:11:112 (import "@/lib/opd-videos.functions")
+    49 |   .handler(async () => {
+    4. src/lib/opd-videos.functions.ts:48:16 (import "@/lib/auth.server")
+    47 | export const listAdminVideos = createServerFn({ method: "GET" })
+    50 |     const db = getDb();
+  > 48 |   .middleware([requireAdmin])
+       |                ^
+  Import: "@/lib/auth.server"
+  Denied by file pattern: **/*.server.*
+  Resolved: src/lib/auth.server.ts
+  Importer: src/lib/opd-videos.functions.ts:48:16
+  Trace:
+  src/lib/opd-videos.functions.ts:48:16
+    1. src/router.tsx:3:27 (entry) (import "./routeTree.gen")
+    4. src/routes/app.tsx:2:28 (import "@/layouts/UserLayout")
+  Suggestions:
+    - Use createServerFn().handler(() => ...) to keep the logic on the server and call it from the client via an RPC bridge
+  Denied by file pattern: **/*.server.*
+    2. src/routeTree.gen.ts:8:41 (import "./routes/app")
+    - Use createServerOnlyFn(() => ...) to mark it as server-only (it will throw if accidentally called from the client)
+    3. src/routes/app.tsx (import "src/routes/app.tsx?tsr-split=component")
+  Importer: src/lib/banner.functions.ts:22:16
+    - Use createIsomorphicFn().client(() => ...).server(() => ...) to provide separate client and server implementations
+  Import: "@/lib/auth.server"
+    - Move the server-only import out of this file into a separate .server.ts module that is not imported by any client code
+  Resolved: src/lib/auth.server.ts
+  Plugin: tanstack-start-core:import-protection
+4:32:18 PM [vite] (client) warning: 
+  Trace:
+[import-protection] Import denied in client environment
+  Plugin: tanstack-start-core:import-protection
+    - Use createServerFn().handler(() => ...) to keep the logic on the server and call it from the client via an RPC bridge
+    5. src/layouts/UserLayout.tsx:8:54 (import "@/lib/banner.functions")
+4:32:18 PM [vite] (client) warning: 
+[import-protection] Import denied in client environment
+    - Use createServerOnlyFn(() => ...) to mark it as server-only (it will throw if accidentally called from the client)
+    6. src/lib/banner.functions.ts:22:16 (import "@/lib/auth.server")
+    - Use createIsomorphicFn().client(() => ...).server(() => ...) to provide separate client and server implementations
+    - Move the server-only import out of this file into a separate .server.ts module that is not imported by any client code
+  Code:
+    20 | 
+    21 | export const getDashboardBanners = createServerFn({ method: "GET" })
+  > 22 |   .middleware([requireAuth])
+       |                ^
+    23 |   .handler(async (): Promise<BannersData> => {
+    24 |     const [row] = await getDb()
+  src/lib/banner.functions.ts:22:16
+  Suggestions:
+    - Use createServerFn().handler(() => ...) to keep the logic on the server and call it from the client via an RPC bridge
+     8 | 
+  Denied by file pattern: **/*.server.*
+     9 | export const listFavourites = createServerFn({ method: "GET" })
+  > 10 |   .middleware([requireAuth])
+  Importer: src/lib/favourites.functions.ts:10:16
+       |                ^
+  Import: "@/lib/auth.server"
+    11 |   .handler(async ({ context }) => {
+  Resolved: src/lib/auth.server.ts
+    12 |     return getDb()
+  src/lib/favourites.functions.ts:10:16
+  Trace:

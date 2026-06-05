@@ -591,7 +591,10 @@ export function registerIntegrationRoutes(app: Express) {
       }, EMBED_TOKEN_TTL);
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-      const iframeUrl = `${cmsBase}/embed/${videoId}?token=${tokenValue}`;
+      // Append ?t=<startAt> so the embed player seeks to the correct position on
+      // load. The player reads ?t= / ?start= as urlSeekTime → pendingInitialSeekRef.
+      const startAtSec = startAt !== undefined && startAt !== null ? Math.max(0, Math.floor(Number(startAt))) : 0;
+      const iframeUrl = `${cmsBase}/embed/${videoId}?token=${tokenValue}${startAtSec > 0 ? `&t=${startAtSec}` : ""}`;
       const manifestUrl = `${cmsBase}/api/player/${videoId}/manifest?token=${tokenValue}`;
 
       log(`SIMPLE_EMBED: client=${client.slug} user=${studentId} video=${videoId} session=${integrationSession.id}`);
