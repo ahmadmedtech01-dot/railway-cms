@@ -976,9 +976,41 @@ export default function EmbedPlayerPage(props: any = {}) {
           const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false,
+
+            // ── BUFFER (YouTube-style aggressive pre-load) ─────────────
+            // Buffer up to 60s ahead. When internet is good the player
+            // silently fills this window; on slowdown it plays from the
+            // pre-filled buffer without stalling.
             maxBufferLength: 60,
             maxMaxBufferLength: 120,
-            backBufferLength: 60,
+            backBufferLength: 30,
+            // Pre-fetch the first fragment before media is attached so the
+            // very first frame appears faster (reduces initial black screen).
+            startFragPrefetch: true,
+
+            // ── ABR / QUALITY SELECTION ────────────────────────────────
+            // Start at the level that best matches the current estimated
+            // bandwidth (-1 = auto). A conservative initial bandwidth
+            // estimate (500 kbps) means hls.js starts at a low/mid quality
+            // and works UP rather than starting at 720p and aborting — that
+            // abort-then-retry pattern is what causes the cancel storms in
+            // the network tab.
+            startLevel: -1,
+            abrEwmaDefaultEstimate: 500000,
+            // Only use 70% of measured bandwidth for quality decisions
+            // (headroom for RTT jitter and Railway origin latency).
+            abrBandwidthFactor: 0.7,
+            // Be slow to upgrade quality (50% of bandwidth needed before
+            // stepping up) — prevents thrashing on variable connections.
+            abrBandwidthUpFactor: 0.5,
+            // Never request a quality level higher than the player can
+            // actually display — saves bandwidth on small-screen embeds.
+            capLevelToPlayerSize: true,
+            // Use real measured bitrate rather than just manifest bitrate
+            // for ABR decisions.
+            abrMaxWithRealBitrate: true,
+
+            // ── RETRIES ────────────────────────────────────────────────
             // Retry counts reduced from 4 → 2 to prevent client-side retry
             // storms. With 4 retries × ~6 prefetched fragments × cascading
             // failures, a single transient error could create 20+ doomed
@@ -2292,7 +2324,16 @@ export default function EmbedPlayerPage(props: any = {}) {
   const changeQuality = (index: number) => {
     const hls = hlsRef.current;
     if (!hls || !playerSettings.allowQuality) return;
-    hls.currentLevel = index;
+    if (index === -1) {
+      // Auto mode — re-enable ABR. Use currentLevel so it takes effect
+      // immediately rather than waiting for the next segment boundary.
+      hls.currentLevel = -1;
+    } else {
+      // Manual selection — switch at the next segment boundary (nextLevel)
+      // so the current segment finishes cleanly before the level changes.
+      // This prevents the brief freeze caused by an abrupt mid-segment switch.
+      hls.nextLevel = index;
+    }
     setCurrentQuality(index);
   };
 
