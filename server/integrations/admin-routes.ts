@@ -247,6 +247,50 @@ export function registerIntegrationAdminRoutes(app: Express) {
     }
   });
 
+  // ── API KEYS ─────────────────────────────────────────────────────────────
+  app.get("/api/admin/integrations/clients/:id/api-keys", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const keys = await storage.getIntegrationApiKeysByClient(req.params.id);
+      return res.json(keys);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/integrations/clients/:id/api-keys", requireAuth, async (req: any, res: Response) => {
+    try {
+      const { label } = req.body;
+      if (!label) return res.status(400).json({ message: "label is required" });
+      const client = await storage.getIntegrationClientById(req.params.id);
+      if (!client) return res.status(404).json({ message: "Client not found" });
+      const { key, rawKey } = await storage.createIntegrationApiKey(req.params.id, label);
+      await storage.createAuditLog({
+        action: "integration_api_key_created",
+        meta: { clientId: req.params.id, keyId: key.id, label },
+        ip: req.ip,
+      });
+      log(`API_KEY_CREATED: clientId=${req.params.id} label=${label}`);
+      return res.json({ key, rawKey });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/admin/integrations/api-keys/:id", requireAuth, async (req: any, res: Response) => {
+    try {
+      await storage.revokeIntegrationApiKey(req.params.id);
+      await storage.createAuditLog({
+        action: "integration_api_key_revoked",
+        meta: { keyId: req.params.id },
+        ip: req.ip,
+      });
+      log(`API_KEY_REVOKED: id=${req.params.id}`);
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
   // ── TEST TOKEN GENERATOR ─────────────────────────────────────────────────
   app.post("/api/admin/integrations/test-token", requireAuth, async (req: any, res: Response) => {
     try {

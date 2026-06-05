@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,12 +11,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Copy, RotateCw, Eye, Trash2, Shield, Activity, FileText, PlayCircle, XCircle } from "lucide-react";
+import { Plus, Copy, RotateCw, Eye, Trash2, Shield, Activity, FileText, PlayCircle, XCircle, Key, Zap } from "lucide-react";
 
 function CopyButton({ text }: { text: string }) {
   const { toast } = useToast();
   return (
-    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => {
+    <Button size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={() => {
       navigator.clipboard.writeText(text);
       toast({ title: "Copied!" });
     }} data-testid="button-copy"><Copy className="h-3 w-3" /></Button>
@@ -127,7 +127,7 @@ function ClientsTab() {
             <div><Label>Name</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="My LMS" data-testid="input-client-name" /></div>
             <div><Label>Slug</Label><Input value={slug} onChange={e => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="my-lms" data-testid="input-client-slug" /></div>
             <div><Label>Description</Label><Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional description" data-testid="input-client-description" /></div>
-            <div><Label>Allowed Origins (comma-separated)</Label><Input value={allowedOrigins} onChange={e => setAllowedOrigins(e.target.value)} placeholder="https://lms.example.com" data-testid="input-allowed-origins" /></div>
+            <div><Label>Allowed Origins (comma-separated)</Label><Input value={allowedOrigins} onChange={e => setAllowedOrigins(e.target.value)} placeholder="https://syanrx.com" data-testid="input-allowed-origins" /></div>
             <div>
               <Label>Video Access Mode</Label>
               <Select value={videoMode} onValueChange={setVideoMode}>
@@ -177,6 +177,216 @@ function ClientsTab() {
           </div>
           <DialogFooter>
             <Button onClick={() => setShowSecret(null)} data-testid="button-close-secret">I've copied the secret</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function ApiKeysTab() {
+  const { toast } = useToast();
+  const [selectedClientId, setSelectedClientId] = useState("");
+  const [newKeyLabel, setNewKeyLabel] = useState("");
+  const [showNewKey, setShowNewKey] = useState<{ rawKey: string; label: string } | null>(null);
+
+  const { data: clients = [] } = useQuery<any[]>({ queryKey: ["/api/admin/integrations/clients"] });
+
+  const { data: keysRaw, isLoading } = useQuery<any[]>({
+    queryKey: ["/api/admin/integrations/api-keys", selectedClientId],
+    queryFn: async () => {
+      if (!selectedClientId) return [];
+      const res = await fetch(`/api/admin/integrations/clients/${selectedClientId}/api-keys`, { credentials: "include" });
+      const json = await res.json();
+      return Array.isArray(json) ? json : [];
+    },
+    enabled: !!selectedClientId,
+  });
+  const keys = Array.isArray(keysRaw) ? keysRaw : [];
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/admin/integrations/clients/${selectedClientId}/api-keys`, { label: newKeyLabel });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/integrations/api-keys", selectedClientId] });
+      setShowNewKey({ rawKey: data.rawKey, label: newKeyLabel });
+      setNewKeyLabel("");
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/admin/integrations/api-keys/${id}`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/integrations/api-keys", selectedClientId] });
+      toast({ title: "API key revoked" });
+    },
+  });
+
+  const selectedClient = clients.find((c: any) => c.id === selectedClientId);
+  const cmsBase = window.location.origin;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-1" data-testid="text-apikeys-title">Simple API Keys</h3>
+        <p className="text-sm text-muted-foreground">One API key, one call — get a ready-to-use iframe URL. No token signing required on the LMS side.</p>
+      </div>
+
+      {/* How it works */}
+      <Card className="border-primary/20 bg-primary/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2"><Zap className="h-4 w-4 text-primary" />How Simple API Works</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm space-y-1 text-muted-foreground">
+          <p>1. Your LMS server calls <code className="bg-muted px-1 rounded text-xs">POST /api/integrations/embed-url</code> with the API key in the header</p>
+          <p>2. You pass the video ID + student ID in the request body</p>
+          <p>3. You get back a ready-to-use <code className="bg-muted px-1 rounded text-xs">iframeUrl</code></p>
+          <p>4. Paste it into <code className="bg-muted px-1 rounded text-xs">&lt;iframe src="..."&gt;</code> — done</p>
+        </CardContent>
+      </Card>
+
+      {/* Select client + create key */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label>Select Integration Client</Label>
+          <Select value={selectedClientId} onValueChange={setSelectedClientId}>
+            <SelectTrigger data-testid="select-apikey-client"><SelectValue placeholder="Choose a client..." /></SelectTrigger>
+            <SelectContent>
+              {clients.map((c: any) => (
+                <SelectItem key={c.id} value={c.id}>{c.name} ({c.slug})</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {selectedClientId && (
+          <div>
+            <Label>New Key Label</Label>
+            <div className="flex gap-2">
+              <Input value={newKeyLabel} onChange={e => setNewKeyLabel(e.target.value)} placeholder="e.g. syanrx production" data-testid="input-apikey-label" />
+              <Button onClick={() => createMutation.mutate()} disabled={!newKeyLabel || createMutation.isPending} data-testid="button-create-apikey">
+                <Plus className="h-4 w-4 mr-1" />{createMutation.isPending ? "..." : "Create"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Keys list */}
+      {selectedClientId && (
+        <div>
+          {isLoading && <p className="text-muted-foreground text-sm">Loading keys...</p>}
+          <div className="space-y-2">
+            {(keys as any[]).map((k: any) => (
+              <div key={k.id} className="flex items-center justify-between border rounded p-3" data-testid={`row-apikey-${k.id}`}>
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <Key className="h-3 w-3 text-muted-foreground" />
+                    <span className="font-medium text-sm">{k.label}</span>
+                    <Badge variant={k.status === "active" ? "default" : "destructive"} className="text-xs">{k.status}</Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Prefix: <code>{k.apiKeyPrefix}...</code>
+                    {k.lastUsedAt && <span className="ml-3">Last used: {new Date(k.lastUsedAt).toLocaleString()}</span>}
+                    <span className="ml-3">Created: {new Date(k.createdAt).toLocaleString()}</span>
+                  </div>
+                </div>
+                {k.status === "active" && (
+                  <Button size="sm" variant="destructive" onClick={() => { if (confirm("Revoke this API key? This cannot be undone.")) revokeMutation.mutate(k.id); }} data-testid={`button-revoke-apikey-${k.id}`}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+            ))}
+            {!isLoading && keys.length === 0 && <p className="text-muted-foreground text-sm text-center py-6">No API keys yet for this client. Create one above.</p>}
+          </div>
+        </div>
+      )}
+
+      {/* Code example */}
+      {selectedClient && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">LMS Integration Code (Node.js)</CardTitle>
+            <CardDescription className="text-xs">Your LMS server calls this — no token signing needed</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <pre className="bg-muted p-3 rounded text-xs overflow-x-auto whitespace-pre">{`// On your LMS server (Node.js / Express)
+const response = await fetch('${cmsBase}/api/integrations/embed-url', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Api-Key': process.env.SYAN_API_KEY,   // your API key from above
+  },
+  body: JSON.stringify({
+    videoId:     'v_abc123',          // CMS video public ID
+    studentId:   req.user.id,         // your student's unique ID
+    courseId:    'course_101',        // optional
+    lessonId:    'lesson_5',          // optional
+    studentName: req.user.name,       // optional — shown in CMS logs
+  }),
+});
+const { iframeUrl, expiresIn } = await response.json();
+
+// Then in your HTML template:
+// <iframe src="${'${iframeUrl}'}" width="100%" height="450" allowfullscreen></iframe>`}</pre>
+          </CardContent>
+        </Card>
+      )}
+
+      {selectedClient && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">LMS Integration Code (PHP)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="bg-muted p-3 rounded text-xs overflow-x-auto whitespace-pre">{`<?php
+$response = file_get_contents('${cmsBase}/api/integrations/embed-url', false,
+  stream_context_create(['http' => [
+    'method'  => 'POST',
+    'header'  => "Content-Type: application/json\\r\\nX-Api-Key: " . getenv('SYAN_API_KEY'),
+    'content' => json_encode([
+      'videoId'   => 'v_abc123',
+      'studentId' => $user->id,
+      'courseId'  => $course->id,
+      'lessonId'  => $lesson->id,
+    ]),
+  ]])
+);
+$data = json_decode($response, true);
+$iframeUrl = $data['iframeUrl'];
+
+// In your template:
+// <iframe src="<?= htmlspecialchars($iframeUrl) ?>" width="100%" height="450"></iframe>`}</pre>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* New key display dialog */}
+      <Dialog open={!!showNewKey} onOpenChange={() => setShowNewKey(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>API Key Created</DialogTitle>
+            <DialogDescription>Copy this key now — it will NOT be shown again.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs text-muted-foreground">Label</Label>
+              <p className="text-sm font-medium">{showNewKey?.label}</p>
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground">API Key (copy now)</Label>
+              <div className="flex items-center gap-2 bg-yellow-50 dark:bg-yellow-950 border border-yellow-300 dark:border-yellow-700 p-3 rounded font-mono text-xs break-all" data-testid="text-new-apikey">
+                <span className="flex-1">{showNewKey?.rawKey}</span>
+                <CopyButton text={showNewKey?.rawKey || ""} />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">Set this as <code>SYAN_API_KEY</code> in your LMS server environment variables.</p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setShowNewKey(null)} data-testid="button-close-apikey">I've copied the key</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -295,8 +505,7 @@ function SessionsTab() {
             <tr>
               <th className="text-left p-2">Started</th>
               <th className="text-left p-2">Status</th>
-              <th className="text-left p-2">Auth Mode</th>
-              <th className="text-left p-2">Security</th>
+              <th className="text-left p-2">Auth</th>
               <th className="text-left p-2">Video</th>
               <th className="text-left p-2">LMS User</th>
               <th className="text-left p-2">Watch</th>
@@ -308,39 +517,27 @@ function SessionsTab() {
           <tbody>
             {(data?.sessions || []).map((s: any) => {
               const meta = s.sessionMetadata || {};
-              const authMode = meta.authMode === "lms_integration" ? "LMS" : (meta.authMode || "LMS");
+              const authMode = meta.authMode === "api_key" ? "API Key" : meta.authMode === "lms_integration" ? "LMS Token" : "LMS";
               return (
-              <tr key={s.id} className="border-t" data-testid={`row-session-${s.id}`}>
-                <td className="p-2 whitespace-nowrap text-xs">{new Date(s.startedAt).toLocaleString()}</td>
-                <td className="p-2">
-                  <div className="flex flex-col gap-1">
+                <tr key={s.id} className="border-t" data-testid={`row-session-${s.id}`}>
+                  <td className="p-2 whitespace-nowrap text-xs">{new Date(s.startedAt).toLocaleString()}</td>
+                  <td className="p-2">
                     <Badge variant={s.status === "active" ? "default" : s.status === "revoked" ? "destructive" : "secondary"} data-testid={`badge-status-${s.id}`}>{s.status}</Badge>
-                    {s.status === "revoked" && meta.revokedReason && (
-                      <span className="text-[10px] text-muted-foreground" title={meta.revokedReason}>{meta.revokedReason}</span>
+                  </td>
+                  <td className="p-2"><Badge variant="outline" data-testid={`badge-auth-${s.id}`}>{authMode}</Badge></td>
+                  <td className="p-2 font-mono text-xs">{s.publicId}</td>
+                  <td className="p-2 text-xs">{s.lmsUserId}</td>
+                  <td className="p-2 text-xs">{s.watchedSeconds}s</td>
+                  <td className="p-2 text-xs">{s.completionPercent}%</td>
+                  <td className="p-2 whitespace-nowrap text-xs">{s.lastPingAt ? new Date(s.lastPingAt).toLocaleString() : "-"}</td>
+                  <td className="p-2">
+                    {s.status === "active" && (
+                      <Button size="sm" variant="destructive" onClick={() => revokeMutation.mutate(s.id)} data-testid={`button-revoke-${s.id}`}>Revoke</Button>
                     )}
-                  </div>
-                </td>
-                <td className="p-2"><Badge variant="outline" data-testid={`badge-auth-${s.id}`}>{authMode}</Badge></td>
-                <td className="p-2">
-                  <div className="flex flex-wrap gap-1">
-                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0" data-testid={`badge-sec-mode-${s.id}`}>Advanced</Badge>
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0" title="Stealth Mode + opaque streaming">Stealth</Badge>
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0" title="Heartbeat v2 + Server-Gated Window">HBv2</Badge>
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0" title="MediaSource & appendBuffer guard">MSG</Badge>
-                  </div>
-                </td>
-                <td className="p-2 font-mono text-xs">{s.publicId}</td>
-                <td className="p-2 text-xs">{s.lmsUserId}</td>
-                <td className="p-2 text-xs">{s.watchedSeconds}s</td>
-                <td className="p-2 text-xs">{s.completionPercent}%</td>
-                <td className="p-2 whitespace-nowrap text-xs">{s.lastPingAt ? new Date(s.lastPingAt).toLocaleString() : "-"}</td>
-                <td className="p-2">
-                  {s.status === "active" && (
-                    <Button size="sm" variant="destructive" onClick={() => revokeMutation.mutate(s.id)} data-testid={`button-revoke-${s.id}`}>Revoke</Button>
-                  )}
-                </td>
-              </tr>
-            );})}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         {!isLoading && (!data?.sessions || data.sessions.length === 0) && (
@@ -379,10 +576,29 @@ function DocsTab() {
 
   return (
     <div className="space-y-6">
-      <h3 className="text-lg font-semibold" data-testid="text-docs-title">Integration Docs & Test</h3>
+      <h3 className="text-lg font-semibold" data-testid="text-docs-title">Docs & Test</h3>
+
+      <Card className="border-primary/20 bg-primary/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2"><Zap className="h-4 w-4 text-primary" />Simple API (Recommended for syanrx.com)</CardTitle>
+          <CardDescription className="text-xs">No HMAC signing. Just one API key + one POST call.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <pre className="bg-muted p-3 rounded text-xs overflow-x-auto whitespace-pre">{`// LMS server — get an iframe URL in one call
+const { iframeUrl } = await fetch('${cmsBase}/api/integrations/embed-url', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Api-Key': process.env.SYAN_API_KEY },
+  body: JSON.stringify({ videoId: 'v_abc123', studentId: req.user.id }),
+}).then(r => r.json());
+
+// In your HTML:
+// <iframe src="${'${iframeUrl}'}" width="100%" height="450" allowfullscreen></iframe>`}</pre>
+          <p className="text-xs text-muted-foreground mt-2">Create API keys in the <strong>API Keys</strong> tab. Your LMS only needs one env var: <code>SYAN_API_KEY</code>.</p>
+        </CardContent>
+      </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">Test Token Generator</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">Test Token Generator (Advanced / HMAC mode)</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -390,7 +606,7 @@ function DocsTab() {
               <Select value={testClientId} onValueChange={setTestClientId}>
                 <SelectTrigger data-testid="select-test-client"><SelectValue placeholder="Select client" /></SelectTrigger>
                 <SelectContent>
-                  {clients.map((c: any) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  {(clients as any[]).map((c: any) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -411,92 +627,19 @@ function DocsTab() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">HMAC Signing (Node.js)</CardTitle></CardHeader>
-        <CardContent>
-          <pre className="bg-muted p-3 rounded text-xs overflow-x-auto whitespace-pre">{`const crypto = require('crypto');
-
-const INTEGRATION_MASTER_SECRET = process.env.INTEGRATION_MASTER_SECRET;
-
-function generateLaunchToken(clientKey, publicId, userId) {
-  const payload = {
-    iss: clientKey,           // your client key from CMS admin
-    aud: 'cms-player',        // must be exactly this
-    sub: userId,              // student/user ID in your LMS
-    publicId: publicId,       // CMS video public ID
-    exp: Math.floor(Date.now() / 1000) + 540,
-    iat: Math.floor(Date.now() / 1000),
-    jti: crypto.randomUUID(),
-  };
-
-  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const sig = crypto.createHmac('sha256', INTEGRATION_MASTER_SECRET)
-                     .update(payloadB64).digest('hex');
-  return payloadB64 + '.' + sig;
-}`}</pre>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">JS SDK Integration</CardTitle></CardHeader>
-        <CardContent>
-          <pre className="bg-muted p-3 rounded text-xs overflow-x-auto whitespace-pre">{`<div id="player"></div>
-<script src="${cmsBase}/sdk/player.js"><\/script>
-<script>
-  SyanPlayer.mount({
-    element: '#player',
-    publicId: 'YOUR_VIDEO_ID',
-    launchToken: 'SIGNED_TOKEN_FROM_BACKEND',
-    cmsBase: '${cmsBase}',
-    autoplay: false,
-    controls: true,
-    onReady: function() { console.log('Player ready'); },
-    onComplete: function() { console.log('Video completed'); },
-    onError: function(e) { console.error('Error:', e); }
-  });
-<\/script>`}</pre>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">React Integration</CardTitle></CardHeader>
-        <CardContent>
-          <pre className="bg-muted p-3 rounded text-xs overflow-x-auto whitespace-pre">{`import SyanVideoPlayer from './SyanVideoPlayer';
-
-<SyanVideoPlayer
-  publicId="YOUR_VIDEO_ID"
-  launchToken={token}
-  cmsBase="${cmsBase}"
-  controls
-  autoplay={false}
-  onComplete={() => console.log('done')}
-/>`}</pre>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">iframe Integration</CardTitle></CardHeader>
-        <CardContent>
-          <pre className="bg-muted p-3 rounded text-xs overflow-x-auto whitespace-pre">{`<iframe
-  src="${cmsBase}/api/integrations/embed/YOUR_VIDEO_ID?launchToken=SIGNED_TOKEN"
-  allow="autoplay; fullscreen"
-  allowfullscreen
-  style="width:100%;height:400px;border:none;"
-></iframe>`}</pre>
-        </CardContent>
-      </Card>
-
-      <Card>
         <CardHeader><CardTitle className="text-base">API Endpoints</CardTitle></CardHeader>
         <CardContent>
           <div className="space-y-2 text-sm">
-            <div><Badge variant="outline" className="mr-2">POST</Badge><code>/api/integrations/player/:publicId/mint</code> — Mint playback token</div>
-            <div><Badge variant="outline" className="mr-2">POST</Badge><code>/api/integrations/player/:publicId/refresh</code> — Refresh embed token</div>
-            <div><Badge variant="outline" className="mr-2">POST</Badge><code>/api/integrations/player/:publicId/ping</code> — Report playback progress</div>
-            <div><Badge variant="outline" className="mr-2">POST</Badge><code>/api/integrations/player/:publicId/events</code> — Send player events</div>
-            <div><Badge variant="outline" className="mr-2">POST</Badge><code>/api/integrations/player/:publicId/complete</code> — Mark completion</div>
-            <div><Badge variant="outline" className="mr-2">GET</Badge><code>/api/integrations/videos/:publicId</code> — Video metadata</div>
-            <div><Badge variant="outline" className="mr-2">GET</Badge><code>/api/integrations/player/:publicId/config</code> — Player config</div>
-            <div><Badge variant="outline" className="mr-2">GET</Badge><code>/api/integrations/embed/:publicId</code> — iframe embed page</div>
+            <div className="flex items-center gap-2 p-2 bg-primary/5 rounded border border-primary/20">
+              <Badge className="shrink-0">POST</Badge>
+              <code className="text-xs">/api/integrations/embed-url</code>
+              <span className="text-xs text-muted-foreground ml-auto">Simple mode — API key auth → iframe URL</span>
+            </div>
+            <div className="flex items-center gap-2"><Badge variant="outline" className="shrink-0">POST</Badge><code className="text-xs">/api/integrations/player/:publicId/mint</code><span className="text-xs text-muted-foreground ml-2">HMAC mode — exchange launch token</span></div>
+            <div className="flex items-center gap-2"><Badge variant="outline" className="shrink-0">POST</Badge><code className="text-xs">/api/integrations/player/:publicId/refresh</code><span className="text-xs text-muted-foreground ml-2">Refresh embed token</span></div>
+            <div className="flex items-center gap-2"><Badge variant="outline" className="shrink-0">POST</Badge><code className="text-xs">/api/integrations/player/:publicId/ping</code><span className="text-xs text-muted-foreground ml-2">Report playback progress</span></div>
+            <div className="flex items-center gap-2"><Badge variant="outline" className="shrink-0">POST</Badge><code className="text-xs">/api/integrations/player/:publicId/events</code><span className="text-xs text-muted-foreground ml-2">Send player events</span></div>
+            <div className="flex items-center gap-2"><Badge variant="outline" className="shrink-0">POST</Badge><code className="text-xs">/api/integrations/player/:publicId/complete</code><span className="text-xs text-muted-foreground ml-2">Mark completion</span></div>
           </div>
         </CardContent>
       </Card>
@@ -511,18 +654,20 @@ export default function IntegrationsPage() {
         <Shield className="h-6 w-6 text-primary" />
         <div>
           <h1 className="text-2xl font-bold" data-testid="text-integrations-heading">Integrations</h1>
-          <p className="text-sm text-muted-foreground">Manage LMS integration clients, view logs, and test connections</p>
+          <p className="text-sm text-muted-foreground">Manage LMS integration clients, API keys, and view session logs</p>
         </div>
       </div>
 
-      <Tabs defaultValue="clients">
+      <Tabs defaultValue="apikeys">
         <TabsList className="mb-4" data-testid="tabs-integrations">
+          <TabsTrigger value="apikeys" data-testid="tab-apikeys"><Key className="h-4 w-4 mr-1" />API Keys</TabsTrigger>
           <TabsTrigger value="clients" data-testid="tab-clients"><Shield className="h-4 w-4 mr-1" />Clients</TabsTrigger>
           <TabsTrigger value="logs" data-testid="tab-logs"><FileText className="h-4 w-4 mr-1" />Launch Logs</TabsTrigger>
           <TabsTrigger value="sessions" data-testid="tab-sessions"><Activity className="h-4 w-4 mr-1" />Sessions</TabsTrigger>
           <TabsTrigger value="docs" data-testid="tab-docs"><FileText className="h-4 w-4 mr-1" />Docs & Test</TabsTrigger>
         </TabsList>
 
+        <TabsContent value="apikeys"><ApiKeysTab /></TabsContent>
         <TabsContent value="clients"><ClientsTab /></TabsContent>
         <TabsContent value="logs"><LogsTab /></TabsContent>
         <TabsContent value="sessions"><SessionsTab /></TabsContent>

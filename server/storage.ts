@@ -559,4 +559,49 @@ export const storage = {
   async deleteCategory(id: string): Promise<void> {
     await db.delete(videoCategories).where(eq(videoCategories.id, id));
   },
+
+  // ── Integration API Keys ─────────────────────────────────────────────────
+  async createIntegrationApiKey(clientId: string, label: string): Promise<{ key: IntegrationApiKey; rawKey: string }> {
+    const crypto = await import("crypto");
+    const raw = `syan_ak_${crypto.randomBytes(32).toString("hex")}`;
+    const prefix = raw.slice(0, 16);
+    const hash = crypto.createHash("sha256").update(raw).digest("hex");
+    const [key] = await db.insert(integrationApiKeys).values({
+      integrationClientId: clientId,
+      label,
+      apiKeyPrefix: prefix,
+      apiKeyHash: hash,
+      status: "active",
+    } as any).returning();
+    return { key, rawKey: raw };
+  },
+
+  async getIntegrationApiKeysByClient(clientId: string): Promise<IntegrationApiKey[]> {
+    return db.select().from(integrationApiKeys)
+      .where(eq(integrationApiKeys.integrationClientId, clientId))
+      .orderBy(desc(integrationApiKeys.createdAt));
+  },
+
+  async verifyIntegrationApiKey(rawKey: string): Promise<{ key: IntegrationApiKey; client: IntegrationClient } | null> {
+    if (!rawKey || !rawKey.startsWith("syan_ak_")) return null;
+    const crypto = await import("crypto");
+    const hash = crypto.createHash("sha256").update(rawKey).digest("hex");
+    const prefix = rawKey.slice(0, 16);
+    const [key] = await db.select().from(integrationApiKeys)
+      .where(and(eq(integrationApiKeys.apiKeyPrefix, prefix), eq(integrationApiKeys.status, "active")));
+    if (!key) return null;
+    const valid = crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(key.apiKeyHash, "hex"));
+    if (!valid) return null;
+    const [client] = await db.select().from(integrationClients)
+      .where(eq(integrationClients.id, key.integrationClientId));
+    if (!client) return null;
+    await db.update(integrationApiKeys).set({ lastUsedAt: new Date() })
+      .where(eq(integrationApiKeys.id, key.id));
+    return { key, client };
+  },
+
+  async revokeIntegrationApiKey(id: string): Promise<void> {
+    await db.update(integrationApiKeys).set({ status: "revoked" })
+      .where(eq(integrationApiKeys.id, id));
+  },
 };
