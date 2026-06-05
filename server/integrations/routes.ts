@@ -517,26 +517,30 @@ export function registerIntegrationRoutes(app: Express) {
       const rawKey = (req.headers["x-api-key"] as string || "").trim();
       if (!rawKey) return res.status(401).json(errorJson("UNAUTHORIZED", "X-Api-Key header required"));
 
-      const verified = await storage.verifyIntegrationApiKey(rawKey);
-      if (!verified) return res.status(401).json(errorJson("INVALID_API_KEY", "API key invalid or revoked"));
-
-      const { client } = verified;
-      if (client.status !== "active") return res.status(403).json(errorJson("INTEGRATION_CLIENT_DISABLED", "Integration client is disabled"));
-
+      // Phase 1 (parallel): validate API key + fetch video at the same time
       const { videoId, studentId, courseId, lessonId, studentName, studentEmail, startAt } = req.body || {};
       if (!videoId || !studentId) return res.status(400).json(errorJson("VALIDATION_ERROR", "videoId and studentId are required"));
 
-      const video = await storage.getVideoByPublicId(videoId);
+      const [verified, video] = await Promise.all([
+        storage.verifyIntegrationApiKey(rawKey),
+        storage.getVideoByPublicId(videoId),
+      ]);
+
+      if (!verified) return res.status(401).json(errorJson("INVALID_API_KEY", "API key invalid or revoked"));
+      const { client } = verified;
+      if (client.status !== "active") return res.status(403).json(errorJson("INTEGRATION_CLIENT_DISABLED", "Integration client is disabled"));
+
       if (!video || !video.available) return res.status(404).json(errorJson("VIDEO_NOT_FOUND", "Video not found or unavailable"));
       if (video.status !== "ready") return res.status(400).json(errorJson("VIDEO_NOT_READY", "Video is not ready for playback"));
 
-      const allowed = await storage.isVideoAllowedForClient(client.id, video.id, client.allowedVideoIdsMode);
-      if (!allowed) return res.status(403).json(errorJson("VIDEO_NOT_ALLOWED", "Video not allowed for this client"));
-
-      const [playerSettings, securitySettings] = await Promise.all([
+      // Phase 2 (parallel): access check + player/security settings at the same time
+      const [allowed, playerSettings, securitySettings] = await Promise.all([
+        storage.isVideoAllowedForClient(client.id, video.id, client.allowedVideoIdsMode),
         storage.getPlayerSettings(video.id),
         storage.getSecuritySettings(video.id),
       ]);
+
+      if (!allowed) return res.status(403).json(errorJson("VIDEO_NOT_ALLOWED", "Video not allowed for this client"));
 
       const clientConfig = (client.config || {}) as any;
       const dummyPayload = { iss: client.clientKey, aud: "cms-player", sub: String(studentId), publicId: videoId, exp: 0, iat: 0, jti: "" };
@@ -586,23 +590,17 @@ export function registerIntegrationRoutes(app: Express) {
         integrationSessionId: integrationSession.id,
       }, EMBED_TOKEN_TTL);
 
-      await storage.createEmbedToken({
-        videoId: video.id,
-        token: tokenValue,
-        label: `integration:apikey:${client.slug}:${studentId}:isid:${integrationSession.id}`,
-        allowedDomain: null,
-        expiresAt,
-        revoked: false,
-        userId,
-      } as any);
-
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
       const iframeUrl = `${cmsBase}/embed/${videoId}?token=${tokenValue}`;
       const manifestUrl = `${cmsBase}/api/player/${videoId}/manifest?token=${tokenValue}`;
 
       log(`SIMPLE_EMBED: client=${client.slug} user=${studentId} video=${videoId} session=${integrationSession.id}`);
 
-      return res.json({
+      // Respond immediately — the token is a self-contained signed JWT so the
+      // embed player can validate it cryptographically even before the DB row
+      // lands. /manifest falls back to jwt.verify() when getTokenByValue()
+      // returns null, so the write race is safe.
+      res.json({
         ok: true,
         iframeUrl,
         embedToken: tokenValue,
@@ -618,6 +616,17 @@ export function registerIntegrationRoutes(app: Express) {
         },
         playerConfig: resolvedPerms,
       });
+
+      // Fire-and-forget audit write — does not block the caller
+      storage.createEmbedToken({
+        videoId: video.id,
+        token: tokenValue,
+        label: `integration:apikey:${client.slug}:${studentId}:isid:${integrationSession.id}`,
+        allowedDomain: null,
+        expiresAt,
+        revoked: false,
+        userId,
+      } as any).catch((e: any) => log(`SIMPLE_EMBED_TOKEN_WRITE_ERR: ${e.message}`));
     } catch (e: any) {
       log(`SIMPLE_EMBED_ERROR: ${e.message}`);
       return res.status(500).json(errorJson("INTERNAL_ERROR", "Internal server error"));
