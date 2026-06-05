@@ -2223,9 +2223,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         } catch {}
       }
 
+      const ekp = (video as any).encryptionKeyPath || null;
+
       if (conn?.provider === "bunny_net") {
         const cfg = conn.config as any;
-        const sid = createSession(video.publicId, hlsPrefix, "bunny_net", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        const sid = createSession(video.publicId, hlsPrefix, "bunny_net", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening, ekp);
         if (linkIntegrationSessionId) setIntegrationSessionId(sid, linkIntegrationSessionId);
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
@@ -2239,7 +2241,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
-        const sid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        const sid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening, ekp);
         if (linkIntegrationSessionId) setIntegrationSessionId(sid, linkIntegrationSessionId);
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
@@ -2254,7 +2256,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const s3cfg = await getS3Config();
 
       if (client && s3cfg.bucket) {
-        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening);
+        const sid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit, hardening, ekp);
         if (linkIntegrationSessionId) setIntegrationSessionId(sid, linkIntegrationSessionId);
         const sessTtls = getSessionTokenTTL(sid);
         const proxyBase = `/hls/${video.publicId}/master.m3u8`;
@@ -3131,6 +3133,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET /api/player/:publicId/stream/secret/:opaqueId
   //   The opaque-named key endpoint. Decodes the opaque ID, validates session
   //   + UA + key rate limits, then returns the AES master key bytes.
+  //
+  //   Hot-path optimisation: encryptionKeyPath is stored on the session object
+  //   at creation time (see createSession), so we skip storage.getVideoByPublicId
+  //   entirely — eliminating the ~250ms Supabase round-trip that previously
+  //   happened on every key fetch. Falls back to a live DB lookup only for
+  //   old in-flight sessions that were created before this change.
   app.get("/api/player/:publicId/stream/secret/:opaqueId", async (req: any, res: any) => {
     const opaqueId = String(req.params.opaqueId || "");
     const ctx = await loadStealthCtx(req, res, opaqueId, "k", "SECRET_EXPIRED");
@@ -3152,11 +3160,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (keyAbused) return stealthDeny(res, sid, "Key rate limit exceeded", keyReason?.signal, 429);
 
     try {
-      const video = await storage.getVideoByPublicId(req.params.publicId);
-      if (!video?.encryptionKeyPath) {
+      // Fast path: use the encryptionKeyPath stored on the session at creation
+      // time — no DB query needed.
+      let keyPath: string | null = session.encryptionKeyPath || null;
+
+      // Fallback for sessions created before this optimisation (no keyPath on
+      // session yet): do a single DB lookup and log it so we can track
+      // how often the fallback fires after the deploy settles.
+      if (!keyPath) {
+        const video = await storage.getVideoByPublicId(req.params.publicId);
+        keyPath = video?.encryptionKeyPath || null;
+        if (keyPath) {
+          log(`[stream/secret] fallback DB lookup for sid=${sid} (pre-optimisation session)`);
+        }
+      }
+
+      if (!keyPath) {
         return res.status(404).json({ code: "PLAYBACK_DENIED", message: "Encryption key not found" });
       }
-      const masterKey = await getMasterKey(video.encryptionKeyPath, session);
+      const masterKey = await getMasterKey(keyPath, session);
       if (!masterKey) return res.status(500).json({ code: "PLAYBACK_DENIED", message: "Key fetch failed" });
       res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("Content-Length", masterKey.length);
@@ -4075,9 +4097,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let newSid: string | null = null;
       const hlsPrefix = video.hlsS3Prefix!;
 
+      const ekp2 = (video as any).encryptionKeyPath || null;
+
       if (conn?.provider === "bunny_net") {
         const cfg = conn.config as any;
-        newSid = createSession(video.publicId, hlsPrefix, "bunny_net", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+        newSid = createSession(video.publicId, hlsPrefix, "bunny_net", cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2, ekp2);
         if (linkIntegrationSessionId2) setIntegrationSessionId(newSid, linkIntegrationSessionId2);
         const ttls = getSessionTokenTTL(newSid);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
@@ -4087,7 +4111,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } else if (conn?.provider === "backblaze_b2" || conn?.provider === "cloudflare_r2") {
         const cfg = conn.config as any;
         const providerType = conn.provider === "backblaze_b2" ? "backblaze_b2" : "cloudflare_r2";
-        newSid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+        newSid = createSession(video.publicId, hlsPrefix, providerType, cfg, conn.id, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2, ekp2);
         if (linkIntegrationSessionId2) setIntegrationSessionId(newSid, linkIntegrationSessionId2);
         const ttls = getSessionTokenTTL(newSid);
         manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
@@ -4100,7 +4124,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           const client = await getS3Client();
           const s3cfg = await getS3Config();
           if (client && s3cfg.bucket) {
-            newSid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2);
+            newSid = createSession(video.publicId, hlsPrefix, "s3", s3cfg, null, dh, ua, suspiciousEnabled, effectiveViolationLimit2, hardening2, ekp2);
             if (linkIntegrationSessionId2) setIntegrationSessionId(newSid, linkIntegrationSessionId2);
             const ttls = getSessionTokenTTL(newSid);
             manifestUrl = buildSignedProxyUrl(`/hls/${video.publicId}/master.m3u8`, newSid, "/master.m3u8", ttls.manifest);
@@ -4315,7 +4339,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const altSuspiciousEnabled = altEffectiveSec.suspiciousDetectionEnabled !== false;
       const altViolationLimit = altEffectiveSec.violationLimit ?? 10;
       const altHardening = buildHardening(altEffectiveSec);
-      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled, altViolationLimit, altHardening);
+      const sid = createSession(video.publicId, hlsPrefix, conn.provider as any, cfg, conn.id, altDh, altUa, altSuspiciousEnabled, altViolationLimit, altHardening, (video as any).encryptionKeyPath || null);
       const altTtls = getSessionTokenTTL(sid);
       const proxyBase = `/hls/${video.publicId}/master.m3u8`;
       const playlistUrl = buildSignedProxyUrl(proxyBase, sid, "/master.m3u8", altTtls.manifest);

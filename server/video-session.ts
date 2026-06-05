@@ -469,6 +469,10 @@ export interface VideoSession {
   clientSecurityEvents: number;
   // Optional linkage to an Integration playback session row (LMS API flow)
   integrationSessionId?: string;
+  // AES master key path (fixed per video, stored at session creation so the
+  // /stream/secret endpoint can skip the DB lookup entirely — ~250ms savings
+  // per key fetch).
+  encryptionKeyPath: string | null;
 }
 
 // ── Integration session revoke notifier ────────────────────────────────────
@@ -550,6 +554,7 @@ function deserializeSession(raw: any): VideoSession {
     maxSegmentExposed: raw.maxSegmentExposed ?? 0,
     keyIssuedCount: raw.keyIssuedCount ?? 0,
     clientSecurityEvents: raw.clientSecurityEvents ?? 0,
+    encryptionKeyPath: raw.encryptionKeyPath ?? null,
   } as VideoSession;
 }
 
@@ -757,6 +762,7 @@ export function createSession(
   suspiciousDetectionEnabled = true,
   violationLimit = DEFAULT_VIOLATION_LIMIT,
   hardening: SessionHardeningConfig = defaultHardening,
+  encryptionKeyPath: string | null = null,
 ): string {
   const sid = crypto.randomBytes(16).toString("hex");
   const uaHash = userAgent ? crypto.createHash("sha256").update(userAgent).digest("hex").slice(0, 32) : "";
@@ -806,6 +812,7 @@ export function createSession(
     lastHeartbeatNonces: [],
     windowLastAdvancedAt: Date.now(),
     velocityLog: [],
+    encryptionKeyPath,
     clientSecurityEvents: 0,
     integrationSessionId: undefined,
   });
