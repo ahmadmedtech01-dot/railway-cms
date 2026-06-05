@@ -3440,7 +3440,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // and the MSE SourceBuffer flush that causes a 1-2s black screen.
   app.post("/api/player/:publicId/rotate-session", async (req: any, res: any) => {
     try {
-      const { sid } = req.body;
+      const { sid, currentTime } = req.body;
       if (!sid) return res.status(400).json({ message: "Missing sid" });
 
       await getSessionAsync(sid);
@@ -3448,7 +3448,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!session || session.revoked) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session invalid or expired" });
       if (session.publicId !== req.params.publicId) return res.status(403).json({ message: "Session mismatch" });
 
-      const newSid = rotateSession(sid);
+      const newSid = rotateSession(sid, typeof currentTime === "number" ? currentTime : undefined);
       if (!newSid) return res.status(403).json({ code: "PLAYBACK_DENIED", message: "Session rotation failed" });
 
       const newSession = getSession(newSid);

@@ -1255,7 +1255,7 @@ export default function EmbedPlayerPage(props: any = {}) {
               fetch(`/api/player/${publicId}/rotate-session`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sid: currentSid }),
+                body: JSON.stringify({ sid: currentSid, currentTime: savedTime }),
               }).then(async r => {
                 if (!r.ok) { triggerDenial(sig); return; }
                 const rd = await r.json();
@@ -1271,7 +1271,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                     if (isRotatingRef.current) {
                       isRotatingRef.current = false;
                       const resumeAt = pendingMessageSeekRef.current ?? savedTime;
-                      if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
+                      if (vid) { hls.stopLoad(); hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
                       // MANIFEST_PARSED never fired — re-anchor progress
                       // ourselves so the (preserved) sliding window matches
                       // wherever we actually resumed playback. Authoritative
@@ -1289,6 +1289,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                     lastRotationAtRef.current = Date.now();
                     const resumeAt = pendingMessageSeekRef.current ?? savedTime;
                     if (vid) {
+                      hls.stopLoad();
                       hls.startLoad(resumeAt);
                       vid.currentTime = resumeAt;
                       // Belt-and-braces: re-apply the seek once the new
@@ -1452,7 +1453,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                         if (isRotatingRef.current) {
                           isRotatingRef.current = false;
                           const resumeAt = pendingMessageSeekRef.current ?? savedTime;
-                          if (vid) { hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
+                          if (vid) { hls.stopLoad(); hls.startLoad(resumeAt); vid.currentTime = resumeAt; vid.play().catch(() => {}); }
                           reanchorProgress(resumeAt);
                           if (pendingMessageSeekRef.current !== null) applyPendingSeek();
                         }
@@ -1463,6 +1464,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                         isRotatingRef.current = false;
                         const resumeAt = pendingMessageSeekRef.current ?? savedTime;
                         if (vid) {
+                          hls.stopLoad();
                           hls.startLoad(resumeAt);
                           vid.currentTime = resumeAt;
                           vid.play().catch(() => {});
@@ -2049,7 +2051,7 @@ export default function EmbedPlayerPage(props: any = {}) {
           fetch(`/api/player/${publicId}/rotate-session`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sid: currentSid }),
+            body: JSON.stringify({ sid: currentSid, currentTime: savedTime }),
           })
             .then(r => r.ok ? r.json() : null)
             .then(data => {
@@ -2066,6 +2068,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                     if (isRotatingRef.current) {
                       isRotatingRef.current = false;
                       const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                      hls.stopLoad();
                       hls.startLoad(resumeAt);
                       v.currentTime = resumeAt;
                       v.play().catch(() => {});
@@ -2080,6 +2083,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                     if (opId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
                     const resumeAt = pendingMessageSeekRef.current ?? savedTime;
+                    hls.stopLoad();
                     hls.startLoad(resumeAt);
                     v.currentTime = resumeAt;
                     v.play().catch(() => {});

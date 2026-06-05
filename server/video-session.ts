@@ -854,9 +854,18 @@ export function revokeSessionsByIntegrationId(integrationSessionId: string, reas
   return count;
 }
 
-export function rotateSession(oldSid: string): string | null {
+export function rotateSession(oldSid: string, resumePositionSec?: number): string | null {
   const old = sessions.get(oldSid);
   if (!old || old.revoked) return null;
+
+  // If the client sends the actual playback position, seed the new session's
+  // currentSegmentIndex from there. Without this, the new session inherits
+  // the server-lagged index (last tick value), and the variant-playlist window
+  // won't cover the resume point — causing hls.startLoad(resumeAt) to fail
+  // silently and fall back to segment 0.
+  const resumeSegIdx = (resumePositionSec !== undefined && isFinite(resumePositionSec) && resumePositionSec > 0)
+    ? Math.floor(resumePositionSec / 2)
+    : old.currentSegmentIndex;
 
   const newSid = crypto.randomBytes(16).toString("hex");
   const keyExp = Math.floor(Date.now() / 1000) + Math.floor(SESSION_MAX_AGE_MS / 1000);
@@ -879,9 +888,10 @@ export function rotateSession(oldSid: string): string | null {
     concurrentSegments: 0,
     outOfWindowCount: 0,
     lastSeekAt: 0,
-    // Inherit max exposed from rotated session so the new playlist doesn't
-    // appear to shrink relative to what the client/HLS.js already observed.
-    maxSegmentExposed: old.maxSegmentExposed,
+    // Seed from the actual player position, not the lagged server state,
+    // so the first variant-playlist response already covers the resume point.
+    currentSegmentIndex: resumeSegIdx,
+    maxSegmentExposed: Math.max(old.maxSegmentExposed, resumeSegIdx),
     variantCache: new Map(),
     ephemeralKey: crypto.randomBytes(16),
     ephemeralIV: crypto.randomBytes(16),

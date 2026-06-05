@@ -273,10 +273,10 @@ export function registerIntegrationRoutes(app: Express) {
   app.post("/api/integrations/player/:publicId/refresh", async (req: Request, res: Response) => {
     try {
       const { publicId } = req.params;
-      const { integrationSessionId, embedToken } = req.body || {};
+      const { integrationSessionId } = req.body || {};
 
-      if (!integrationSessionId || !embedToken) {
-        return res.status(400).json(errorJson("VALIDATION_ERROR", "integrationSessionId and embedToken required"));
+      if (!integrationSessionId) {
+        return res.status(400).json(errorJson("VALIDATION_ERROR", "integrationSessionId required"));
       }
 
       const session = await storage.getIntegrationPlaybackSessionById(integrationSessionId);
@@ -288,17 +288,10 @@ export function registerIntegrationRoutes(app: Express) {
         return res.status(403).json(errorJson("FORBIDDEN", "Session does not match video"));
       }
 
-      const dbToken = await storage.getTokenByValue(embedToken);
-      if (!dbToken) {
-        return res.status(401).json(errorJson("EMBED_TOKEN_INVALID", "Embed token not found"));
-      }
-
       const video = await storage.getVideoByPublicId(publicId);
       if (!video) {
         return res.status(404).json(errorJson("VIDEO_NOT_FOUND", "Video not found"));
       }
-
-      await storage.revokeToken(dbToken.id);
 
       const expiresAt = new Date(Date.now() + EMBED_TOKEN_TTL * 1000);
       const newTokenValue = generateToken(
