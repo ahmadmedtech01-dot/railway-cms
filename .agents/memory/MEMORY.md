@@ -1,0 +1,1 @@
+- [Embed token TTL vs session lifetime](embed-token-refresh.md) — short embed JWT (~300s) vs ~1h session causes "Access Link Expired"; refresh must tolerate expired-but-signed tokens.

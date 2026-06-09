@@ -862,11 +862,47 @@ export default function EmbedPlayerPage(props: any = {}) {
         }
 
         // Fetch manifest
-        const qs = activeToken ? `?token=${encodeURIComponent(activeToken)}` : "";
         const referrer = document.referrer;
-        const manifestRes = await fetch(`/api/player/${publicId}/manifest${qs}`, {
-          headers: referrer ? { "x-embed-referrer": referrer } : {},
-        });
+        const fetchManifest = (tok: string) => fetch(
+          `/api/player/${publicId}/manifest${tok ? `?token=${encodeURIComponent(tok)}` : ""}`,
+          { headers: referrer ? { "x-embed-referrer": referrer } : {} },
+        );
+
+        let manifestRes = await fetchManifest(activeToken);
+
+        // SILENT 401 RECOVERY: the embed JWT in the iframe URL has a short TTL
+        // (EMBED_TOKEN_TTL, ~5 min) but the iframe/session can outlive it —
+        // especially in the LMS API channel under load. Rather than immediately
+        // showing "Access Link Expired", ask the server to mint a fresh token
+        // off the (expired-but-signed) one and retry the manifest exactly once.
+        // Only if THIS also fails do we fall through to the error screen below.
+        if (manifestRes.status === 401 && activeToken) {
+          let isAdminPreviewTok = false;
+          try {
+            const parts = activeToken.split(".");
+            if (parts.length === 3) {
+              const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+              isAdminPreviewTok = payload?.adminPreview === true;
+            }
+          } catch {}
+          if (!isAdminPreviewTok) {
+            try {
+              const rr = await fetch(`/api/player/${publicId}/refresh-token`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: activeToken }),
+              });
+              if (rr.ok) {
+                const rd = await rr.json();
+                if (rd.token) {
+                  activeToken = rd.token;
+                  activeTokenRef.current = rd.token;
+                  manifestRes = await fetchManifest(activeToken);
+                }
+              }
+            } catch {}
+          }
+        }
 
         if (manifestRes.status === 202) {
           setStatus("processing");
@@ -914,6 +950,7 @@ export default function EmbedPlayerPage(props: any = {}) {
         if (data.videoDuration && data.videoDuration > 0) { apiDurationRef.current = data.videoDuration; setDuration(data.videoDuration); }
 
         // Fetch video settings and effective security in parallel
+        const qs = activeToken ? `?token=${encodeURIComponent(activeToken)}` : "";
         await Promise.allSettled([
           fetch(`/api/player/${publicId}/settings${qs}`).then(async r => {
             if (r.ok) {

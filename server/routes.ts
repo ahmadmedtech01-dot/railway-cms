@@ -755,6 +755,26 @@ function verifyToken(token: string): any {
   }
 }
 
+// Like verifyToken but tolerates an EXPIRED token, as long as the signature is
+// still valid AND it has not been expired for longer than `maxStaleSec`.
+// Used ONLY by /refresh-token: the embed JWT has a short TTL (EMBED_TOKEN_TTL,
+// ~300s) while the playback session lives ~1h, so a token that expires mid-watch
+// must still be refreshable. The signature is the security boundary (can't be
+// forged), and refresh re-checks entitlement before minting a fresh token.
+// The staleness bound stops an old leaked token from being refreshed forever.
+function verifyTokenAllowExpired(token: string, maxStaleSec = 3600): any {
+  try {
+    const decoded: any = jwt.verify(token, getSigningSecret(), { ignoreExpiration: true });
+    if (decoded?.exp && typeof decoded.exp === "number") {
+      const expiredForSec = Math.floor(Date.now() / 1000) - decoded.exp;
+      if (expiredForSec > maxStaleSec) return null;
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
 function getAllowedLmsOrigins(): string[] {
   const raw = (process.env.ALLOWED_LMS_ORIGINS || "").trim();
   if (!raw) return [];
@@ -4027,7 +4047,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // no longer kill the refreshed SID — see prior reviewer finding.
       let oldIntegrationSessionId: string | null = null;
       try {
-        const decodedOld: any = verifyToken(oldTokenValue);
+        const decodedOld: any = verifyTokenAllowExpired(oldTokenValue);
         if (decodedOld?.integrationSessionId && typeof decodedOld.integrationSessionId === "string") {
           oldIntegrationSessionId = decodedOld.integrationSessionId;
         }
@@ -4040,7 +4060,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
         userId = (oldDbToken as any).userId || null;
       } else {
-        const decoded = verifyToken(oldTokenValue);
+        const decoded = verifyTokenAllowExpired(oldTokenValue);
         if (!decoded) {
           log(`TOKEN_REFRESH_FAIL: reason=invalid_token_signature videoId=${video.id}`);
           return res.status(401).json({ message: "Invalid token" });
