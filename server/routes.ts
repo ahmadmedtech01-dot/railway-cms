@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { makeB2Client, b2PresignGetObject, b2UploadFile, makeR2Client, r2PresignGetObject, r2UploadFile } from "./b2";
 import { bunnyUploadFile, bunnyDeletePrefix, bunnyFetchFile, bunnyCdnUrl, getBunnyStorageKey } from "./bunny";
 import QRCode from "qrcode";
-import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, mintOpaqueChunkId, computeChunkStableKey, signChunkCacheToken, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, bumpMaxSegmentExposed, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
+import { createSession, rotateSession, extendSession, getSession, getSessionAsync, getSessionAllowingRotationGrace, getSessionAllowingRotationGraceAsync, revokeSession, verifySignedPath, trackRequest, trackPlaylistFetch, acquireSegment, releaseSegment, trackKeyHit, buildSignedProxyUrl, buildStableKeyUrl, signPath, computeDeviceHash, updateProgress, validateSegmentWindow, parsePlaylist, getWindowRange, getWindowSegs, getBreachInfo, getAbuseThresholds, getTokenTTL, getAllSessions, validateUserAgent, checkAndIssueKey, SESSION_ROTATION_MS, trackSegmentVelocity, verifyHeartbeat, recordSecurityEvent, getSessionTokenTTL, defaultHardening, mintOpaqueId, mintOpaqueChunkId, computeChunkStableKey, signChunkCacheToken, verifyOpaqueId, verifyOpaqueIdDetailed, decodeOpaqueIdSkipExpiry, isOpaqueExpired, bucketExp, setIntegrationSessionId, revokeSessionsByIntegrationId, setIntegrationRevokeNotifier, getHlsGatewayBase, bumpMaxSegmentExposed, isStalePlayerSession, type SessionHardeningConfig, type OpaquePayload } from "./video-session";
 
 // Build hardening config from effective security settings.
 // Admin-controlled values from the Security Profile (or Custom override) are
@@ -3221,6 +3221,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     session: any,
     body: { segmentIndex?: number; currentTime?: number; seekTo?: boolean }
   ): { ok: true; windowStart: number; windowEnd: number; targetSegmentIndex?: number } {
+    // SINGLE ACTIVE PLAYER: a superseded (stale) player instance for the same
+    // integration session must not advance the shared window / resume position.
+    // Drop its progress silently (return current window, no advance) so a
+    // backgrounded duplicate iframe can't fight the live player. Returns ok:true
+    // so the stale client doesn't error or enter a refresh loop.
+    if (isStalePlayerSession(sid)) {
+      if (Math.random() < 0.1) {
+        console.warn(`[playback] STALE_PLAYER_UPDATE_BLOCKED: sid=${sid} pub=${session.publicId} isid=${session.integrationSessionId}`);
+      }
+      const { start, end } = getWindowRange(sid);
+      return { ok: true, windowStart: start, windowEnd: end };
+    }
     const { segmentIndex, currentTime, seekTo } = body || {};
     let idx = typeof segmentIndex === "number" ? segmentIndex : -1;
     if (idx < 0 && typeof currentTime === "number") {
@@ -3399,7 +3411,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // embed-url auto-resume works correctly even when the LMS ping omits
         // currentTime. We use GREATEST in the SQL so seek-back never
         // overwrites a larger recorded max. Fire-and-forget — never blocks tick.
-        if (session.integrationSessionId) {
+        if (session.integrationSessionId && !isStalePlayerSession(sid)) {
           const approxSec = Math.max(
             typeof body.currentTime === "number" ? body.currentTime : 0,
             ((response.progress as any)?.targetSegmentIndex ?? 0) * 2,

@@ -1,3 +1,4 @@
 - [Embed token TTL vs session lifetime](embed-token-refresh.md) — short embed JWT (~300s) vs ~1h session causes "Access Link Expired"; refresh must tolerate expired-but-signed tokens.
+- [video_sessions DB target + sticky breaker + player authority](video-session-db-and-authority.md) — server's real DB is SUPABASE_DATABASE_URL (not Replit's executeSql); breaker is process-sticky (restart after schema fix); single-player authority is in-memory + liveness-gated by design.
 - [Integration token namespaces + heartbeat window bug](integration-token-accumulation.md) — `integration:` and `auto:` tokens must never cross-revoke/cross-count; heartbeat backward-seek reset was collapsing HLS window and freezing playback.
 - [HLS startup resume-seek clobber](hls-resume-seek-clobber.md) — HLS.js snaps currentTime→0 mid-resume; onNativeSeeking posts authoritative seekTo:0, resetting server window → restart. Fix client-side, not server.

@@ -664,16 +664,23 @@ function isMissingTableError(err: any): boolean {
   // (node-postgres) or err.cause?.code (drizzle wraps). Faster + more robust
   // than message matching.
   const code = err?.code || err?.cause?.code || err?.original?.code;
-  if (code === "42P01") return true;
+  // 42P01 = undefined_table, 42703 = undefined_column. Both mean the live
+  // video_sessions schema doesn't match what this code expects (un-migrated or
+  // stale table — e.g. a legacy table of the same name). Trip the breaker for
+  // EITHER so we degrade gracefully to in-memory instead of throwing 1-4s per
+  // request on every load/persist. These queries only ever touch video_sessions,
+  // so a column error here is always about that table.
+  if (code === "42P01" || code === "42703") return true;
   const msg = String(err?.message || err || "");
   return msg.includes('relation "video_sessions" does not exist')
       || msg.includes('relation \\"video_sessions\\" does not exist')
-      || msg.includes("video_sessions") && msg.includes("does not exist");
+      || (msg.includes("video_sessions") && msg.includes("does not exist"))
+      || (msg.includes("column") && msg.includes("does not exist"));
 }
 function noteDbErr(err: any): void {
   if (!videoSessionsTableMissing && isMissingTableError(err)) {
     videoSessionsTableMissing = true;
-    console.error("[video-session] video_sessions table missing — DB write-through DISABLED for this process. Run `npm run db:push` on the server to enable cross-instance session sync.");
+    console.error("[video-session] video_sessions schema missing or mismatched (table or `sid`/columns absent) — DB write-through DISABLED for this process. Sync the schema (`npm run db:push`, or recreate the table) to restore cross-instance session persistence.");
   }
 }
 
@@ -820,10 +827,55 @@ export function createSession(
   return sid;
 }
 
+// ── SINGLE ACTIVE PLAYER AUTHORITY ──────────────────────────────────────────
+// Among all SIDs that share one integrationSessionId, only the most recently
+// bound SID is authoritative for progress / window / resume-position updates.
+// Every new player instance (new embed), rotation, and refresh binds a fresh
+// SID via setIntegrationSessionId, which makes the previous SID stale. Stale
+// SIDs' progress posts are DROPPED (never revoked — revoking would trip the
+// client's refresh loop) so a backgrounded duplicate iframe can't fight the
+// live player over the shared resume position. In-memory + per-instance: it
+// covers the dominant same-instance duplicate-iframe case and stays conservative
+// across instances (if the "latest" SID isn't local/alive, nothing is treated
+// as stale), falling back to the existing per-SID windows + GREATEST() guard.
+const latestSidByIntegration = new Map<string, string>();
+
+export function isStalePlayerSession(sid: string): boolean {
+  const s = sessions.get(sid);
+  if (!s || !s.integrationSessionId) return false;
+  const latest = latestSidByIntegration.get(s.integrationSessionId);
+  if (latest === undefined || latest === sid) return false;
+  // If the newest-bound SID is gone or revoked it no longer owns the
+  // integration session — don't treat the surviving SID as stale (avoids
+  // wrongly freezing the only live player after a revoke-other-sessions).
+  const latestSession = sessions.get(latest);
+  if (!latestSession || latestSession.revoked) return false;
+  // Liveness gate: the newest-bound SID only KEEPS authority while it is
+  // actually alive (recent tick / heartbeat). A SID that was created then
+  // abandoned — e.g. an LMS iframe swap that minted a session but never started
+  // playback — must NOT suppress an older SID that is genuinely playing, or we
+  // would freeze the only live player. Heartbeats continue during legitimate
+  // pauses, so a paused-but-present new player still holds authority. The window
+  // scales with the configured heartbeat interval so custom security profiles
+  // don't false-trip it.
+  const hbSec = latestSession.hardening?.heartbeatIntervalSec || 15;
+  const livenessMs = Math.max(30_000, hbSec * 2 * 1000);
+  const lastActive = Math.max(
+    latestSession.createdAt || 0,
+    latestSession.lastProgressAt || 0,
+    latestSession.lastHeartbeatAt || 0,
+  );
+  if (Date.now() - lastActive > livenessMs) return false;
+  return true;
+}
+
 export function setIntegrationSessionId(sid: string, integrationSessionId: string): boolean {
   const s = sessions.get(sid);
   if (!s) return false;
   s.integrationSessionId = integrationSessionId;
+  // Newest binding wins: this SID becomes the single authoritative player
+  // instance; any earlier SID for the same integration session is now stale.
+  latestSidByIntegration.set(integrationSessionId, sid);
   persistSession(sid);
   return true;
 }
