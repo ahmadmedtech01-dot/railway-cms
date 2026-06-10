@@ -294,40 +294,60 @@ export function registerIntegrationRoutes(app: Express) {
       }
 
       const expiresAt = new Date(Date.now() + EMBED_TOKEN_TTL * 1000);
-      const newTokenValue = generateToken(
-        {
-          videoId: video.id,
-          publicId: video.publicId,
-          userId: session.lmsUserId,
-          integrationClientId: session.integrationClientId,
-          integrationSessionId: session.id,
-        },
-        EMBED_TOKEN_TTL
-      );
-
       const client = session.integrationClientId ? await storage.getIntegrationClientById(session.integrationClientId) : null;
       const clientSlug = client?.slug || "unknown";
+      const userId = `integration:${clientSlug}:${session.lmsUserId}`;
 
-      await storage.createEmbedToken({
-        videoId: video.id,
-        token: newTokenValue,
-        label: `integration:refresh:${clientSlug}:${session.lmsUserId}`,
-        allowedDomain: null,
-        expiresAt,
-        revoked: false,
-        userId: `integration:${clientSlug}:${session.lmsUserId}`,
-      } as any);
+      // Extend the existing token's DB expiry instead of minting a new JWT.
+      // Creating a new token on every refresh accumulates active tokens for the
+      // same userId. Once count >= concurrentSessionLimit, the next mint attempt
+      // gets a 429 SESSION_LIMIT, which can trigger revokeUserTokensExcept() and
+      // kill the token the embed player is still holding — causing "Access Link Expired".
+      const existingTokens = await storage.getActiveUserTokens(video.id, userId);
+      // Prefer a token bound to this specific integration session
+      const sessionToken = existingTokens.find(t =>
+        (t as any).label?.includes(`:isid:${session.id}`)
+      ) ?? existingTokens[0] ?? null;
+
+      let finalTokenValue: string;
+      if (sessionToken) {
+        await storage.extendEmbedTokenExpiry(sessionToken.token, expiresAt);
+        finalTokenValue = sessionToken.token;
+        // Revoke any other accumulated tokens for this user so the count stays at 1
+        for (const t of existingTokens) {
+          if (t.id !== sessionToken.id) {
+            await storage.revokeToken(t.id).catch(() => {});
+          }
+        }
+        log(`INTEGRATION_REFRESH_EXTEND: client=${clientSlug} user=${session.lmsUserId} session=${session.id} tokenId=${sessionToken.id} extraRevoked=${existingTokens.length - 1}`);
+      } else {
+        // No existing token found — mint a fresh one as fallback
+        finalTokenValue = generateToken(
+          { videoId: video.id, publicId: video.publicId, userId, integrationClientId: session.integrationClientId, integrationSessionId: session.id },
+          EMBED_TOKEN_TTL
+        );
+        await storage.createEmbedToken({
+          videoId: video.id,
+          token: finalTokenValue,
+          label: `integration:refresh:${clientSlug}:${session.lmsUserId}:isid:${session.id}`,
+          allowedDomain: null,
+          expiresAt,
+          revoked: false,
+          userId,
+        } as any);
+        log(`INTEGRATION_REFRESH_MINT: client=${clientSlug} user=${session.lmsUserId} session=${session.id} (no existing token found, minted fresh)`);
+      }
 
       // Reset startedAt so the tokenExpiresIn calculation in /ping
       // reads as a full TTL again after a successful refresh, not 0.
       await storage.updateIntegrationPlaybackSession(integrationSessionId, { lastPingAt: new Date(), startedAt: new Date() } as any);
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || "";
-      const manifestUrl = `${cmsBase}/api/player/${publicId}/manifest?token=${newTokenValue}`;
+      const manifestUrl = `${cmsBase}/api/player/${publicId}/manifest?token=${finalTokenValue}`;
 
       return res.json({
         ok: true,
-        embedToken: newTokenValue,
+        embedToken: finalTokenValue,
         expiresIn: EMBED_TOKEN_TTL,
         manifestUrl,
       });
@@ -574,24 +594,62 @@ export function registerIntegrationRoutes(app: Express) {
       // ── Session reuse: if there is already an active session for this
       // client+user+video, renew its token instead of creating a brand-new
       // session. This prevents the "restart from 0" problem that happens when
-      // the LMS calls embed-url every ~5 min because the token is expiring:
-      //   old behaviour → new session created → new iframe URL → iframe reloads
-      //                   → HLS re-initialises → video restarts from 0
-      //   new behaviour → same session reused → new JWT issued → iframe reloads
-      //                   → player seeks to maxPositionSeconds → seamless resume
+      // the LMS calls embed-url every ~5 min because the token is expiring.
+      //
+      // Token strategy (IMPORTANT):
+      //   old behaviour → new JWT minted each call → multiple active tokens accumulate
+      //                   → concurrent-session limit hit → revokeUserTokensExcept()
+      //                   → embed player's token killed → "Access Link Expired"
+      //   new behaviour → existing DB token expiry extended → same JWT reused
+      //                   → token count stays at 1 → no revocation → stable playback
       //
       // We reset startedAt to now so that the tokenExpiresIn calculation in
       // subsequent /ping calls reads as a full TTL again (not 0 immediately).
       const activeSession = prevSession?.status === "active" ? prevSession : null;
 
       let integrationSession: any;
+      let tokenValue: string;
+
       if (activeSession) {
         await storage.updateIntegrationPlaybackSession(activeSession.id, {
           startedAt: new Date(),
           lastPingAt: new Date(),
         });
         integrationSession = { ...activeSession, startedAt: new Date() };
-        log(`SIMPLE_EMBED_RENEW: client=${client.slug} user=${studentId} video=${videoId} session=${activeSession.id} pos=${activeSession.maxPositionSeconds}s`);
+
+        // Try to extend the existing token rather than minting a new JWT
+        const existingTokens = await storage.getActiveUserTokens(video.id, userId);
+        const sessionToken = existingTokens.find(t =>
+          (t as any).label?.includes(`:isid:${activeSession.id}`)
+        ) ?? existingTokens[0] ?? null;
+
+        if (sessionToken) {
+          await storage.extendEmbedTokenExpiry(sessionToken.token, expiresAt);
+          tokenValue = sessionToken.token;
+          // Revoke any extra accumulated tokens so the per-user count stays at 1
+          for (const t of existingTokens) {
+            if (t.id !== sessionToken.id) {
+              await storage.revokeToken(t.id).catch(() => {});
+            }
+          }
+          log(`SIMPLE_EMBED_RENEW: client=${client.slug} user=${studentId} video=${videoId} session=${activeSession.id} pos=${activeSession.maxPositionSeconds}s tokenExtended=true extraRevoked=${existingTokens.length - 1}`);
+        } else {
+          // No existing token found — mint a fresh JWT as fallback
+          tokenValue = generateToken({
+            videoId: video.id, publicId: video.publicId, userId,
+            integrationClientId: client.id, integrationSessionId: activeSession.id,
+          }, EMBED_TOKEN_TTL);
+          storage.createEmbedToken({
+            videoId: video.id,
+            token: tokenValue,
+            label: `integration:apikey:${client.slug}:${studentId}:isid:${activeSession.id}`,
+            allowedDomain: null,
+            expiresAt,
+            revoked: false,
+            userId,
+          } as any).catch((e: any) => log(`SIMPLE_EMBED_TOKEN_WRITE_ERR: ${e.message}`));
+          log(`SIMPLE_EMBED_RENEW: client=${client.slug} user=${studentId} video=${videoId} session=${activeSession.id} pos=${activeSession.maxPositionSeconds}s tokenExtended=false (no existing token)`);
+        }
       } else {
         integrationSession = await storage.createIntegrationPlaybackSession({
           integrationClientId: client.id,
@@ -606,15 +664,30 @@ export function registerIntegrationRoutes(app: Express) {
           status: "active",
           sessionMetadata: { clientKey: client.clientKey, authMode: "api_key", apiKeyPrefix: verified.key.apiKeyPrefix },
         } as any);
-      }
 
-      const tokenValue = generateToken({
-        videoId: video.id,
-        publicId: video.publicId,
-        userId,
-        integrationClientId: client.id,
-        integrationSessionId: integrationSession.id,
-      }, EMBED_TOKEN_TTL);
+        tokenValue = generateToken({
+          videoId: video.id,
+          publicId: video.publicId,
+          userId,
+          integrationClientId: client.id,
+          integrationSessionId: integrationSession.id,
+        }, EMBED_TOKEN_TTL);
+
+        // Fire-and-forget audit write — does not block the caller.
+        // Respond immediately: the token is a self-contained signed JWT so the
+        // embed player can validate it cryptographically even before the DB row
+        // lands. /manifest falls back to jwt.verify() when getTokenByValue()
+        // returns null, so the write race is safe.
+        storage.createEmbedToken({
+          videoId: video.id,
+          token: tokenValue,
+          label: `integration:apikey:${client.slug}:${studentId}:isid:${integrationSession.id}`,
+          allowedDomain: null,
+          expiresAt,
+          revoked: false,
+          userId,
+        } as any).catch((e: any) => log(`SIMPLE_EMBED_TOKEN_WRITE_ERR: ${e.message}`));
+      }
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
       // Explicit startAt wins; if absent, use the session's saved position
@@ -631,10 +704,6 @@ export function registerIntegrationRoutes(app: Express) {
 
       log(`SIMPLE_EMBED: client=${client.slug} user=${studentId} video=${videoId} session=${integrationSession.id} resume=${autoResumeAt > 0 ? `${autoResumeAt}s` : "start"}`);
 
-      // Respond immediately — the token is a self-contained signed JWT so the
-      // embed player can validate it cryptographically even before the DB row
-      // lands. /manifest falls back to jwt.verify() when getTokenByValue()
-      // returns null, so the write race is safe.
       res.json({
         ok: true,
         iframeUrl,
@@ -651,17 +720,6 @@ export function registerIntegrationRoutes(app: Express) {
         },
         playerConfig: resolvedPerms,
       });
-
-      // Fire-and-forget audit write — does not block the caller
-      storage.createEmbedToken({
-        videoId: video.id,
-        token: tokenValue,
-        label: `integration:apikey:${client.slug}:${studentId}:isid:${integrationSession.id}`,
-        allowedDomain: null,
-        expiresAt,
-        revoked: false,
-        userId,
-      } as any).catch((e: any) => log(`SIMPLE_EMBED_TOKEN_WRITE_ERR: ${e.message}`));
     } catch (e: any) {
       log(`SIMPLE_EMBED_ERROR: ${e.message}`);
       return res.status(500).json(errorJson("INTERNAL_ERROR", "Internal server error"));

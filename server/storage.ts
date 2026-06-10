@@ -132,6 +132,17 @@ export const storage = {
     await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, id));
   },
 
+  // Extend the DB-side expiry of an existing embed token (does NOT change the JWT).
+  // The manifest endpoint checks dbToken.expiresAt, not the JWT exp claim, so this
+  // is sufficient to keep an in-use token alive without issuing a new JWT.
+  async extendEmbedTokenExpiry(tokenValue: string, newExpiresAt: Date): Promise<boolean> {
+    const result = await db.update(embedTokens)
+      .set({ expiresAt: newExpiresAt })
+      .where(and(eq(embedTokens.token, tokenValue), eq(embedTokens.revoked, false)))
+      .returning({ id: embedTokens.id });
+    return result.length > 0;
+  },
+
   async deleteToken(id: string): Promise<void> {
     await db.delete(embedTokens).where(eq(embedTokens.id, id));
   },
