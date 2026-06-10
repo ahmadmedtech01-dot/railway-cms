@@ -1,2 +1,3 @@
 - [Embed token TTL vs session lifetime](embed-token-refresh.md) — short embed JWT (~300s) vs ~1h session causes "Access Link Expired"; refresh must tolerate expired-but-signed tokens.
 - [Integration token namespaces + heartbeat window bug](integration-token-accumulation.md) — `integration:` and `auto:` tokens must never cross-revoke/cross-count; heartbeat backward-seek reset was collapsing HLS window and freezing playback.
+- [HLS startup resume-seek clobber](hls-resume-seek-clobber.md) — HLS.js snaps currentTime→0 mid-resume; onNativeSeeking posts authoritative seekTo:0, resetting server window → restart. Fix client-side, not server.

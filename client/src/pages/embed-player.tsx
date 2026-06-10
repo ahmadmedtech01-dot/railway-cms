@@ -463,6 +463,17 @@ export default function EmbedPlayerPage(props: any = {}) {
   const playerReadyRef = useRef(false);
   const pendingInitialSeekRef = useRef<number>(urlSeekTime);
   const pendingMessageSeekRef = useRef<number | null>(null);
+  // STARTUP RESUME-CLOBBER GUARD state.
+  // initialResumeTargetRef holds the saved-position resume target (seconds)
+  // that we are seeking to but have NOT yet reached via playback. While it is
+  // > 0, HLS.js can synthesize a native `seeking` event that snaps currentTime
+  // back toward 0 (buffer not yet appended at the resume offset). That event is
+  // NOT a user seek — onNativeSeeking ignores a snap-to-start during this
+  // window so it never POSTs seekTo:true with currentTime≈0 (which would reset
+  // the server window to 0 and restart the video — the 322→0 jump in the logs).
+  const initialResumeTargetRef = useRef<number>(-1);
+  const initialResumeSetAtRef = useRef<number>(0);
+  const resumeReassertCountRef = useRef<number>(0);
   // Active target of an in-flight performLocalSeek. Used by the 1.5s
   // self-retry watchdog so a stale retry from an earlier seek can't
   // clobber a newer seek the user has since issued.
@@ -594,6 +605,14 @@ export default function EmbedPlayerPage(props: any = {}) {
       return;
     }
 
+    // Identify the seek source BEFORE the pending refs are cleared below.
+    //   override → user/parent-driven (performLocalSeek-to-start, SEEK message)
+    //   message  → queued postMessage seek
+    //   initial  → the startup saved-position resume (MANIFEST_PARSED path)
+    const seekSource: "override" | "message" | "initial" =
+      overrideTime !== undefined ? "override"
+        : pendingMessageSeekRef.current !== null ? "message"
+          : "initial";
     const seekTime = overrideTime !== undefined
       ? overrideTime
       : pendingMessageSeekRef.current !== null
@@ -607,6 +626,15 @@ export default function EmbedPlayerPage(props: any = {}) {
       : Math.max(0, seekTime);
     pendingInitialSeekRef.current = -1;
     pendingMessageSeekRef.current = null;
+    // Arm the startup resume-clobber guard only for a genuine initial resume to
+    // a meaningful offset. Any user/parent-driven seek supersedes (disarms) it.
+    if (seekSource === "initial" && clampedTime > 10) {
+      initialResumeTargetRef.current = clampedTime;
+      initialResumeSetAtRef.current = Date.now();
+      resumeReassertCountRef.current = 0;
+    } else if (seekSource !== "initial") {
+      initialResumeTargetRef.current = -1;
+    }
     if (import.meta.env.DEV) console.debug("[EmbedControl] applied seek", clampedTime);
 
     // Each seek gets a unique operation ID so rapid sequential seeks cancel
@@ -1117,7 +1145,14 @@ export default function EmbedPlayerPage(props: any = {}) {
             // bufferedEndPct — how far along the timeline is buffered (seek bar)
             try {
               const v = videoRef.current;
-              if (!v || !v.buffered || v.buffered.length === 0) return;
+              if (!v) return;
+              // Settle the startup resume-clobber guard once playback actually
+              // reaches the saved position, so genuine user seeks afterwards
+              // (including a rewind to the start) are honored normally.
+              if (initialResumeTargetRef.current > 1 && v.currentTime >= initialResumeTargetRef.current - 2) {
+                initialResumeTargetRef.current = -1;
+              }
+              if (!v.buffered || v.buffered.length === 0) return;
               const ct = v.currentTime;
               const dur = v.duration;
               let ahead = 0;
@@ -1174,6 +1209,34 @@ export default function EmbedPlayerPage(props: any = {}) {
             const sid = streamSidRef.current;
             if (!sid || !publicId) return;
             const target = video.currentTime;
+            // STARTUP RESUME-CLOBBER GUARD. While the saved-position resume is
+            // still buffering (initialResumeTargetRef armed and not yet reached),
+            // HLS.js can synthesize a `seeking` event that snaps currentTime to
+            // ~0. That is NOT a user seek — reporting it as seekTo:true resets
+            // the server window to 0 and restarts playback from the beginning
+            // (the 322→0 jump in the logs). Suppress the POST and re-assert the
+            // resume position a bounded number of times so the video does not
+            // silently drop to 0. A 30s ceiling prevents a permanently-stuck
+            // resume from locking out a legitimate later seek-to-start.
+            const resumeTarget = initialResumeTargetRef.current;
+            const resumeStale = initialResumeSetAtRef.current > 0 && Date.now() - initialResumeSetAtRef.current > 30000;
+            if (resumeTarget > 10 && !resumeStale && target < 3) {
+              if (resumeReassertCountRef.current < 3) {
+                resumeReassertCountRef.current++;
+                try {
+                  const h = hlsRef.current;
+                  if (h) h.stopLoad();
+                  video.currentTime = resumeTarget;
+                  if (h) h.startLoad(resumeTarget);
+                } catch {}
+              }
+              return;
+            }
+            // A genuine native seek (not a startup snap-to-start) means the user
+            // has taken control — disarm the startup resume guard so subsequent
+            // seeks (including a deliberate rewind to the start) are never
+            // suppressed even if the original resume offset was never reached.
+            if (initialResumeTargetRef.current > 1) initialResumeTargetRef.current = -1;
             lastSeekAtRef.current = Date.now();
             seekRecoveryCountRef.current = 0;
             const hls = hlsRef.current;

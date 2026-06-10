@@ -1,0 +1,63 @@
+Fix secure video buffering caused by duplicate resume/progress state.
+
+Logs confirm auth is OK:
+manifest 200, master 200, window 200, chunk 200, tick 200, ping 200, refresh 200.
+
+Real bug:
+Progress jumps from old resume segment to zero:
+6:15:38 targetSegmentIndex=322 windowEnd=345
+6:15:45 targetSegmentIndex=0 windowEnd=288
+Then ticks move 1, 3, 6, 17, 28.
+
+This means stale resume and fresh playback progress are fighting.
+
+Fixes required:
+
+1. Use only one initial playback source.
+Priority:
+- valid iframe ?t=
+- valid backend resumePositionSeconds
+- otherwise 0
+Do not mix LMS progress, localStorage, sessionStorage, and maxPositionSeconds together.
+
+2. Do not post progress=0 during startup until:
+- loadedmetadata fired
+- initial seek completed
+- video is actually playing
+- final start time is confirmed
+
+3. Add backend monotonic guard:
+- During active playback, do not allow targetSegmentIndex to jump backward from 322 to 0 unless frontend sends isUserSeek=true.
+- Ignore accidental startup progress=0 if session already has a much higher segment.
+
+4. Split progress fields:
+- maxPositionSeconds = analytics only
+- resumePositionSeconds = actual last valid resume time
+Use resumePositionSeconds for iframe ?t=, not maxPositionSeconds.
+
+5. Stop duplicate refresh:
+- Add frontend refreshInFlight lock.
+- Backend should return same active token if same session refreshes within 10 seconds.
+- Prevent two refresh calls from same player/session.
+
+6. Prevent multiple player instances:
+- Ensure LMS page creates only one iframe/player for active video.
+- Related video / continue learning cards must not initialize secure playback until clicked.
+- Destroy old HLS instance before creating a new one.
+
+7. On HLS stall:
+- Send current video.currentTime with isRecovery=true.
+- Renew stream window around current segment.
+- Reload HLS at same currentTime.
+- Do not reset to 0.
+
+Expected:
+- No targetSegmentIndex jump backward unless user manually seeks.
+- No duplicate refresh calls.
+- Video should not buffer/stuck at 2–3 minutes.
+- Secure playback should continue normally.
+
+Do not change UI.
+Do not disable security.
+Do not change Bunny/HLS storage.
+Only fix resume/progress race, duplicate refresh, multiple player instance issue, and HLS stall recovery.

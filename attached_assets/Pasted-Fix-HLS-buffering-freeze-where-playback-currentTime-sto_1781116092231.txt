@@ -1,0 +1,77 @@
+Fix HLS buffering freeze where playback currentTime stops but auth/session remains OK.
+
+Current logs:
+Auth/session is fine:
+- ping 200
+- refresh 200
+- tick 200
+- heartbeat OK
+- stream/chunk 200
+
+New issue:
+Playback progresses normally until segment 57, then targetSegmentIndex stops increasing:
+51 → 53 → 56 → 57 → 57 → 57 → 57
+windowStart=0 and windowEnd=288, so protected window is not exhausted.
+This means video.currentTime is stuck and frontend keeps sending same currentTime to tick.
+
+Required fixes:
+
+1. Add frontend playback stall detector:
+- Track video.currentTime every 3 seconds while playing.
+- If video is not paused and currentTime does not increase for 8–10 seconds, treat as HLS stall.
+- Do not rely only on tick/ping success.
+
+2. Add HLS recovery:
+On stall/waiting/bufferStalledError/fragLoadError/levelLoadError:
+- save currentTime
+- call /api/player/:publicId/tick with currentTime and isRecovery=true
+- request fresh manifest/window URL with cache-busting query
+- hls.stopLoad()
+- hls.detachMedia()
+- hls.destroy()
+- create new Hls instance
+- load fresh source
+- attach media
+- seek back to saved currentTime + 0.2
+- hls.startLoad(savedCurrentTime)
+- resume play()
+
+3. Add retry limit:
+- Try soft recovery first: hls.recoverMediaError(), hls.startLoad(currentTime)
+- If still stuck after 5 seconds, do full HLS reload.
+- Show error only after 3 failed recoveries.
+
+4. Prevent tick from hiding stall:
+- If tick sees same targetSegmentIndex 3 times while video is supposed to be playing, trigger frontend recovery.
+- Do not keep sending same stuck time forever.
+
+5. Fix stale playlist/cache:
+- Add cache-busting to manifest/window/chunk playlist URLs during recovery.
+- Set no-cache headers for dynamic stream/window/manifest responses.
+- HLS should not reuse old stuck playlist URL.
+
+6. Do not reset to 0:
+- Recovery must resume from currentTime, not from 0.
+- Do not clear token/session during HLS recovery.
+- Do not refresh iframe unless HLS recovery fails.
+
+7. Add logs:
+Frontend logs:
+- STALL_DETECTED currentTime=...
+- HLS_SOFT_RECOVERY_START
+- HLS_FULL_RELOAD_START
+- HLS_RECOVERY_SUCCESS
+- HLS_RECOVERY_FAILED
+Backend logs:
+- tick currentTime
+- targetSegmentIndex
+- isRecovery flag
+
+Expected:
+- If playback freezes while tick/ping are still 200, player auto-recovers.
+- targetSegmentIndex should continue 57 → 58 → 59...
+- User should not need to refresh LMS.
+- No UI change.
+- Do not disable security.
+- Do not change Bunny/HLS storage.
+Only fix HLS stall detection, recovery reload, and cache-busting.

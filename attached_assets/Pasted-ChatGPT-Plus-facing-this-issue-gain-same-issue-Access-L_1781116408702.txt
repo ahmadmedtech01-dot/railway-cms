@@ -1,0 +1,929 @@
+ChatGPT Plus
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+facing this issue
+gain same issue
+Access Link Expired
+
+This share link is no longer valid. Please contact the person who shared this video to get a new link.Request URL
+https://railway-cms-production.up.railway.app/api/player/mMWk8yN5oU/refresh-token
+Request Method
+POST
+Status Code
+401 Unauthorized
+Remote Address
+69.46.46.101:443
+Referrer Policy
+strict-origin-when-cross-origin
+access-control-allow-credentials
+true
+access-control-allow-headers
+Content-Type, Authorization, x-embed-referrer
+access-control-allow-methods
+GET, POST, PUT, DELETE, OPTIONS
+access-control-allow-origin
+https://railway-cms-production.up.railway.app
+content-length
+50
+content-type
+application/json; charset=utf-8
+date
+Wed, 10 Jun 2026 15:53:19 GMT
+etag
+W/"32-0Sd/cnnsm5RT1wPNEahl5xPA0AM"
+server
+railway-hikari
+x-hikari-trace
+sin1.tr00
+x-powered-by
+Express
+x-railway-edge
+railway/europe-west4-drams3a
+x-railway-request-id
+0ME-d7Q1SPKus3HT55So4g
+:authority
+railway-cms-production.up.railway.app
+:method
+POST
+:path
+/api/player/mMWk8yN5oU/refresh-token
+:scheme
+https
+accept
+/
+accept-encoding
+gzip, deflate, br, zstd
+accept-language
+en-GB,en-US;q=0.9,en;q=0.8
+content-length
+556
+content-type
+application/json
+origin
+https://railway-cms-production.up.railway.app
+priority
+u=1, i
+referer
+https://railway-cms-production.up.railway.app/embed/mMWk8yN5oU?t=1991
+sec-ch-ua
+"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-origin
+sec-fetch-storage-access
+active
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36> rest-express@1.0.0 start
+> NODE_ENV=production node dist/index.cjs
+[db] Using Supabase database
+3:48:32 PM [migrate] applying 2 migration file(s)...
+3:48:34 PM [migrate] ✓ 0001_add_video_client_security_columns.sql (2230ms)
+3:48:34 PM [migrate] ✓ 0002_add_integration_api_key_columns.sql (245ms)
+3:48:34 PM [migrate] all migrations applied
+3:48:34 PM [express] Supabase connection pre-warmed
+3:48:34 PM [express] serving on port 8080
+[security] SIGNING_SECRET loaded: true
+[hls] using gateway: https://video.syanmedtech.com
+Stopping Container
+3:48:39 PM [express] [cleanup] Deleted 1 expired tokens older than 7 days
+npm error path /app
+npm error command failed
+npm error signal SIGTERM
+npm error command sh -c NODE_ENV=production node dist/index.cjs
+npm error A complete log of this run can be found in: /root/.npm/_logs/2026-06-09T19_25_28_550Z-debug-0.log
+[video-session] load failed sid=55463ae02ef2e42fec7cb32af36a552b: column "sid" does not exist
+3:49:21 PM [express] POST /api/player/mMWk8yN5oU/tick 403 in 258ms :: {"ok":false,"blocked":true,"code":"PLAYBACK_DENIED","reason":"SESSION_INVALID","message":"Session invalid or expired"}
+3:49:30 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:49:31 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 998ms :: {"message":"Token revoked"}
+3:49:32 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:49:32 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 490ms :: {"message":"Token was revoked — cannot refresh"}
+[integrations] INTEGRATION_REFRESH_EXTEND: client=syanrx-lms user=9c52d43c-8b5b-4abe-bd7d-ee150eed4cf1 session=7b121c9e-7a30-4916-b3f1-3d17c9871876 tokenId=ca7d4202-da21-4bc5-abb3-90f5c4d76e19 extraRevoked=2
+3:50:29 PM [express] POST /api/integrations/player/mMWk8yN5oU/refresh 200 in 2245ms :: {"ok":true,"embedToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3...
+3:52:42 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:52:43 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 1011ms :: {"message":"Token revoked"}
+3:52:43 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:52:43 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 492ms :: {"message":"Token was revoked — cannot refresh"}
+3:53:03 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:53:04 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 983ms :: {"message":"Token revoked"}
+3:53:05 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:53:05 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 494ms :: {"message":"Token was revoked — cannot refresh"}
+3:53:17 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:53:18 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 982ms :: {"message":"Token revoked"}
+3:53:19 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:53:19 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 491ms :: {"message":"Token was revoked — cannot refresh"}
+3:54:05 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:54:06 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 982ms :: {"message":"Token revoked"}
+3:54:07 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:54:07 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 492ms :: {"message":"Token was revoked — cannot refresh"}
+[integrations] INTEGRATION_REFRESH_EXTEND: client=syanrx-lms user=9c52d43c-...  Request URL
+https://railway-cms-production.up.railway.app/api/player/mMWk8yN5oU/manifest?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3ZC1lZTE1MGVlZDRjZjEiLCJpbnRlZ3JhdGlvbkNsaWVudElkIjoiYmZhMGM4MjMtMWM4OS00ZGE3LTlmYTItN2M4NjJjMzRkYjFmIiwiaW50ZWdyYXRpb25TZXNzaW9uSWQiOiI3YjEyMWM5ZS03YTMwLTQ5MTYtYjNmMS0zZDE3Yzk4NzE4NzYiLCJqdGkiOiI5NzU2YTAzNy01ZTEyLTQ4ZGItOTVjZC05YTY0ZDU4NmUzNWUiLCJpYXQiOjE3ODExMDU2NjAsImV4cCI6MTc4MTEwNTk2MH0._J6PSUaigPmGU4Bts_ZbI6BqXKGVAftD8IZx64lwGGw
+Request Method
+GET
+Status Code
+401 Unauthorized
+Remote Address
+69.46.46.101:443
+Referrer Policy
+strict-origin-when-cross-origin
+access-control-allow-credentials
+true
+access-control-allow-headers
+Content-Type, Authorization, x-embed-referrer
+access-control-allow-methods
+GET, POST, PUT, DELETE, OPTIONS
+content-length
+27
+content-type
+application/json; charset=utf-8
+date
+Wed, 10 Jun 2026 15:53:19 GMT
+etag
+W/"1b-SXkGiVuBnXNjZr1Ym25h/3vKWdM"
+server
+railway-hikari
+x-hikari-trace
+sin1.tr00
+x-powered-by
+Express
+x-railway-edge
+railway/europe-west4-drams3a
+x-railway-request-id
+ufv62oa7S4ylFvPf63j4Ww
+:authority
+railway-cms-production.up.railway.app
+:method
+GET
+:path
+/api/player/mMWk8yN5oU/manifest?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3ZC1lZTE1MGVlZDRjZjEiLCJpbnRlZ3JhdGlvbkNsaWVudElkIjoiYmZhMGM4MjMtMWM4OS00ZGE3LTlmYTItN2M4NjJjMzRkYjFmIiwiaW50ZWdyYXRpb25TZXNzaW9uSWQiOiI3YjEyMWM5ZS03YTMwLTQ5MTYtYjNmMS0zZDE3Yzk4NzE4NzYiLCJqdGkiOiI5NzU2YTAzNy01ZTEyLTQ4ZGItOTVjZC05YTY0ZDU4NmUzNWUiLCJpYXQiOjE3ODExMDU2NjAsImV4cCI6MTc4MTEwNTk2MH0._J6PSUaigPmGU4Bts_ZbI6BqXKGVAftD8IZx64lwGGw
+:scheme
+https
+accept
+*/*
+accept-encoding
+gzip, deflate, br, zstd
+accept-language
+en-GB,en-US;q=0.9,en;q=0.8
+if-none-match
+W/"2c0-D3TI7F5hL2yOZenhCzX4EsT2D3Y"
+priority
+u=1, i
+referer
+https://railway-cms-production.up.railway.app/embed/mMWk8yN5oU?t=1991
+sec-ch-ua
+"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-origin
+sec-fetch-storage-access
+active
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)
+
+
+railway-cms (2).zip
+Zip Archive
+Deep audit and analyze my whole code 
+
+image.png
+image.png
+
+Pasted text.txt
+Document
+again stuck and buffering issues check railway logs now what is bothering?
+
+
+Evaluated file search, log, and citation requirements
+Now logs show token is not the problem. The player is authenticated and backend is returning 200.
+
+The bothering issue is here:
+
+6:15:38 progress → targetSegmentIndex: 322, windowEnd: 345
+6:15:45 progress → targetSegmentIndex: 0, windowEnd: 288
+6:15:58 tick → targetSegmentIndex: 1
+6:16:18 tick → targetSegmentIndex: 3
+6:16:38 tick → targetSegmentIndex: 6
+6:18:38 tick → targetSegmentIndex: 17
+6:20:38 tick → targetSegmentIndex: 21
+So your player/backend first thinks video is near segment 322, then suddenly resets to segment 0, then slowly moves 1, 3, 6, 17, 21. That means two different progress sources are fighting each other: one resume/progress source says “continue near old position,” and another source says “start from 0.” Your logs show exactly this jump from targetSegmentIndex:322 to targetSegmentIndex:0 within seconds. 
+
+
+Also, your integration refresh is firing multiple times close together, including two refresh calls for the same user/session within 2 seconds at 6:17:34 and 6:17:36. That can reset or disturb the active token/window while HLS is playing. 
+
+
+Actual root cause now
+Your issue is mainly:
+
+progress race condition + duplicate integration refresh + HLS rebuffer after timeline reset
+In simple words:
+
+The video starts playing, then the frontend sends progress as 0, while LMS/resume/session had already exposed a later window. Backend rewrites the playback window from old segment range to new start range. HLS already requested chunks from one timeline/window, then the backend session moves to another timeline/window. Result: buffering/stuck.
+
+What to fix
+Give this to your code agent:
+
+Fix secure video buffering caused by progress reset/race condition.
+
+Current logs prove token/session is OK:
+- manifest 200
+- stream/master 200
+- stream/window 200
+- stream/chunk 200
+- tick 200
+- ping 200
+
+Real issue:
+Progress jumps backwards:
+At 6:15:38 /api/stream/:id/progress returns targetSegmentIndex=322 windowEnd=345.
+At 6:15:45 /api/stream/:id/progress returns targetSegmentIndex=0 windowEnd=288.
+Then ticks slowly move targetSegmentIndex 1,3,6,8,11,17,21.
+
+This means stale resume/progress and fresh playback progress are fighting. Backend allows a later stream window, then frontend resets progress to 0, causing HLS window/timeline mismatch and buffering.
+
+Required fixes:
+
+1. Add progress monotonic guard during active playback:
+   - Do not allow currentSegmentIndex/targetSegmentIndex to jump backwards by more than 3 segments unless user explicitly seeks backward.
+   - Frontend must send `isUserSeek=true` only when user manually seeks.
+   - Backend should ignore accidental progress=0 during startup if existing session segment is much higher.
+
+2. Separate startup initialization from real playback progress:
+   - During first 5–10 seconds after HLS load, do not post `/api/stream/:id/progress` with 0 unless final initial start time is confirmed.
+   - Wait until video has fired `loadedmetadata` + initial seek completed + `playing`.
+
+3. Fix resume source priority:
+   - Use only one initial time source:
+     iframe `?t=` OR valid backend resumePositionSeconds.
+   - Do not mix LMS progress, localStorage, sessionStorage, and backend maxPositionSeconds together.
+   - If resume is disabled or invalid, start from 0 and clear old resume/window state.
+
+4. Fix duplicate refresh:
+   - Prevent concurrent `/api/integrations/player/:id/refresh` calls.
+   - Add frontend `refreshInFlight` lock.
+   - Add backend idempotency: if same session refreshes within 10 seconds, return the same active token instead of creating/rotating again.
+   - Logs show duplicate refresh for same user/session within 2 seconds; stop this.
+
+5. Fix HLS window reset:
+   - If backend currentSegmentIndex is already high, do not reset maxSegmentExposed/windowEnd downward because of accidental progress=0.
+   - Window can grow forward, but should not shrink during active playback unless a confirmed manual seek/reset occurs.
+
+6. On HLS buffering/stall:
+   - Send current real video.currentTime with `isRecovery=true`.
+   - Backend should renew window around that segment.
+   - Reload HLS at same currentTime.
+   - Do not reset to 0.
+
+Expected result:
+- targetSegmentIndex should never jump from 322 to 0 unless user manually seeks.
+- windowEnd should not shrink from 345 to 288 during active playback.
+- Only one refresh call should run at a time.
+- Video should not buffer/stuck after a few minutes.
+
+Do not change UI.
+Do not change Bunny/HLS storage.
+Do not disable security.
+Only fix progress race, backward reset guard, refresh lock, and HLS stall recovery.
+This is the key line: your player is not simply “buffering”; it is resetting backend playback progress while HLS is already playing.
+
+
+
+logs.1781115712794.json
+File
+complete logs
+
+
+Parsed log file and filtered messages by keywords
+I checked the complete logs. The issue is not token expiry now and not 401.
+
+Your logs show:
+
+manifest 200
+stream/master 200
+stream/window 200
+stream/chunk 200
+tick 200
+ping 200
+refresh 200
+So backend authorization is passing.
+
+The real problem is this:
+
+6:15:38 progress → targetSegmentIndex: 322, windowEnd: 345
+6:15:45 progress → targetSegmentIndex: 0, windowEnd: 288
+6:15:58 tick → targetSegmentIndex: 1
+6:16:38 tick → targetSegmentIndex: 6
+6:18:38 tick → targetSegmentIndex: 17
+6:21:38 tick → targetSegmentIndex: 28
+This means your player first loads an old/stale resume position around segment 322, then within seconds resets backend playback to segment 0. After that it starts moving normally from 0 → 28. This confirms a resume/progress race condition. 
+
+
+Also these logs show refresh is running for different users/sessions during the same video playback:
+
+user=61b31687... session=d122ab4c...
+user=64665354... session=b71cf76a...
+And one session refreshes twice very close together:
+
+6:17:34 refresh
+6:17:36 refresh
+So there are likely multiple player instances / duplicate LMS refresh calls / stale iframe state fighting each other. 
+
+
+What is bothering playback
+Main issue:
+
+Old resume position + new playback progress are both updating the same secure video session/window.
+In simple words:
+
+One part of system says: resume from old position.
+Another part says: start from 0.
+Backend first opens a later HLS window, then resets to early window.
+HLS.js already loaded chunks from one timeline, then timeline changes.
+Result: buffering/stuck.
+Give this short prompt to code agent
+Fix secure video buffering caused by duplicate resume/progress state.
+
+Logs confirm auth is OK:
+manifest 200, master 200, window 200, chunk 200, tick 200, ping 200, refresh 200.
+
+Real bug:
+Progress jumps from old resume segment to zero:
+6:15:38 targetSegmentIndex=322 windowEnd=345
+6:15:45 targetSegmentIndex=0 windowEnd=288
+Then ticks move 1, 3, 6, 17, 28.
+
+This means stale resume and fresh playback progress are fighting.
+
+Fixes required:
+
+1. Use only one initial playback source.
+Priority:
+- valid iframe ?t=
+- valid backend resumePositionSeconds
+- otherwise 0
+Do not mix LMS progress, localStorage, sessionStorage, and maxPositionSeconds together.
+
+2. Do not post progress=0 during startup until:
+- loadedmetadata fired
+- initial seek completed
+- video is actually playing
+- final start time is confirmed
+
+3. Add backend monotonic guard:
+- During active playback, do not allow targetSegmentIndex to jump backward from 322 to 0 unless frontend sends isUserSeek=true.
+- Ignore accidental startup progress=0 if session already has a much higher segment.
+
+4. Split progress fields:
+- maxPositionSeconds = analytics only
+- resumePositionSeconds = actual last valid resume time
+Use resumePositionSeconds for iframe ?t=, not maxPositionSeconds.
+
+5. Stop duplicate refresh:
+- Add frontend refreshInFlight lock.
+- Backend should return same active token if same session refreshes within 10 seconds.
+- Prevent two refresh calls from same player/session.
+
+6. Prevent multiple player instances:
+- Ensure LMS page creates only one iframe/player for active video.
+- Related video / continue learning cards must not initialize secure playback until clicked.
+- Destroy old HLS instance before creating a new one.
+
+7. On HLS stall:
+- Send current video.currentTime with isRecovery=true.
+- Renew stream window around current segment.
+- Reload HLS at same currentTime.
+- Do not reset to 0.
+
+Expected:
+- No targetSegmentIndex jump backward unless user manually seeks.
+- No duplicate refresh calls.
+- Video should not buffer/stuck at 2–3 minutes.
+- Secure playback should continue normally.
+
+Do not change UI.
+Do not disable security.
+Do not change Bunny/HLS storage.
+Only fix resume/progress race, duplicate refresh, multiple player instance issue, and HLS stall recovery.
+Your latest logs prove the key bug: the secure stream is being reset from old resume state to zero while HLS is already loading chunks.
+
+
+
+Pasted text.txt
+Document
+
+Pasted text (2).txt
+Document
+check logs again kuch der smoth chale pher se woe stuck dobara bufeering freez
+
+
+Analyzed logs and identified chunk request and segment issues
+I checked new logs. Now issue is different from previous race issue.
+
+Now video runs smooth, then freezes because video currentTime stops moving, but tick/ping keep running normally.
+
+Evidence:
+
+6:24:38 targetSegmentIndex: 51
+6:24:58 targetSegmentIndex: 53
+6:25:18 targetSegmentIndex: 56
+6:25:38 targetSegmentIndex: 57
+6:25:58 targetSegmentIndex: 57
+6:26:18 targetSegmentIndex: 57
+6:26:38 targetSegmentIndex: 57
+6:26:58 targetSegmentIndex: 57
+So after segment 57, player is stuck at the same video time again and again. Backend session is still alive because ping/heartbeat is OK, but actual video playback is not progressing. 
+
+
+Also window is not the problem here:
+
+windowStart: 0
+windowEnd: 288
+targetSegmentIndex: 57
+The player is only at segment 57, and backend already allowed up to segment 288. So it is not reaching the protected window limit now. It is a frontend HLS stall / buffer deadlock issue. 
+
+
+Actual problem now
+HLS/video element gets stalled.
+currentTime stops at segment 57.
+Tick keeps sending same time.
+Backend says OK because session is valid.
+But frontend does not recover HLS playback.
+In simple words:
+
+Video file permission is OK.
+Token is OK.
+Session is OK.
+Window is OK.
+But HLS player freezes and no automatic recovery reload happens.
+Give this prompt to code agent:
+
+Fix HLS buffering freeze where playback currentTime stops but auth/session remains OK.
+
+Current logs:
+Auth/session is fine:
+- ping 200
+- refresh 200
+- tick 200
+- heartbeat OK
+- stream/chunk 200
+
+New issue:
+Playback progresses normally until segment 57, then targetSegmentIndex stops increasing:
+51 → 53 → 56 → 57 → 57 → 57 → 57
+windowStart=0 and windowEnd=288, so protected window is not exhausted.
+This means video.currentTime is stuck and frontend keeps sending same currentTime to tick.
+
+Required fixes:
+
+1. Add frontend playback stall detector:
+- Track video.currentTime every 3 seconds while playing.
+- If video is not paused and currentTime does not increase for 8–10 seconds, treat as HLS stall.
+- Do not rely only on tick/ping success.
+
+2. Add HLS recovery:
+On stall/waiting/bufferStalledError/fragLoadError/levelLoadError:
+- save currentTime
+- call /api/player/:publicId/tick with currentTime and isRecovery=true
+- request fresh manifest/window URL with cache-busting query
+- hls.stopLoad()
+- hls.detachMedia()
+- hls.destroy()
+- create new Hls instance
+- load fresh source
+- attach media
+- seek back to saved currentTime + 0.2
+- hls.startLoad(savedCurrentTime)
+- resume play()
+
+3. Add retry limit:
+- Try soft recovery first: hls.recoverMediaError(), hls.startLoad(currentTime)
+- If still stuck after 5 seconds, do full HLS reload.
+- Show error only after 3 failed recoveries.
+
+4. Prevent tick from hiding stall:
+- If tick sees same targetSegmentIndex 3 times while video is supposed to be playing, trigger frontend recovery.
+- Do not keep sending same stuck time forever.
+
+5. Fix stale playlist/cache:
+- Add cache-busting to manifest/window/chunk playlist URLs during recovery.
+- Set no-cache headers for dynamic stream/window/manifest responses.
+- HLS should not reuse old stuck playlist URL.
+
+6. Do not reset to 0:
+- Recovery must resume from currentTime, not from 0.
+- Do not clear token/session during HLS recovery.
+- Do not refresh iframe unless HLS recovery fails.
+
+7. Add logs:
+Frontend logs:
+- STALL_DETECTED currentTime=...
+- HLS_SOFT_RECOVERY_START
+- HLS_FULL_RELOAD_START
+- HLS_RECOVERY_SUCCESS
+- HLS_RECOVERY_FAILED
+Backend logs:
+- tick currentTime
+- targetSegmentIndex
+- isRecovery flag
+
+Expected:
+- If playback freezes while tick/ping are still 200, player auto-recovers.
+- targetSegmentIndex should continue 57 → 58 → 59...
+- User should not need to refresh LMS.
+- No UI change.
+- Do not disable security.
+- Do not change Bunny/HLS storage.
+Only fix HLS stall detection, recovery reload, and cache-busting.
+Main line: ab problem token ya window ka nahi hai — video.currentTime freeze ho raha hai, aur frontend HLS recovery missing hai.
+
+
+
+logs.1781116207846.json
+File
+
+Ab latest logs se clear ho gaya: sirf HLS stall nahi hai. Main problem ab bhi multiple sessions / multiple players / session rotation conflict hai.
+
+What logs are showing
+Pehle video smooth chalti hai:
+
+targetSegmentIndex: 51 → 53 → 56 → 57
+Phir same segment par stuck ho jati hai:
+
+6:25:38 targetSegmentIndex: 57
+6:25:58 targetSegmentIndex: 57
+6:26:18 targetSegmentIndex: 57
+6:26:38 targetSegmentIndex: 57
+6:26:58 targetSegmentIndex: 57
+Yani video ka currentTime move nahi kar raha, lekin tick/ping 200 aa rahe hain. 
+
+
+Phir system recovery/rotation karta hai:
+
+SESSION_ROTATED oldSid=cb643... → newSid=b484...
+SESSION_RENEWED
+rotate-session 200
+But immediately us ke baad dangerous jump hota hai:
+
+targetSegmentIndex: 58
+then /progress targetSegmentIndex: 232
+then /progress targetSegmentIndex: 58
+Yani recovery ke baad ek source video ko segment 232 pe le jana chahta hai, aur doosra source wapas 58 pe. 
+
+
+Phir aur serious issue:
+
+SIMPLE_EMBED new user/session resume=start
+new manifest sid=04d3...
+tick windowEnd=23 targetSegmentIndex=0
+phir old tick targetSegmentIndex=58
+phir progress windowEnd=45 targetSegmentIndex=22
+Yani same video ke liye new iframe/player session bhi create ho raha hai, jab purana session still active hai. 
+
+
+Final root cause
+Multiple active player sessions + recovery/session rotation + stale progress source are fighting.
+Simple words:
+
+Ek player/session segment 57 par hai.
+Recovery new session banata hai.
+LMS ya frontend dobara new embed bhi create kar deta hai.
+Koi source resume=start bhej raha hai.
+Koi source segment 232 bhej raha hai.
+Koi source segment 58 bhej raha hai.
+HLS confused ho jata hai, buffer freeze hoti hai.
+Code agent prompt
+Fix secure video freezing caused by multiple active player sessions, session rotation conflict, and progress jumps.
+
+Latest logs prove:
+- Video runs smoothly until targetSegmentIndex 57.
+- Then targetSegmentIndex stays stuck at 57 repeatedly while tick/ping are still 200.
+- Session rotation happens:
+  SESSION_ROTATED oldSid=cb643... newSid=b484...
+  rotate-session 200
+- Immediately after rotation, progress jumps:
+  targetSegmentIndex=58
+  then targetSegmentIndex=232
+  then targetSegmentIndex=58
+- Then a new SIMPLE_EMBED is created with resume=start and a new manifest sid=04d3...
+- After that, old and new sessions both send ticks/progress:
+  one uses targetSegmentIndex=58
+  another uses targetSegmentIndex=0/22 and windowEnd=23/45.
+
+This means multiple player instances/sessions are active for the same video and fighting over playback state.
+
+Required fixes:
+
+1. Enforce single active player instance in LMS:
+- For one video card/page, create only one iframe/player.
+- Do not create player for Related Videos or Continue Learning cards until user clicks.
+- When reload/retry happens, destroy old iframe/player completely before creating new one.
+- Abort all old intervals: tick, ping, refresh, progress, heartbeat.
+
+2. Add playerInstanceId:
+- Generate unique playerInstanceId on frontend load.
+- Send it with every tick, progress, refresh, ping, rotate-session.
+- Backend should accept updates only from latest active playerInstanceId for that user + video + integrationSession.
+- Ignore stale playerInstanceId updates.
+
+3. Fix session rotation:
+- When rotate-session creates newSid, frontend must immediately switch all HLS URLs, tick URLs, progress URLs, and heartbeat state to newSid.
+- Old sid must stop sending tick/progress.
+- Do not allow old sid cb643... and new sid b484... to update same playback at same time.
+
+4. Fix recovery progress jump:
+- After recovery/rotation, do not allow progress jump from 58 to 232 unless user manually seeks.
+- Add backend guard:
+  if active playback and new targetSegmentIndex differs by more than 10 segments, require isUserSeek=true.
+- Ignore accidental stale progress from old resume/localStorage/sessionStorage.
+
+5. Fix SIMPLE_EMBED recreation:
+- LMS should not call /api/integrations/embed-url again while active player is already mounted and playing.
+- If embed-url is called again, old player must be fully destroyed first.
+- Do not create new embed with resume=start while old session is still active.
+
+6. Fix progress source:
+- Use only one progress source:
+  video.currentTime from active video element.
+- Do not mix:
+  iframe ?t
+  localStorage
+  sessionStorage
+  backend maxPositionSeconds
+  resume=start
+  old session progress
+- Use resumePositionSeconds only at first load.
+- After playback starts, only video.currentTime controls progress.
+
+7. HLS stall recovery:
+- If currentTime is stuck for 8–10 sec, first soft recover HLS.
+- If soft recovery fails, rotate session once and reload HLS at same currentTime.
+- Do not create new embed iframe unless all recovery fails.
+- Do not reset to 0 during recovery.
+
+8. Add logs:
+Frontend:
+PLAYER_INSTANCE_CREATED id=
+PLAYER_INSTANCE_DESTROYED id=
+STALE_PLAYER_UPDATE_BLOCKED id=
+SESSION_ROTATION_APPLIED oldSid newSid
+HLS_RECOVERY_START currentTime
+HLS_RECOVERY_SUCCESS currentTime
+
+Backend:
+activePlayerInstanceId
+incomingPlayerInstanceId
+sid
+targetSegmentIndex
+isUserSeek
+isRecovery
+ignoredStaleUpdate=true/false
+
+Expected:
+- Only one active player/session updates progress.
+- targetSegmentIndex should move forward normally.
+- No jumps 58 → 232 → 58.
+- No new SIMPLE_EMBED while old player is active.
+- No freeze after few minutes.
+- No UI changes.
+- Do not disable security.
+- Do not change Bunny/HLS storage.
+Main line: video freeze ka reason ab backend permission nahi, balkay same video ke multiple sessions/players ek doosray se conflict kar rahe hain.
+
+
+
+Pasted text.txt
+Document
+
+Latest logs confirm the main issue is now 100% multiple active sessions/player instances conflict.
+
+What is happening now
+Video reaches segment 57, then gets stuck:
+
+targetSegmentIndex: 57
+targetSegmentIndex: 57
+targetSegmentIndex: 57
+Then your system rotates session:
+
+SESSION_ROTATED oldSid=cb643... → newSid=b484...
+SESSION_RENEWED
+rotate-session 200
+After rotation, one request says video is at segment 58, but immediately another progress request jumps to segment 232, then another goes back to 58:
+
+targetSegmentIndex: 58
+targetSegmentIndex: 232
+targetSegmentIndex: 58
+That means old progress/resume source is still active after recovery. 
+
+
+Then bigger problem: LMS creates a new embed/player while old player is still active:
+
+SIMPLE_EMBED ... resume=start
+new manifest sid=04d3...
+After this, logs show multiple sessions fighting:
+
+targetSegmentIndex: 0
+targetSegmentIndex: 58
+targetSegmentIndex: 22
+targetSegmentIndex: 58
+targetSegmentIndex: 24
+targetSegmentIndex: 58
+targetSegmentIndex: 26
+targetSegmentIndex: 58
+So one player/session says “I am at 58”, another says “I am at 22/24/26”, and another starts from 0. This causes repeated buffering/freezing. 
+
+
+Main root cause
+Same video has multiple active players/sessions running together.
+Old iframe/player is not being destroyed.
+Old tick/progress/refresh intervals are still running.
+New embed is created while old session is still alive.
+Progress jumps between different sessions: 58 ↔ 22 ↔ 58 ↔ 26.
+Give this prompt to code agent
+Fix secure video buffering caused by multiple active player/session conflicts.
+
+Latest logs prove:
+1. Video runs until targetSegmentIndex=57, then freezes.
+2. Session rotation happens:
+   SESSION_ROTATED oldSid=cb643... newSid=b484...
+3. After rotation, progress conflicts:
+   targetSegmentIndex=58
+   then targetSegmentIndex=232
+   then targetSegmentIndex=58
+4. LMS then creates new embed:
+   SIMPLE_EMBED resume=start
+   new manifest sid=04d3...
+5. After new embed, old and new players both keep sending progress:
+   targetSegmentIndex=0
+   targetSegmentIndex=58
+   targetSegmentIndex=22
+   targetSegmentIndex=58
+   targetSegmentIndex=24
+   targetSegmentIndex=58
+   targetSegmentIndex=26
+   targetSegmentIndex=58
+
+This means multiple active iframe/player instances and old intervals are fighting.
+
+Required fixes:
+
+1. Enforce one active player per video in LMS:
+- Before creating a new embed/iframe, fully destroy the old player.
+- Remove old iframe from DOM.
+- Destroy old HLS instance.
+- Clear old timers: tick, progress, ping, refresh, heartbeat, stall detector.
+- Abort old fetch controllers.
+
+2. Do not call /api/integrations/embed-url again while the same video is already mounted and active.
+- Add frontend guard: embedRequestInFlight.
+- Add activeVideoId + activePlayerInstanceId check.
+- Related videos and Continue Learning cards must not initialize secure player until clicked.
+
+3. Add playerInstanceId:
+- Generate playerInstanceId on every player mount.
+- Send playerInstanceId with tick, progress, ping, refresh, rotate-session.
+- Backend should accept updates only from latest active playerInstanceId for same user + video + integrationSession.
+- Ignore stale playerInstanceId updates and log STALE_PLAYER_UPDATE_BLOCKED.
+
+4. Fix session rotation:
+- When rotate-session returns newSid, frontend must immediately replace all HLS/tick/progress state with newSid.
+- Stop oldSid updates.
+- Old sid must not keep sending tick/progress after rotation.
+
+5. Fix progress jump guard:
+- During active playback, do not accept jump 58 → 232 → 58 unless isUserSeek=true.
+- If no user seek, ignore stale resume/localStorage/sessionStorage progress.
+- After playback starts, only video.currentTime from active player controls progress.
+
+6. Fix new embed resume=start conflict:
+- Do not create new SIMPLE_EMBED with resume=start while old player is active.
+- If user reloads or changes video, old player must be fully destroyed first.
+- New embed should start only after old player cleanup completes.
+
+7. Add backend single-session lock:
+- For same integrationClient + user + video, mark only one active playback session as current.
+- When a new session becomes active, old sessions become stale.
+- Stale sessions cannot update progress/window.
+
+Expected result:
+- No more progress conflict 58 ↔ 22 ↔ 58.
+- No new SIMPLE_EMBED while old player is active.
+- Only one sid/playerInstanceId can update progress.
+- Video should continue smoothly after recovery.
+- No UI change.
+- Do not disable security.
+- Do not change Bunny/HLS storage.
+Only fix player lifecycle, duplicate embed creation, stale intervals, playerInstanceId validation, and session rotation cleanup.
+Main line: ab buffering ka reason network/token nahi — same video ke 2–3 players/sessions ek sath chal rahe hain aur progress overwrite kar rahe hain.
+
+
+6:27:04 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 512ms :: {"ok","sessionState":"active","tokenExpiresIn":217}
+6:27:18 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 260ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":57},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":178111...
+[video-session] SESSION_ROTATED: oldSid=cb643700f59c1c142e50dc5c3e267f35 → newSid=b484a0cfa8cab637210c85cef979912a, publicId=mMWk8yN5oU
+[playback] SESSION_RENEWED: oldSid=cb643700f59c1c142e50dc5c3e267f35 newSid=b484a0cfa8cab637210c85cef979912a pub=mMWk8yN5oU expiresIn=3600s
+6:27:21 PM [express] POST /api/player/mMWk8yN5oU/rotate-session 200 in 1ms :: {"manifestUrl":"https://video.syanmedtech.com/hls/mMWk8yN5oU/master.m3u8?sid=b484a0cfa8cab637210c85cef979912a&st=4403f9c7a8dc926aa8a3a787d586a9122a75f25d9a1655b3c8af107dd6ff9d41&exp=1781116641","sessionId":"b484a0cfa8cab637210c85cef979912a","r...
+6:27:21 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 256ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":178111...
+6:27:21 PM [routes] [stream/master] UPSTREAM pub=mMWk8yN5oU sid=b484a0cfa8cab637210c85cef979912a key=hls/d6d282d9-721e-4aea-b4cf-0eea9f51934a/master.m3u8 bytes=328 streamInfCount=3
+6:27:21 PM [routes] [stream/master] DONE pub=mMWk8yN5oU sid=b484a0cfa8cab637210c85cef979912a upstreamVariants=3 rewrittenVariants=3 responseBytes=1237
+6:27:21 PM [express] GET /api/player/mMWk8yN5oU/stream/master/94f6b80b481cd8bd083ba105290b33f3ec544c74dfa09c8ded098ac4c746d5d905145dc2ef4c6bec5193b184bc4bcd16e4ec3419ae49069406c2a8fe9e36ebd683532cd3a1d2f708e13cb348eb7d14ad4b23b1bca8a7639ca5d24a63dee5ef38b531182fdb29ae95a2d12ac5dbf60336 200 in 273ms
+6:27:22 PM [express] POST /api/stream/mMWk8yN5oU/progress 200 in 0ms :: {"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":232}
+6:27:22 PM [express] GET /api/player/mMWk8yN5oU/stream/window/79e0264578298353e34d348f8d56970ef9fd23971aa0a69dc0643809ee3a06a4174c26c703ae1ce377394cc121cffde9f3d3e45331ab9ad89ea7c412a179d0c8bc836319f92b892cdba3ea9d5ce0b010aad0f6d78ed6864adfe1d51ede70e49368232dce8b9519c504a0b1240b2c707b7f76181957bfbb32ac510ceaa7 200 in 1...
+6:27:23 PM [express] GET /api/player/mMWk8yN5oU/stream/secret/9105889fd13301e5f95d211743120b73514e9d2a0e07cd75d5b4776f43d5b9333811180162de08efde3d9f2738233b74aee74247822e2e2a737b41576f82517245068e32f8147b9616599527f713c3cd983658a9013bf09179afffb4d80b164991b6e0b7fe7a036aaad529d590c018cd 200 in 0ms
+6:27:23 PM [express] GET /api/player/mMWk8yN5oU/stream/window/790bc7866c8ee9bff1cc89e2638c36865b68cffd9d816d5d5ebc34da149e5d5360aa4360c265ab4abf0e54450b128c89fb2697a31410eb64e286d1e980a5b420bbf5dd5d408f5bcc024c5c31e1da0db2cf348f579737e7ecb9345feef3f1755531661117cf15d749b3d86b6a83e25b3801195acc33bb26087ced28c1a2 200 in 1...
+6:27:24 PM [express] POST /api/stream/mMWk8yN5oU/progress 200 in 0ms :: {"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58}
+6:27:34 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 521ms :: {"ok","sessionState":"active","tokenExpiresIn":187}
+6:27:38 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":17811196...
+6:27:58 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 261ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"ping":{"ok"}}
+6:28:04 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 521ms :: {"ok","sessionState":"active","tokenExpiresIn":157}
+6:28:18 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":17811196...
+[integrations] SIMPLE_EMBED: client=syanrx-lms user=d836103d-9ac0-427b-bf1a-e77bf44b657c video=mMWk8yN5oU session=54ec668e-7b62-48f5-8018-ed5f34efd095 resume=start
+6:28:24 PM [express] POST /api/integrations/embed-url 200 in 5223ms :: {"ok","iframeUrl":"https://railway-cms-production.up.railway.app/embed/mMWk8yN5oU?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdy...
+6:28:27 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+6:28:28 PM [express] GET /api/player/mMWk8yN5oU/manifest 200 in 1761ms :: {"manifestUrl":"https://video.syanmedtech.com/hls/mMWk8yN5oU/master.m3u8?sid=04d3b8e24e4bcc1bf36a4d06bf860512&st=2c91f7fcb2ad8d0986da1a267fc2ac0a65ab9d58f26b2e62c9b578ac9297edb5&exp=1781116708","sourceType":"backblaze_b2_proxy","sessionId":"04d3b8...
+6:28:29 PM [express] GET /api/security/effective/d6d282d9-721e-4aea-b4cf-0eea9f51934a 200 in 500ms :: {"blockVideoRecording","blockScreenshots","disableRightClick","blockDevTools","enableFocusMode","disableDownloads","requireFullscreen","antiScreenSharing","violationLimit":15,"...
+6:28:30 PM [express] GET /api/player/mMWk8yN5oU/settings 200 in 749ms :: {"playerSettings":{"id":"591d057e-ff56-4b65-9899-4f26381978a1","videoId":"d6d282d9-721e-4aea-b4cf-0eea9f51934a","allowSpeed","allowQuality","allowFullscreen","allowSkip","allowBrightness","resumeEnabled","autoplayAllow...
+6:28:30 PM [routes] [stream/master] UPSTREAM pub=mMWk8yN5oU sid=04d3b8e24e4bcc1bf36a4d06bf860512 key=hls/d6d282d9-721e-4aea-b4cf-0eea9f51934a/master.m3u8 bytes=328 streamInfCount=3
+6:28:30 PM [routes] [stream/master] DONE pub=mMWk8yN5oU sid=04d3b8e24e4bcc1bf36a4d06bf860512 upstreamVariants=3 rewrittenVariants=3 responseBytes=1237
+6:28:30 PM [express] GET /api/player/mMWk8yN5oU/stream/master/3a9c1f785bdf7cb8bd67f64df0120dd8e1dfcd6664fe329da1aa933271dbf9d6cba27a48117d7bb05b3d52e85a8c05f0782bc427090b388d7c7d573f30aa2dd31870f91c75e1bcc68766aee910dbf5b9315608337a628ffb99b06225a976aaee5259bf1aed1ff24e26537a92570d4e2e 200 in 269ms
+6:28:31 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 502ms :: {"ok","ping":{"sessionCode":"dwMJu-aDqsv0jw_0"}}
+6:28:32 PM [express] GET /api/player/mMWk8yN5oU/stream/window/b7c2f4860f20eca62ffb1e730d8291f8c1357b9e79840d61a281baf3d4f4a27b24e25f22d17c0944616bc35afec1847cb0fb6793ba81f8ee56f10a2c33ee3f93ea534c39a6960c1be23fa250c2adba95fd9922f12649bf6ccf4513b2fe2331e9d8ef4806994240342a653c02561d42f271b7797f19012fbf7a6d5c70c1 200 in 1...
+6:28:34 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 501ms :: {"ok","sessionState":"active","tokenExpiresIn":127}
+6:28:36 PM [express] GET /api/player/mMWk8yN5oU/stream/secret/41dd3dd5999f79af3a81802988c60e94cf7f8e304374ef0259ad06d675b4aba08818299979d5c5f0b3322ce8a92abf39038ff6c894c0ee9050c7de402bb69dc1d3d5adcd8b8bfbebeca1a724379f9bc4040d72aff3d75c251d16294869730967c42a76e545086d0912306374513df8d5 200 in 0ms
+[tick] FINAL sid=04d3b8e24e4bcc1bf36a4d06bf860512 pub=mMWk8yN5oU include=progress,heartbeat,ping
+6:28:37 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 251ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":23,"targetSegmentIndex":0},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":17811197...
+6:28:37 PM [express] GET /api/player/mMWk8yN5oU/stream/chunk/4a7782d6818ed0a3cec12969d5fcc0cd99935bdacd0adccf02362603678b670f1ac2e6fd8feabdb8e4a85573bdb6050be5b71ab3118363c5398cd5274da94e800e39c9f96fc104e852c020c177479cada7d3bb6c201c0e860c2984855b68a48e8170c178410b98c3ca0acec83623f26e3fa710eaea80e8212be44506899329c6aa3f...
+6:28:38 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58}}
+6:28:39 PM [express] GET /api/player/mMWk8yN5oU/stream/window/b7c2f4860f20eca62ffb1e730d8291f8c1357b9e79840d61a281baf3d4f4a27b24e25f22d17c0944616bc35afec1847cb0fb6793ba81f8ee56f10a2c33ee3f93ea534c39a6960c1be23fa250c2adba95fd9922f12649bf6ccf4513b2fe2331e9d8ef4806994240342a653c02561d42f271b7797f19012fbf7a6d5c70c1 200 in 3...
+6:28:42 PM [express] GET /api/player/mMWk8yN5oU/stream/window/0cdda368f80f28a5c6d927e964dcc400928fa4822555d1924b848f1219d6141a20acdf532e3a310c8628afbac9570ad2f0d51a637b544dd303927c61e53d2304a5d9401e06705417b71934d6963dc24686f36a509a004cc1b7079b899fcc74e8285485803886beb71b0599b7898aa9b7e820eadfb9c9226a806209ba43 200 in 3...
+6:28:43 PM [express] GET /api/player/mMWk8yN5oU/stream/chunk/8c11ae503a8e748b684057939abf8684b8efd819d3cbb7e0203e75df1d28638f1f01ac37271a2a5371cd1b6b64d9c0ca07693adc4d2c76a0d57dcb240399622eb611ae80ad187dc71d1bf8c73b55ab25645e2f0454d87f6a5d6fbf69331411989de935a2bae4955850ebe4a05c09c64e1aab92c3cc30b9519d02527418f6a53de230...
+6:28:44 PM [express] POST /api/stream/mMWk8yN5oU/progress 200 in 1ms :: {"ok","windowStart":0,"windowEnd":45,"targetSegmentIndex":22}
+6:28:45 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 2...
+6:28:47 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 261ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":45,"targetSegmentIndex":22},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":1781119...
+6:28:48 PM [express] GET /api/player/mMWk8yN5oU/stream/chunk/7c1c8adb77367436871de92a57e2f1d2cb09263df4e83993d215ec11dea5e9cf7c7c4531d8dcab9851e6d4524a42e72fa3f04b5a0e684d3e2b4c3e3a01431a57aaa4fbbe489c1c74dd3c4ab8f84545a4d185b5dea85c144cba352ad6e4363b588b35c2ff21ca866066984cfab2a8d30d6ca444e8261b14bb27a8078784f92e0719af...
+6:28:51 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":45,"targetSegmentIndex":22},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":178111973...
+6:28:53 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 3...
+6:28:54 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 261ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":178111...
+6:28:55 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 521ms :: {"ok","sessionState":"active","tokenExpiresIn":269}
+6:28:57 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 4...
+6:28:58 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 0ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58}}
+6:29:01 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 3...
+6:29:01 PM [express] GET /api/player/mMWk8yN5oU/stream/window/0cdda368f80f28a5c6d927e964dcc400928fa4822555d1924b848f1219d6141a20acdf532e3a310c8628afbac9570ad2f0d51a637b544dd303927c61e53d2304a5d9401e06705417b71934d6963dc24686f36a509a004cc1b7079b899fcc74e8285485803886beb71b0599b7898aa9b7e820eadfb9c9226a806209ba43 200 in 3...
+6:29:01 PM [express] GET /api/player/mMWk8yN5oU/stream/window/b7c2f4860f20eca62ffb1e730d8291f8c1357b9e79840d61a281baf3d4f4a27b24e25f22d17c0944616bc35afec1847cb0fb6793ba81f8ee56f10a2c33ee3f93ea534c39a6960c1be23fa250c2adba95fd9922f12649bf6ccf4513b2fe2331e9d8ef4806994240342a653c02561d42f271b7797f19012fbf7a6d5c70c1 200 in 3...
+6:29:02 PM [express] GET /api/player/mMWk8yN5oU/stream/window/b7c2f4860f20eca62ffb1e730d8291f8c1357b9e79840d61a281baf3d4f4a27b24e25f22d17c0944616bc35afec1847cb0fb6793ba81f8ee56f10a2c33ee3f93ea534c39a6960c1be23fa250c2adba95fd9922f12649bf6ccf4513b2fe2331e9d8ef4806994240342a653c02561d42f271b7797f19012fbf7a6d5c70c1 200 in 4...
+6:29:02 PM [express] GET /api/player/mMWk8yN5oU/stream/secret/0b72fd531fc594b1dd64c0c14fb66faabcf46582428b9ef305be5190e7dfc147f389ee5f54f15792aee8f4013113ef4c0ae91d7ef933a3bbae2c9e5edbde37fef721e05f7cc617309aea8f286f45505db760b5224e94dbe4e8d9856b2806c2d92876cba69b0a0fada5b9fcd56bb899e0 200 in 1ms
+6:29:02 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 2...
+6:29:03 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 251ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":47,"targetSegmentIndex":24},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":1781119...
+6:29:04 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 520ms :: {"ok","sessionState":"active","tokenExpiresIn":97}
+6:29:05 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 3...
+6:29:12 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 251ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":47,"targetSegmentIndex":24},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":1781119...
+6:29:13 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 3...
+6:29:17 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 4...
+6:29:18 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":17811197...
+6:29:21 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 4...
+6:29:25 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 251ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":49,"targetSegmentIndex":26},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":1781119...
+6:29:25 PM [express] GET /api/player/mMWk8yN5oU/stream/window/947cd28e9a1397b4fffaacac7cac4b6fb5ffceffd3956c4718d2b1069a21818a8cb2c57159f22a584eccaa7d67426e737995f16d6d8a94005250dfba15b4b87c846f94c50c1ca656f9f46026bf3551a00699c38433e3c3b3efbf6419d573b413088a9899fab1af5fa3de7aa1621c4049c499162ad6b35ae2abeef583ee 200 in 4...
+6:29:34 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 520ms :: {"ok","sessionState":"active","tokenExpiresIn":67}
+6:29:38 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 261ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"ping":{"ok"}}
+[integrations] INTEGRATION_REFRESH_EXTEND: client=syanrx-lms user=61b31687-d0d0-42ca-9803-57bbe70a1449 session=d122ab4c-92f3-4d4f-8633-be078e3dcc9d tokenId=593e4863-34f5-4e72-9fdd-eabbd94c7f8c
+[integrations] INTEGRATION_REFRESH_EXTEND: client=syanrx-lms user=64665354-85a2-4a38-a0f6-6ab9f95f0e0a session=b71cf76a-3925-4b63-96ad-f8c935d1febf tokenId=3ea31999-eb1c-4127-ba42-b21bc438979b
+6:29:42 PM [express] POST /api/integrations/player/mMWk8yN5oU/refresh 200 in 1562ms :: {"ok","embedToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo2MWIzMTY4Ny1kMGQwLTQyY2EtOTgw...
+6:29:43 PM [express] POST /api/integrations/player/mMWk8yN5oU/refresh 200 in 1483ms :: {"ok","embedToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo2NDY2NTM1NC04NWEyLTRhMzgtYTBm...
+6:29:58 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":58},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":17811197...
+6:30:04 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 496ms :: {"ok","sessionState":"active","tokenExpiresIn":279}
+6:30:18 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":59}}
+6:30:34 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 501ms :: {"ok","sessionState":"active","tokenExpiresIn":249}
+6:30:38 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 248ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":59},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":178111...
+6:30:58 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 0ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":59}}
+6:31:04 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 495ms :: {"ok","sessionState":"active","tokenExpiresIn":219}
+6:31:18 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 0ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":61},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":17811198...
+6:31:34 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 496ms :: {"ok","sessionState":"active","tokenExpiresIn":189}
+6:31:38 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 249ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":64},"ping":{"ok"}}
+6:31:58 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 1ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":66},"heartbeat":{"ok","rotationIntervalMs":180000,"intervalSec":30,"heartbeatIntervalSec":30,"overlapGraceSec":30,"renewalGraceSec":30,"sessionExpiresAt":17811199...
+6:32:04 PM [express] POST /api/integrations/player/mMWk8yN5oU/ping 200 in 496ms :: {"ok","sessionState":"active","tokenExpiresIn":159}
+6:32:18 PM [express] POST /api/player/mMWk8yN5oU/tick 200 in 0ms :: {"ok","progress":{"ok","windowStart":0,"windowEnd":288,"targetSegmentIndex":69}}
+
+
+Close

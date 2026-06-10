@@ -1,0 +1,74 @@
+Fix secure video buffering caused by multiple active player/session conflicts.
+
+Latest logs prove:
+1. Video runs until targetSegmentIndex=57, then freezes.
+2. Session rotation happens:
+   SESSION_ROTATED oldSid=cb643... newSid=b484...
+3. After rotation, progress conflicts:
+   targetSegmentIndex=58
+   then targetSegmentIndex=232
+   then targetSegmentIndex=58
+4. LMS then creates new embed:
+   SIMPLE_EMBED resume=start
+   new manifest sid=04d3...
+5. After new embed, old and new players both keep sending progress:
+   targetSegmentIndex=0
+   targetSegmentIndex=58
+   targetSegmentIndex=22
+   targetSegmentIndex=58
+   targetSegmentIndex=24
+   targetSegmentIndex=58
+   targetSegmentIndex=26
+   targetSegmentIndex=58
+
+This means multiple active iframe/player instances and old intervals are fighting.
+
+Required fixes:
+
+1. Enforce one active player per video in LMS:
+- Before creating a new embed/iframe, fully destroy the old player.
+- Remove old iframe from DOM.
+- Destroy old HLS instance.
+- Clear old timers: tick, progress, ping, refresh, heartbeat, stall detector.
+- Abort old fetch controllers.
+
+2. Do not call /api/integrations/embed-url again while the same video is already mounted and active.
+- Add frontend guard: embedRequestInFlight.
+- Add activeVideoId + activePlayerInstanceId check.
+- Related videos and Continue Learning cards must not initialize secure player until clicked.
+
+3. Add playerInstanceId:
+- Generate playerInstanceId on every player mount.
+- Send playerInstanceId with tick, progress, ping, refresh, rotate-session.
+- Backend should accept updates only from latest active playerInstanceId for same user + video + integrationSession.
+- Ignore stale playerInstanceId updates and log STALE_PLAYER_UPDATE_BLOCKED.
+
+4. Fix session rotation:
+- When rotate-session returns newSid, frontend must immediately replace all HLS/tick/progress state with newSid.
+- Stop oldSid updates.
+- Old sid must not keep sending tick/progress after rotation.
+
+5. Fix progress jump guard:
+- During active playback, do not accept jump 58 → 232 → 58 unless isUserSeek=true.
+- If no user seek, ignore stale resume/localStorage/sessionStorage progress.
+- After playback starts, only video.currentTime from active player controls progress.
+
+6. Fix new embed resume=start conflict:
+- Do not create new SIMPLE_EMBED with resume=start while old player is active.
+- If user reloads or changes video, old player must be fully destroyed first.
+- New embed should start only after old player cleanup completes.
+
+7. Add backend single-session lock:
+- For same integrationClient + user + video, mark only one active playback session as current.
+- When a new session becomes active, old sessions become stale.
+- Stale sessions cannot update progress/window.
+
+Expected result:
+- No more progress conflict 58 ↔ 22 ↔ 58.
+- No new SIMPLE_EMBED while old player is active.
+- Only one sid/playerInstanceId can update progress.
+- Video should continue smoothly after recovery.
+- No UI change.
+- Do not disable security.
+- Do not change Bunny/HLS storage.
+Only fix player lifecycle, duplicate embed creation, stale intervals, playerInstanceId validation, and session rotation cleanup.
