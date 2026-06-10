@@ -1699,10 +1699,13 @@ export function verifyHeartbeat(sid: string, input: HeartbeatInput): { ok: boole
     const cappedSeg = Math.min(requestedSeg, s.currentSegmentIndex + maxSegAdvance);
     advanceCappedSegIdx = Math.max(0, cappedSeg);
     s.currentSegmentIndex = Math.max(s.currentSegmentIndex, advanceCappedSegIdx);
-    // Allow backward seek (user scrubbing) — but reset window start
-    if (requestedSeg < s.currentSegmentIndex - 10) {
-      s.currentSegmentIndex = Math.max(0, requestedSeg);
-    }
+    // NOTE: we intentionally do NOT reset currentSegmentIndex downward here.
+    // Backward seeks are handled exclusively via updateProgress(seekTo=true) which
+    // is called by the client's explicit seekProgressWithTimeout POST. If the heartbeat
+    // receives a low currentTime (e.g. player is at 165s after a seekTo:true advanced
+    // the server to segment 995), the Math.max above silently ignores the lower value.
+    // Resetting here would undo the seekTo progress and collapse the window, causing
+    // the player to stall because the window no longer covers the seeked position.
     s.windowLastAdvancedAt = now;
   }
 

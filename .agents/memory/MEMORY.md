@@ -1,2 +1,2 @@
 - [Embed token TTL vs session lifetime](embed-token-refresh.md) — short embed JWT (~300s) vs ~1h session causes "Access Link Expired"; refresh must tolerate expired-but-signed tokens.
-- [Integration token accumulation bug](integration-token-accumulation.md) — /refresh and SIMPLE_EMBED_RENEW each minted a NEW token; accumulation → concurrent-session limit → revokeUserTokensExcept() → player token killed.
+- [Integration token namespaces + heartbeat window bug](integration-token-accumulation.md) — `integration:` and `auto:` tokens must never cross-revoke/cross-count; heartbeat backward-seek reset was collapsing HLS window and freezing playback.
