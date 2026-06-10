@@ -3,3 +3,4 @@
 - [Integration token namespaces + heartbeat window bug](integration-token-accumulation.md) — `integration:` and `auto:` tokens must never cross-revoke/cross-count; heartbeat backward-seek reset was collapsing HLS window and freezing playback.
 - [HLS startup resume-seek clobber](hls-resume-seek-clobber.md) — HLS.js snaps currentTime→0 mid-resume; onNativeSeeking posts authoritative seekTo:0, resetting server window → restart. Fix client-side, not server.
 - [_runProgressLogic authoritative index](progress-logic-authoritative-idx.md) — `targetSegmentIndex` in progress responses must be `session.currentSegmentIndex` (post-guard), not echoed input; matters for integration resume-position sync at /tick line ~3425.
+- [HLS stall detector](hls-stall-detector.md) — embed-player stall detector: 3s poll, 9s threshold → L1 recoverMediaError, L2 nudge, L3 rotate-session; `tryRotationRecovery` is scoped inside ERROR handler so L3 uses inline rotate-session fetch.

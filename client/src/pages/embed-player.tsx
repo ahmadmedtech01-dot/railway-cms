@@ -222,6 +222,13 @@ export default function EmbedPlayerPage(props: any = {}) {
   // savedTime captured during the previous rotation's MSE re-attach.
   const lastRotationAtRef = useRef<number>(0);
   const ROTATION_COOLDOWN_MS = 60_000;
+  // ── STALL DETECTOR STATE ────────────────────────────────────────────
+  const stallDetectorIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stallRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stallLastTimeRef = useRef<number>(-1);
+  const stallTicksRef = useRef<number>(0);
+  const stallRecoveryLevelRef = useRef<number>(0); // 0=none 1=did-recoverMedia 2=did-nudge
+  const isStallRecoveringRef = useRef<boolean>(false);
   // Last known good playback position, sampled continuously during healthy
   // playback. Used as savedTime when capturing currentTime at the moment
   // of a fatal error would return 0 (because hls.js or MSE has already
@@ -1659,6 +1666,237 @@ export default function EmbedPlayerPage(props: any = {}) {
                 setErrorMsg("Stream error");
             }
           });
+
+          // ── STALL DETECTOR + RECOVERY LADDER ──────────────────────────
+          // Polls currentTime every 3 s while video.paused=false.
+          // 3 consecutive no-progress ticks (~9 s) → trigger the ladder:
+          //
+          //   L1 (~9 s stall)  : recoverMediaError + startLoad(ct) + play
+          //   L2 (+5 s stuck)  : nudge ct+0.2, startLoad, play
+          //   L3 (+5 s stuck)  : POST rotate-session → fresh manifest → seek+play
+          //
+          // Intentionally separate from the ERROR handler — this catches
+          // *silent* stalls where HLS.js never emits a fatal error (the most
+          // common case when ping/tick/chunks are all 200 but video freezes).
+          // Skipped during rotation, seeking, deliberate pause, or initial load.
+          const STALL_POLL_MS = 3000;
+          const STALL_TICKS = 3; // 3 × 3 s ≈ 9 s before L1
+
+          stallLastTimeRef.current = -1;
+          stallTicksRef.current = 0;
+          stallRecoveryLevelRef.current = 0;
+          isStallRecoveringRef.current = false;
+
+          const clearStallRecoveryTimer = () => {
+            if (stallRecoveryTimerRef.current) {
+              clearTimeout(stallRecoveryTimerRef.current);
+              stallRecoveryTimerRef.current = null;
+            }
+          };
+
+          const runStallRecovery = (ct: number) => {
+            const vid = videoRef.current;
+            const h = hlsRef.current;
+            if (!vid || !h || isRotatingRef.current) return;
+
+            // ── Level 1: recoverMediaError + startLoad ──────────────────
+            stallRecoveryLevelRef.current = 1;
+            isStallRecoveringRef.current = true;
+            console.info("[HLS] HLS_SOFT_RECOVERY_START", { currentTime: ct });
+            try { h.recoverMediaError(); } catch {}
+            try { h.startLoad(ct); } catch {}
+            vid.play().catch(() => {});
+
+            clearStallRecoveryTimer();
+            stallRecoveryTimerRef.current = setTimeout(() => {
+              stallRecoveryTimerRef.current = null;
+              if (!isStallRecoveringRef.current) return; // already cleared by playing event
+              const v2 = videoRef.current;
+              const h2 = hlsRef.current;
+              if (!v2 || !h2 || isRotatingRef.current) {
+                isStallRecoveringRef.current = false;
+                return;
+              }
+
+              // ── Level 2: nudge +0.2 ──────────────────────────────────
+              stallRecoveryLevelRef.current = 2;
+              const t2 = v2.currentTime;
+              console.info("[HLS] HLS_BUFFER_NUDGE", { currentTime: t2 });
+              try { v2.currentTime = t2 + 0.2; } catch {}
+              try { h2.startLoad(); } catch {}
+              v2.play().catch(() => {});
+
+              clearStallRecoveryTimer();
+              stallRecoveryTimerRef.current = setTimeout(() => {
+                stallRecoveryTimerRef.current = null;
+                if (!isStallRecoveringRef.current) return;
+                const v3 = videoRef.current;
+                const h3 = hlsRef.current;
+                if (!v3 || !h3 || isRotatingRef.current) {
+                  isStallRecoveringRef.current = false;
+                  stallRecoveryLevelRef.current = 0;
+                  return;
+                }
+
+                // ── Level 3: rotate-session → fresh manifest ────────────
+                const t3 = v3.currentTime;
+                const sid3 = streamSidRef.current;
+                if (!sid3 || !publicId) {
+                  console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "no-sid" });
+                  isStallRecoveringRef.current = false;
+                  stallRecoveryLevelRef.current = 0;
+                  return;
+                }
+                console.info("[HLS] HLS_FULL_RELOAD_START", { currentTime: t3 });
+                fetch(`/api/player/${publicId}/rotate-session`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ sid: sid3, currentTime: t3 }),
+                }).then(async r => {
+                  if (!r.ok) {
+                    console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, status: r.status });
+                    isStallRecoveringRef.current = false;
+                    stallRecoveryLevelRef.current = 0;
+                    return;
+                  }
+                  const rd = await r.json();
+                  if (!rd.manifestUrl || !rd.sessionId) {
+                    console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "bad-response" });
+                    isStallRecoveringRef.current = false;
+                    stallRecoveryLevelRef.current = 0;
+                    return;
+                  }
+                  const h4 = hlsRef.current;
+                  const v4 = videoRef.current;
+                  if (!h4 || !v4) {
+                    isStallRecoveringRef.current = false;
+                    stallRecoveryLevelRef.current = 0;
+                    return;
+                  }
+                  streamSidRef.current = rd.sessionId;
+                  isRotatingRef.current = true;
+                  lastRotationAtRef.current = Date.now();
+                  const freshUrl = (rd.stealth?.enabled && rd.stealth.streamUrl)
+                    ? rd.stealth.streamUrl
+                    : rd.manifestUrl;
+                  const resumeAt = t3 + 0.2;
+                  h4.loadSource(freshUrl);
+                  const l3Safety = setTimeout(() => {
+                    isRotatingRef.current = false;
+                    isStallRecoveringRef.current = false;
+                    stallRecoveryLevelRef.current = 0;
+                    console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "manifest-timeout" });
+                    try { h4.stopLoad(); h4.startLoad(resumeAt); } catch {}
+                    try { v4.currentTime = resumeAt; v4.play().catch(() => {}); } catch {}
+                  }, 15000);
+                  h4.once(Hls.Events.MANIFEST_PARSED, () => {
+                    clearTimeout(l3Safety);
+                    isRotatingRef.current = false;
+                    lastRotationAtRef.current = Date.now();
+                    h4.startLoad(resumeAt);
+                    h4.once(Hls.Events.FRAG_BUFFERED, () => {
+                      try { v4.currentTime = resumeAt; } catch {}
+                      v4.play().catch(() => {});
+                      isStallRecoveringRef.current = false;
+                      stallRecoveryLevelRef.current = 0;
+                      console.info("[HLS] HLS_RECOVERY_SUCCESS", { level: 3, resumeAt });
+                    });
+                  });
+                  sendProgress("rotation", resumeAt, { sid: rd.sessionId, seekTo: true });
+                }).catch(() => {
+                  console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "fetch-error" });
+                  isStallRecoveringRef.current = false;
+                  stallRecoveryLevelRef.current = 0;
+                });
+              }, 5000);
+            }, 5000);
+          };
+
+          // Clear stall state the moment healthy playback resumes
+          const onStallPlayingEvent = () => {
+            if (stallTicksRef.current > 0 || isStallRecoveringRef.current) {
+              stallTicksRef.current = 0;
+              stallLastTimeRef.current = videoRef.current?.currentTime ?? -1;
+              if (isStallRecoveringRef.current && stallRecoveryLevelRef.current > 0) {
+                console.info("[HLS] HLS_RECOVERY_SUCCESS (playing event)", { level: stallRecoveryLevelRef.current });
+                isStallRecoveringRef.current = false;
+                stallRecoveryLevelRef.current = 0;
+                clearStallRecoveryTimer();
+              }
+            }
+          };
+          video.addEventListener("playing", onStallPlayingEvent);
+
+          // Fast-track stall counter on native `stalled` event
+          const onNativeStalled = () => {
+            if (!video.paused && !video.ended && !isRotatingRef.current && !isSeekingRef.current && !isSeeking.current) {
+              stallTicksRef.current = Math.max(stallTicksRef.current, STALL_TICKS - 1);
+            }
+          };
+          video.addEventListener("stalled", onNativeStalled);
+
+          // Fast-track stall counter on non-fatal HLS buffer/fragment errors
+          // (these precede or accompany a silent stall — arming the counter
+          // means recovery kicks in ~3 s sooner than the pure polling path).
+          hls.on(Hls.Events.ERROR, (_, dStall) => {
+            if (dStall.fatal || isRotatingRef.current || isStallRecoveringRef.current) return;
+            const det = (dStall as any).details || "";
+            if (
+              det === "bufferStalledError" ||
+              det === "fragLoadError"      ||
+              det === "levelLoadError"     ||
+              det === "fragLoadTimeOut"    ||
+              det === "levelLoadTimeOut"
+            ) {
+              stallTicksRef.current = Math.max(stallTicksRef.current, STALL_TICKS - 1);
+            }
+          });
+
+          // ── 3-second poll ────────────────────────────────────────────
+          stallDetectorIntervalRef.current = setInterval(() => {
+            const vid = videoRef.current;
+            // Not playing or not yet ready — reset tracking, skip
+            if (!vid || vid.paused || vid.ended || !playerReadyRef.current) {
+              if (!isStallRecoveringRef.current) {
+                stallTicksRef.current = 0;
+                stallLastTimeRef.current = -1;
+              }
+              return;
+            }
+            // Rotation/seek in progress — don't interfere
+            if (isRotatingRef.current || isSeekingRef.current || isSeeking.current) {
+              stallTicksRef.current = 0;
+              stallLastTimeRef.current = -1;
+              return;
+            }
+            const ct = vid.currentTime;
+            if (stallLastTimeRef.current < 0) {
+              stallLastTimeRef.current = ct;
+              return;
+            }
+            const delta = ct - stallLastTimeRef.current;
+            stallLastTimeRef.current = ct;
+
+            if (delta > 0.1) {
+              // Healthy progress — reset
+              stallTicksRef.current = 0;
+              if (isStallRecoveringRef.current) {
+                console.info("[HLS] HLS_RECOVERY_SUCCESS (progress confirmed)", { level: stallRecoveryLevelRef.current });
+                isStallRecoveringRef.current = false;
+                stallRecoveryLevelRef.current = 0;
+                clearStallRecoveryTimer();
+              }
+              return;
+            }
+            if (isStallRecoveringRef.current) return; // ladder already running
+            stallTicksRef.current += 1;
+            if (stallTicksRef.current >= STALL_TICKS) {
+              stallTicksRef.current = 0;
+              console.info("[HLS] HLS_STALL_DETECTED", { currentTime: ct, ticks: STALL_TICKS });
+              runStallRecovery(ct);
+            }
+          }, STALL_POLL_MS);
+
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
           video.src = manifestUrl;
           video.addEventListener("play", () => postToParent({ type: "PLAY", time: video.currentTime }));
@@ -1689,6 +1927,8 @@ export default function EmbedPlayerPage(props: any = {}) {
       if (popIntervalRef.current) clearInterval(popIntervalRef.current);
       if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
       if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
+      if (stallDetectorIntervalRef.current) clearInterval(stallDetectorIntervalRef.current);
+      if (stallRecoveryTimerRef.current) clearTimeout(stallRecoveryTimerRef.current);
     };
   }, [publicId, token, retryKey]);
 
