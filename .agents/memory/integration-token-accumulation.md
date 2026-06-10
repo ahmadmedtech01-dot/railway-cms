@@ -15,6 +15,9 @@ There are TWO token namespaces for integration users sharing the same `userId`:
 **Fixes applied:**
 - `server/integrations/routes.ts` `/refresh` and SIMPLE_EMBED_RENEW: filter `getActiveUserTokens` to `integration:` labels only. Never revoke extras — extend only.
 - `server/routes.ts` `/api/player/mint` concurrent check: only count `auto:` tokens (`!label.startsWith("integration:")`).
+- `server/storage.ts` `revokeUserTokensExcept`: this filtered by `videoId`+`userId` ONLY (ignored label) — so the "End other sessions & continue" endpoint cross-revoked live `integration:` tokens. Now classifies each token's namespace (label prefix, falling back to `userId` prefix for label-less/jwt-only rows) and revokes only tokens in the SAME namespace as the kept token.
+
+**How to apply (the general invariant):** EVERY token-revocation or concurrent-count path must scope to one namespace. Label is the primary signal; `userId.startsWith("integration:")` is the fallback when a row has no/malformed label. A new revoke path that filters by `userId` alone WILL silently kill the other system's session.
 
 ---
 

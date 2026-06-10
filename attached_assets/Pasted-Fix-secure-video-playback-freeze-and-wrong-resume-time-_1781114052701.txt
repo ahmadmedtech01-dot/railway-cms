@@ -1,0 +1,57 @@
+Fix secure video playback freeze and wrong resume time.
+
+Current status:
+Token/session is working now. Logs show /tick 200, /ping 200, /stream/window 200, /stream/chunk 200.
+
+New issue:
+Video auto-starts from around 2:45 and then freezes after almost 10 minutes. Refreshing LMS does not fix it.
+
+Logs show:
+windowStart: 0
+windowEnd: 155
+targetSegmentIndex: 50
+
+This means player starts from segment 50 and keeps using the same stream window 0–155. When playback reaches near windowEnd, the player does not renew/rotate the stream window, so it gets stuck.
+
+Required fixes:
+
+1. Fix wrong auto-start time:
+- Check iframe `?t=`, LMS saved progress, localStorage/sessionStorage, backend progress.
+- Start from saved progress only if it is valid for same user + same video.
+- If invalid/missing/stale, start from 0.
+- Add log: INITIAL_PLAYBACK_TIME source=... seconds=...
+
+2. Fix stream window renewal:
+- Do not reuse same `/stream/window/:token` forever.
+- When currentSegmentIndex >= windowEnd - 20, request fresh window/manifest.
+- Update HLS playlist URL with new window token without resetting playback.
+
+3. Fix progress calculation:
+- Frontend must send real video.currentTime on every tick.
+- Backend must recalculate targetSegmentIndex from currentTime.
+- targetSegmentIndex should increase during playback, not stay stuck at 50.
+
+4. Fix cache:
+- Add cache-busting query to manifest/window URLs.
+- Return no-cache headers for dynamic stream window responses.
+
+5. Fix stall recovery:
+- On video waiting/stalled or HLS frag/level load error:
+  ping session → renew stream window → reload manifest/window → seek to currentTime → resume.
+- Show error only after recovery fails twice.
+
+6. On LMS refresh:
+- Always request fresh embed token and fresh stream window.
+- Do not reuse old stream window token or old manifest URL.
+- Only reuse valid saved progress time.
+
+Expected result:
+- Video starts from 0 unless valid saved progress exists.
+- Stream window rotates before reaching windowEnd.
+- Video does not freeze after 8–10 minutes.
+- Refreshing LMS gets fresh token/window and plays normally.
+
+Do not change UI.
+Do not change Bunny/HLS storage.
+Do not disable security.
+Only fix playback start time, progress, stream window renewal, cache, and stall recovery.

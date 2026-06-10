@@ -186,10 +186,25 @@ export const storage = {
 
   async revokeUserTokensExcept(videoId: string, userId: string, exceptTokenValue: string): Promise<void> {
     const tokens = await this.getActiveUserTokens(videoId, userId);
+    // NAMESPACE GUARD ───────────────────────────────────────────────────────
+    // Integration-managed tokens (LMS SDK / embed-url API, label "integration:")
+    // and regular player-mint tokens (label "auto:") can share the SAME userId
+    // when an LMS uses postMessage auth alongside its server-side API calls.
+    // "End other sessions" must only revoke tokens in the SAME namespace as the
+    // session being kept — otherwise it silently kills the other system's live
+    // token and the player surfaces "Access Link Expired" mid-playback.
+    // Classify a token's namespace by its DB label; fall back to the userId
+    // prefix when the label is missing/malformed (legacy or jwt-only rows) so a
+    // label-less integration token is never misclassified as a regular session
+    // and wrongly left alive (or wrongly killed).
+    const isIntegrationNs = (label: string | null | undefined): boolean =>
+      label?.startsWith("integration:") ?? userId.startsWith("integration:");
+    const keptToken = tokens.find(t => t.token === exceptTokenValue);
+    const keepIsIntegration = isIntegrationNs((keptToken as any)?.label);
     for (const t of tokens) {
-      if (t.token !== exceptTokenValue) {
-        await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
-      }
+      if (t.token === exceptTokenValue) continue;
+      if (isIntegrationNs((t as any).label) !== keepIsIntegration) continue; // preserve other namespace
+      await db.update(embedTokens).set({ revoked: true }).where(eq(embedTokens.id, t.id));
     }
   },
 
