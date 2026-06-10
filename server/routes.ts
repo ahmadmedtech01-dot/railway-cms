@@ -3247,7 +3247,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       updateProgress(sid, idx, seekTo === true);
     }
     const { start, end } = getWindowRange(sid);
-    return { ok: true, windowStart: start, windowEnd: end, ...(idx >= 0 ? { targetSegmentIndex: idx } : {}) };
+    // Return the server's authoritative currentSegmentIndex (post-forward-only-guard)
+    // rather than echoing the raw input idx. The `session` object is the same
+    // in-memory reference that `updateProgress` mutates, so reading it here is
+    // always the post-update value without an extra Map lookup. This matters for
+    // the integration resume-position sync at the /tick caller (routes.ts:~3427),
+    // which uses Math.max + SQL GREATEST to keep the durable session position
+    // monotonically increasing — a stale echo would cause spurious backward writes.
+    const authoritativeIdx = idx >= 0 ? session.currentSegmentIndex : idx;
+    return { ok: true, windowStart: start, windowEnd: end, ...(idx >= 0 ? { targetSegmentIndex: authoritativeIdx } : {}) };
   }
 
   async function _runHeartbeatLogic(
