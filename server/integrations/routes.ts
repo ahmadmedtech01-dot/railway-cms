@@ -303,23 +303,23 @@ export function registerIntegrationRoutes(app: Express) {
       // same userId. Once count >= concurrentSessionLimit, the next mint attempt
       // gets a 429 SESSION_LIMIT, which can trigger revokeUserTokensExcept() and
       // kill the token the embed player is still holding — causing "Access Link Expired".
-      const existingTokens = await storage.getActiveUserTokens(video.id, userId);
+      const allActiveTokens = await storage.getActiveUserTokens(video.id, userId);
+      // Only consider integration-managed tokens (never revoke regular player-mint
+      // tokens — those belong to the embed player's own session and live in a
+      // separate namespace). Regular tokens have labels starting with "auto:".
+      const integrationTokens = allActiveTokens.filter(t =>
+        (t as any).label?.startsWith("integration:")
+      );
       // Prefer a token bound to this specific integration session
-      const sessionToken = existingTokens.find(t =>
+      const sessionToken = integrationTokens.find(t =>
         (t as any).label?.includes(`:isid:${session.id}`)
-      ) ?? existingTokens[0] ?? null;
+      ) ?? integrationTokens[0] ?? null;
 
       let finalTokenValue: string;
       if (sessionToken) {
         await storage.extendEmbedTokenExpiry(sessionToken.token, expiresAt);
         finalTokenValue = sessionToken.token;
-        // Revoke any other accumulated tokens for this user so the count stays at 1
-        for (const t of existingTokens) {
-          if (t.id !== sessionToken.id) {
-            await storage.revokeToken(t.id).catch(() => {});
-          }
-        }
-        log(`INTEGRATION_REFRESH_EXTEND: client=${clientSlug} user=${session.lmsUserId} session=${session.id} tokenId=${sessionToken.id} extraRevoked=${existingTokens.length - 1}`);
+        log(`INTEGRATION_REFRESH_EXTEND: client=${clientSlug} user=${session.lmsUserId} session=${session.id} tokenId=${sessionToken.id}`);
       } else {
         // No existing token found — mint a fresh one as fallback
         finalTokenValue = generateToken(
@@ -617,22 +617,21 @@ export function registerIntegrationRoutes(app: Express) {
         });
         integrationSession = { ...activeSession, startedAt: new Date() };
 
-        // Try to extend the existing token rather than minting a new JWT
-        const existingTokens = await storage.getActiveUserTokens(video.id, userId);
-        const sessionToken = existingTokens.find(t =>
+        // Try to extend the existing integration token rather than minting a new JWT.
+        // Only look at integration-managed tokens — never touch regular player-mint
+        // tokens (label "auto:...") which belong to the embed player's own session.
+        const allActiveTokens = await storage.getActiveUserTokens(video.id, userId);
+        const integrationTokens = allActiveTokens.filter(t =>
+          (t as any).label?.startsWith("integration:")
+        );
+        const sessionToken = integrationTokens.find(t =>
           (t as any).label?.includes(`:isid:${activeSession.id}`)
-        ) ?? existingTokens[0] ?? null;
+        ) ?? integrationTokens[0] ?? null;
 
         if (sessionToken) {
           await storage.extendEmbedTokenExpiry(sessionToken.token, expiresAt);
           tokenValue = sessionToken.token;
-          // Revoke any extra accumulated tokens so the per-user count stays at 1
-          for (const t of existingTokens) {
-            if (t.id !== sessionToken.id) {
-              await storage.revokeToken(t.id).catch(() => {});
-            }
-          }
-          log(`SIMPLE_EMBED_RENEW: client=${client.slug} user=${studentId} video=${videoId} session=${activeSession.id} pos=${activeSession.maxPositionSeconds}s tokenExtended=true extraRevoked=${existingTokens.length - 1}`);
+          log(`SIMPLE_EMBED_RENEW: client=${client.slug} user=${studentId} video=${videoId} session=${activeSession.id} pos=${activeSession.maxPositionSeconds}s tokenExtended=true`);
         } else {
           // No existing token found — mint a fresh JWT as fallback
           tokenValue = generateToken({

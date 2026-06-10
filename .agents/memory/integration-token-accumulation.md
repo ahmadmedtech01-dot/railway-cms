@@ -1,15 +1,31 @@
 ---
 name: Integration token accumulation bug
-description: /refresh and SIMPLE_EMBED_RENEW minted new embed tokens instead of extending existing ones, causing concurrent-session limit collisions that killed the embed player's token.
+description: Two token namespaces (integration: vs auto:) for the same userId must be kept completely separate — cross-namespace revocation and concurrent-limit counting were the root cause of "Access Link Expired".
 ---
 
 ## The Rule
-Integration `/refresh` and SIMPLE_EMBED_RENEW must **extend the existing embed token's DB expiry** (`extendEmbedTokenExpiry`) instead of minting a new JWT. Never accumulate tokens for the same userId.
+There are TWO token namespaces for integration users sharing the same `userId`:
+- **`integration:*`** — created by `/api/integrations/player/mint`, `/refresh`, SIMPLE_EMBED_RENEW. Managed by the LMS SDK server-side.
+- **`auto:*`** — created by `/api/player/:publicId/mint` (embed player postMessage flow). Managed by the embed player iframe.
 
-**Why:** Each call to `/refresh` or `/api/integrations/embed-url` (for a renew) previously inserted a new `embed_tokens` row for the same `userId`. After 2-3 cycles: 3+ active tokens for one user. `getActiveUserTokens()` returns all of them → concurrent session limit (1) exceeded → next `/mint` gets 429 SESSION_LIMIT → user/system clicks "End Other Session" → `revokeUserTokensExcept()` → revokes the token the embed player is actively holding → manifest 401 "Token revoked" → "Access Link Expired" during active playback.
+**Never revoke one namespace from code operating in the other.** Never count one namespace's tokens against the other's concurrent session limit.
 
-**How to apply:**
-- In `/refresh`: call `storage.getActiveUserTokens(videoId, userId)`, find the token whose label contains `:isid:${session.id}` (or fall back to `existingTokens[0]`), call `storage.extendEmbedTokenExpiry(token.value, newExpiresAt)`, revoke extras, return the SAME token value.
-- In SIMPLE_EMBED_RENEW (activeSession branch of `/api/integrations/embed-url`): same pattern — look up, extend, revoke extras. If no existing token found, mint new as fallback.
-- Manifest endpoint checks `dbToken.expiresAt` from DB (NOT the JWT `exp` claim) when the token exists in DB, so extending the DB row is sufficient — the JWT itself doesn't need to be reissued.
-- Initial HMAC mint (`/api/integrations/player/:publicId/mint`) is fine — each call creates a new integration session (unique jti), so 1 token per session.
+**Why:** LMS often uses a hybrid: postMessage auth for the iframe (→ regular `auto:` mint) + server-side integration API calls (→ `integration:` tokens). Both sets share the same `userId = integration:slug:studentId`. If the integration refresh cleanup revokes "extra" tokens by userId, it kills the `auto:` token the embed player is actively holding → manifest 401 → "Access Link Expired".
+
+## What was fixed
+
+1. **`server/integrations/routes.ts` → `/refresh` and SIMPLE_EMBED_RENEW:**
+   - Filter `getActiveUserTokens` to `integration:` labels only before extending/selecting.
+   - **Do NOT revoke any extras.** Old tokens expire naturally (EMBED_TOKEN_TTL = 300s).
+   - Extend the best matching token (`:isid:${sessionId}` label match preferred) instead of minting a new JWT.
+
+2. **`server/routes.ts` → `/api/player/mint` concurrent check:**
+   - `regularActiveTokens = activeTokens.filter(t => !t.label?.startsWith("integration:"))`
+   - Only count `auto:` tokens toward the SESSION_LIMIT. Integration tokens are invisible to the regular mint limit.
+
+## How to apply
+- Whenever writing token cleanup/counting code: always check the label prefix.
+- Tokens labeled `integration:*` are owned by the integration system.
+- Tokens labeled `auto:*` are owned by the embed player.
+- The manifest endpoint accepts either as long as the DB row is not revoked/expired — that's intentional.
+- `extendEmbedTokenExpiry(tokenValue, newDate)` updates DB `expiresAt` only; the JWT `exp` baked into the token string is not checked when the DB row exists.

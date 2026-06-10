@@ -1,0 +1,70 @@
+Request URL
+https://railway-cms-production.up.railway.app/api/player/mMWk8yN5oU/manifest?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3ZC1lZTE1MGVlZDRjZjEiLCJpbnRlZ3JhdGlvbkNsaWVudElkIjoiYmZhMGM4MjMtMWM4OS00ZGE3LTlmYTItN2M4NjJjMzRkYjFmIiwiaW50ZWdyYXRpb25TZXNzaW9uSWQiOiI3YjEyMWM5ZS03YTMwLTQ5MTYtYjNmMS0zZDE3Yzk4NzE4NzYiLCJqdGkiOiI5NzU2YTAzNy01ZTEyLTQ4ZGItOTVjZC05YTY0ZDU4NmUzNWUiLCJpYXQiOjE3ODExMDU2NjAsImV4cCI6MTc4MTEwNTk2MH0._J6PSUaigPmGU4Bts_ZbI6BqXKGVAftD8IZx64lwGGw
+Request Method
+GET
+Status Code
+401 Unauthorized
+Remote Address
+69.46.46.101:443
+Referrer Policy
+strict-origin-when-cross-origin
+access-control-allow-credentials
+true
+access-control-allow-headers
+Content-Type, Authorization, x-embed-referrer
+access-control-allow-methods
+GET, POST, PUT, DELETE, OPTIONS
+content-length
+27
+content-type
+application/json; charset=utf-8
+date
+Wed, 10 Jun 2026 15:53:19 GMT
+etag
+W/"1b-SXkGiVuBnXNjZr1Ym25h/3vKWdM"
+server
+railway-hikari
+x-hikari-trace
+sin1.tr00
+x-powered-by
+Express
+x-railway-edge
+railway/europe-west4-drams3a
+x-railway-request-id
+ufv62oa7S4ylFvPf63j4Ww
+:authority
+railway-cms-production.up.railway.app
+:method
+GET
+:path
+/api/player/mMWk8yN5oU/manifest?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3ZC1lZTE1MGVlZDRjZjEiLCJpbnRlZ3JhdGlvbkNsaWVudElkIjoiYmZhMGM4MjMtMWM4OS00ZGE3LTlmYTItN2M4NjJjMzRkYjFmIiwiaW50ZWdyYXRpb25TZXNzaW9uSWQiOiI3YjEyMWM5ZS03YTMwLTQ5MTYtYjNmMS0zZDE3Yzk4NzE4NzYiLCJqdGkiOiI5NzU2YTAzNy01ZTEyLTQ4ZGItOTVjZC05YTY0ZDU4NmUzNWUiLCJpYXQiOjE3ODExMDU2NjAsImV4cCI6MTc4MTEwNTk2MH0._J6PSUaigPmGU4Bts_ZbI6BqXKGVAftD8IZx64lwGGw
+:scheme
+https
+accept
+*/*
+accept-encoding
+gzip, deflate, br, zstd
+accept-language
+en-GB,en-US;q=0.9,en;q=0.8
+if-none-match
+W/"2c0-D3TI7F5hL2yOZenhCzX4EsT2D3Y"
+priority
+u=1, i
+referer
+https://railway-cms-production.up.railway.app/embed/mMWk8yN5oU?t=1991
+sec-ch-ua
+"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-origin
+sec-fetch-storage-access
+active
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)

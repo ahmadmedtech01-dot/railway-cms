@@ -1,0 +1,44 @@
+> rest-express@1.0.0 start
+> NODE_ENV=production node dist/index.cjs
+[db] Using Supabase database
+3:48:32 PM [migrate] applying 2 migration file(s)...
+3:48:34 PM [migrate] ✓ 0001_add_video_client_security_columns.sql (2230ms)
+3:48:34 PM [migrate] ✓ 0002_add_integration_api_key_columns.sql (245ms)
+3:48:34 PM [migrate] all migrations applied
+3:48:34 PM [express] Supabase connection pre-warmed
+3:48:34 PM [express] serving on port 8080
+[security] SIGNING_SECRET loaded: true
+[hls] using gateway: https://video.syanmedtech.com
+Stopping Container
+3:48:39 PM [express] [cleanup] Deleted 1 expired tokens older than 7 days
+npm error path /app
+npm error command failed
+npm error signal SIGTERM
+npm error command sh -c NODE_ENV=production node dist/index.cjs
+npm error A complete log of this run can be found in: /root/.npm/_logs/2026-06-09T19_25_28_550Z-debug-0.log
+[video-session] load failed sid=55463ae02ef2e42fec7cb32af36a552b: column "sid" does not exist
+3:49:21 PM [express] POST /api/player/mMWk8yN5oU/tick 403 in 258ms :: {"ok":false,"blocked":true,"code":"PLAYBACK_DENIED","reason":"SESSION_INVALID","message":"Session invalid or expired"}
+3:49:30 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:49:31 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 998ms :: {"message":"Token revoked"}
+3:49:32 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:49:32 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 490ms :: {"message":"Token was revoked — cannot refresh"}
+[integrations] INTEGRATION_REFRESH_EXTEND: client=syanrx-lms user=9c52d43c-8b5b-4abe-bd7d-ee150eed4cf1 session=7b121c9e-7a30-4916-b3f1-3d17c9871876 tokenId=ca7d4202-da21-4bc5-abb3-90f5c4d76e19 extraRevoked=2
+3:50:29 PM [express] POST /api/integrations/player/mMWk8yN5oU/refresh 200 in 2245ms :: {"ok":true,"embedToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3...
+3:52:42 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:52:43 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 1011ms :: {"message":"Token revoked"}
+3:52:43 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:52:43 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 492ms :: {"message":"Token was revoked — cannot refresh"}
+3:53:03 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:53:04 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 983ms :: {"message":"Token revoked"}
+3:53:05 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:53:05 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 494ms :: {"message":"Token was revoked — cannot refresh"}
+3:53:17 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:53:18 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 982ms :: {"message":"Token revoked"}
+3:53:19 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:53:19 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 491ms :: {"message":"Token was revoked — cannot refresh"}
+3:54:05 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+3:54:06 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 982ms :: {"message":"Token revoked"}
+3:54:07 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=26a5f402-7ea1-4a76-9544-f7d34c95bd8e
+3:54:07 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 492ms :: {"message":"Token was revoked — cannot refresh"}
+[integrations] INTEGRATION_REFRESH_EXTEND: client=syanrx-lms user=9c52d43c-8b5b-4abe-bd7d-ee150eed4cf1 session=7b121c9e-7a30-4916-b3f1-3d17c9871876 tokenId=ca7d4202-da21-4bc5-abb3-90f5c4d76e19 extraRevoked=0
+3:54:33 PM [express] POST /api/integrations/player/mMWk8yN5oU/refresh 200 in 2051ms :: {"ok":true,"embedToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViL

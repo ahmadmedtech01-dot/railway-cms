@@ -3752,14 +3752,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
-      // Concurrent session check: scoped per user PER VIDEO
+      // Concurrent session check: scoped per user PER VIDEO.
+      // Integration-managed tokens (label starts with "integration:") are handled
+      // by a separate system (LMS SDK / embed-url API) and must NOT count against
+      // the regular player-mint limit. Mixing them causes false SESSION_LIMIT 429s
+      // when the LMS is using postMessage auth alongside its server-side API calls.
       const activeTokens = await storage.getActiveUserTokens(video.id, userId);
-      if (activeTokens.length >= concurrentLimit) {
-        log(`SESSION_LIMIT_BLOCK: userId=${userId} videoId=${video.id} activeSessions=${activeTokens.length} limit=${concurrentLimit}`);
+      const regularActiveTokens = activeTokens.filter(
+        t => !(t as any).label?.startsWith("integration:")
+      );
+      if (regularActiveTokens.length >= concurrentLimit) {
+        log(`SESSION_LIMIT_BLOCK: userId=${userId} videoId=${video.id} activeSessions=${regularActiveTokens.length} limit=${concurrentLimit}`);
         return res.status(429).json({
           code: "SESSION_LIMIT",
-          message: `You already have ${activeTokens.length} active session(s) for this video. Close other tabs or end those sessions first.`,
-          activeSessions: activeTokens.map(t => ({ id: t.id, label: t.label, createdAt: t.createdAt, expiresAt: t.expiresAt })),
+          message: `You already have ${regularActiveTokens.length} active session(s) for this video. Close other tabs or end those sessions first.`,
+          activeSessions: regularActiveTokens.map(t => ({ id: t.id, label: t.label, createdAt: t.createdAt, expiresAt: t.expiresAt })),
         });
       }
 
