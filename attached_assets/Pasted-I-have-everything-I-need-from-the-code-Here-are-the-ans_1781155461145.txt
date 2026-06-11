@@ -1,0 +1,37 @@
+I have everything I need from the code. Here are the answers:
+
+Q1 — Iframe lifecycle on navigation
+
+✅ Yes on all three counts.
+
+When a student navigates away from the watch page, React unmounts the SecurePlayer component. The unmount cleanup runs first (iframeRef.current.src = "about:blank"), which immediately stops audio and kills the CMS player's network activity. React then removes the entire component subtree — including the <iframe> element — from the DOM. It is fully gone, not hidden.
+
+All other intervals and listeners are also cleaned up on unmount:
+
+The 30-second ping setInterval
+The proactive token-refresh setTimeout
+The window.postMessage listener
+The fullscreen event listeners
+On the "two iframes simultaneously" question: the client has two guards — loadInProgressRef (prevents concurrent embed-url calls) and hasLoadedRef (prevents a second call once loaded). The server adds a cache (_embedCache, keyed by userId:videoId): if the same user opens the same video twice within the token TTL, the second call returns the same integrationSessionId rather than minting a new session. Two live iframes for the same user+video is structurally prevented.
+
+Q2 — TOKEN_EXPIRED handling
+
+✅ SYAN does not reload or re-create the iframe on TOKEN_EXPIRED.
+
+The postMessage handler on the watch page is:
+
+case "TOKEN_EXPIRED": case "cms:token_expired": void refresh(); break;
+
+refresh() calls the refreshVideoToken server function, which hits your CMS /api/integrations/player/:publicId/refresh endpoint with the existing integrationSessionId. The iframe URL does not change, the iframe is not recreated, and embed-url is not called again. The player keeps playing; only the token is renewed server-side.
+
+The proactive timer also runs 60 seconds before expiry as a first line of defence. TOKEN_EXPIRED from the player is the fallback if the timer fires late.
+
+Q3 — embed-url called once per session
+
+✅ embed-url is called exactly once per page load, never again while the student is watching.
+
+load() is guarded by hasLoadedRef — once set, it never re-runs unless the user hits the explicit Retry button after a hard error.
+Concurrent calls are blocked by loadInProgressRef.
+Ongoing token renewal goes through /refresh (a separate endpoint), never through embed-url.
+The server-side _embedCache is a safety net: even if a code path somehow called getVideoEmbedUrl twice before the first response arrived, the second call would return the cached entry rather than minting a duplicate session.
+There are no retry loops, caching layers, or intervals that call embed-url again.
