@@ -1381,6 +1381,7 @@ export default function EmbedPlayerPage(props: any = {}) {
               const liveTime = videoRef.current?.currentTime || 0;
               const savedTime = liveTime > 0.25 ? liveTime : (lastHealthyTimeRef.current || 0);
               isRotatingRef.current = true;
+              lastRotationAtRef.current = Date.now();
               fetch(`/api/player/${publicId}/rotate-session`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1555,6 +1556,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                       }
                       const opId = ++rotationOpIdRef.current;
                       isRotatingRef.current = true;
+                      lastRotationAtRef.current = Date.now();
                       const nextUrl = (rd.stealth && rd.stealth.enabled && rd.stealth.streamUrl) ? rd.stealth.streamUrl : rd.manifestUrl;
                       hls.loadSource(nextUrl);
                       const vid = videoRef.current;
@@ -1755,8 +1757,23 @@ export default function EmbedPlayerPage(props: any = {}) {
                   stallRecoveryLevelRef.current = 0;
                   return;
                 }
+                // Coordinate with the other rotation paths via the shared
+                // cooldown. Without this the stall ladder re-rotates every
+                // ~24s (L1→L2→L3) regardless of how recently a rotation ran —
+                // the exact mechanism behind the infinite rotate-session loop.
+                // If we rotated recently, do a passive reload at the current
+                // position and let the already-fresh signed URLs do their job.
+                if (Date.now() - lastRotationAtRef.current <= ROTATION_COOLDOWN_MS) {
+                  console.info("[HLS] HLS_RECOVERY_COOLDOWN", { level: 3, currentTime: t3 });
+                  try { h3.stopLoad(); h3.startLoad(t3); } catch {}
+                  v3.play().catch(() => {});
+                  isStallRecoveringRef.current = false;
+                  stallRecoveryLevelRef.current = 0;
+                  return;
+                }
                 console.info("[HLS] HLS_FULL_RELOAD_START", { currentTime: t3 });
                 isRotatingRef.current = true;
+                lastRotationAtRef.current = Date.now();
                 fetch(`/api/player/${publicId}/rotate-session`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -1788,12 +1805,18 @@ export default function EmbedPlayerPage(props: any = {}) {
                   streamSidRef.current = rd.sessionId;
                   isRotatingRef.current = true;
                   lastRotationAtRef.current = Date.now();
+                  // Create the op id here (after the response, right before
+                  // loadSource) — identical to the error/refresh/pause paths.
+                  // Placing it before the fetch let a stale in-flight response
+                  // mutate state after a newer rotation, stranding isRotatingRef.
+                  const l3OpId = ++rotationOpIdRef.current;
                   const freshUrl = (rd.stealth?.enabled && rd.stealth.streamUrl)
                     ? rd.stealth.streamUrl
                     : rd.manifestUrl;
                   const resumeAt = t3 + 0.2;
                   h4.loadSource(freshUrl);
                   const l3Safety = setTimeout(() => {
+                    if (l3OpId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
                     isStallRecoveringRef.current = false;
                     stallRecoveryLevelRef.current = 0;
@@ -1803,6 +1826,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                   }, 15000);
                   h4.once(Hls.Events.MANIFEST_PARSED, () => {
                     clearTimeout(l3Safety);
+                    if (l3OpId !== rotationOpIdRef.current) return;
                     isRotatingRef.current = false;
                     lastRotationAtRef.current = Date.now();
                     h4.startLoad(resumeAt);
@@ -2424,6 +2448,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                 if (hls) {
                   const opId = ++rotationOpIdRef.current;
                   isRotatingRef.current = true;
+                  lastRotationAtRef.current = Date.now();
                   const nextUrl = (data.stealth && data.stealth.enabled && data.stealth.streamUrl) ? data.stealth.streamUrl : data.manifestUrl;
                   hls.loadSource(nextUrl);
                   const pauseSafetyTimer = setTimeout(() => {
