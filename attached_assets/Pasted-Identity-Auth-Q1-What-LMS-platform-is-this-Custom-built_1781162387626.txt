@@ -1,0 +1,49 @@
+Identity & Auth
+Q1. What LMS platform is this?
+Custom-built. TanStack Start (React SSR) + Supabase auth + Drizzle ORM on Postgres. Not Teachable, Moodle, or any third-party LMS.
+
+Q2. Who generates the launch token?
+The SYAN backend. The getVideoEmbedUrl server function calls the CMS REST API with an X-Api-Key header. The CMS then generates the session internally and returns an iframeUrl. There is no client-side HMAC generation — the LMS backend is the only party that touches the API key.
+
+Q3. What fields does the LMS include in the launch request?
+
+// opd-videos.functions.ts line 348-356
+{
+  videoId:      v.cmsPublicId,               // CMS video ID, e.g. "sm_Y6esB5v"
+  studentId:    String(userId),              // Supabase UUID, unique per user
+  courseId:     "syan-rx-opd-videos",        // HARDCODED — same for all videos
+  lessonId:     v.id,                        // App's own video UUID
+  studentName:  profile?.fullName,           // optional
+  studentEmail: profile?.email,              // optional
+  startAt:      data.startAt,               // optional — resume position in seconds
+}
+
+courseId is hardcoded — this is worth noting. If the CMS uses courseId to group concurrent session limits, all videos share one course bucket.
+
+Q4. Are student IDs stable across sessions?
+Yes, permanently stable. studentId is the Supabase auth UUID — assigned once at account registration, never changes on re-login, password reset, or profile edits. The same UUID is used forever.
+
+Session & Access Control
+Q5. Concurrent session limit — same video, two devices?
+The CMS enforces the concurrent limit (per studentId per video). The LMS side adds one additional guard: a loadInProgressRef flag prevents two simultaneous embed-url calls from the same browser tab. The LMS does not itself enforce a device count — that is entirely the CMS's responsibility.
+
+Q6. If a student's LMS session expires mid-video, what happens?
+The student can finish watching. The iframe is already loaded and playing. Token renewal is handled in two layers:
+
+Proactive: A setTimeout fires 60 seconds before the CMS token expires and calls /refresh silently
+Reactive: If the CMS player posts TOKEN_EXPIRED, refresh() is called immediately — this renews the token on the existing session without reloading the iframe
+If the Supabase JWT (LMS login session) expires, the next ping/refresh server call fails — but ping errors are silently swallowed and the refresh failure is also silent. The player keeps the iframe open until the CMS token truly dies.
+
+Q7. Can students seek backward freely?
+Yes — no restrictions on seeking exist in the LMS code. Both SEEKED and TIMEUPDATE CMS player events simply update currentTimeRef. Seek control (forward-only, locked chapters, etc.) must be configured on the CMS player settings side if needed.
+
+Progress & Completion
+Q8. Does the LMS receive a "video completed" event / webhook?
+No inbound webhook. Completion flows out from the LMS to the CMS, not the reverse. When PLAYER_COMPLETE fires:
+
+LMS sends a ping to /api/integrations/player/{id}/ping with ended: true
+LMS saves completed = true in its own video_watch_progress table
+There is no /complete endpoint — completion is a ping with ended: true. No external system receives a webhook from SYAN.
+
+Q9. Does the LMS track per-student watch progress (resume from where they left off)?
+Yes, fully. The video_watch_progress table (
