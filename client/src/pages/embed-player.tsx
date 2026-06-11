@@ -1204,6 +1204,13 @@ export default function EmbedPlayerPage(props: any = {}) {
           // wasn't initiated by our own helpers (isSeeking.current=false)
           // and reproduces the same proactive window advance.
           const onNativeSeeking = () => {
+            // Skip during session rotation — hls.loadSource() snaps
+            // currentTime→0 synchronously when the new source is loaded.
+            // Without this guard, onNativeSeeking fires with target=0 and
+            // posts seekTo:0 to the server, resetting the sliding window
+            // to segment 0 and restarting playback from the beginning
+            // even though the player is mid-rotation to resume at savedTime.
+            if (isRotatingRef.current) return;
             // Skip if EITHER of our internal seek helpers is already
             // driving this seek — they have already fired the POST and
             // raised the seek guard. Without this check, every call to
