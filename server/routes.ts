@@ -3757,13 +3757,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const secSettings = await storage.getSecuritySettings(video.id);
       const ttlMs = (secSettings?.tokenTtl || 3600) * 1000;
-      // Resolve concurrentLimit: prefer per-video security setting, then effective
-      // client security (which respects Global Security toggle), then default 5.
+      // Resolve concurrentLimit: if video uses Global Security, read from global
+      // settings JSON (where admin sets it centrally). Otherwise read per-video.
+      // Cannot use ?? here — DB column is NOT NULL so per-video is always defined.
       const videoUseGlobalMint = await secRepo.getUseGlobal(video.id);
-      const effectiveClientSecMint = videoUseGlobalMint
-        ? await secRepo.getGlobal()
-        : (await secRepo.getVideo(video.id)) ?? await secRepo.getGlobal();
-      const concurrentLimit = secSettings?.concurrentLimit ?? effectiveClientSecMint.concurrentLimit ?? 5;
+      let concurrentLimit: number;
+      if (videoUseGlobalMint) {
+        const globalSec = await secRepo.getGlobal();
+        concurrentLimit = globalSec.concurrentLimit ?? 5;
+      } else {
+        concurrentLimit = secSettings?.concurrentLimit ?? 5;
+      }
 
       // Client instance ID — stable per browser/tab, sent via x-client-instance header.
       // Allows refresh to silently replace its own token instead of triggering session limit.
