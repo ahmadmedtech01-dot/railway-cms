@@ -1,0 +1,68 @@
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/b4b9cb3c25…5bd0362…&exp=1781157120 403 (Forbidden)
+openAndSendXhr	@	index-DP5Wq8_5.js:696
+loadInternal	@	index-DP5Wq8_5.js:696
+load	@	index-DP5Wq8_5.js:696
+(anonymous)	@	index-DP5Wq8_5.js:667
+load	@	index-DP5Wq8_5.js:667
+_doFragLoad	@	index-DP5Wq8_5.js:672
+_loadFragForPlayback	@	index-DP5Wq8_5.js:672
+loadFragment	@	index-DP5Wq8_5.js:672
+loadFragment	@	index-DP5Wq8_5.js:696
+doTickIdle	@	index-DP5Wq8_5.js:696
+doTick	@	index-DP5Wq8_5.js:696
+tick	@	index-DP5Wq8_5.js:667
+setInterval		
+setInterval	@	index-DP5Wq8_5.js:667
+startLoad	@	index-DP5Wq8_5.js:696
+startLoad	@	index-DP5Wq8_5.js:696
+startLoadingPrimaryAt	@	index-DP5Wq8_5.js:685
+attachPrimary	@	index-DP5Wq8_5.js:685
+resumePrimary	@	index-DP5Wq8_5.js:685
+advanceSchedule	@	index-DP5Wq8_5.js:685
+setSchedulePosition	@	index-DP5Wq8_5.js:685
+onMediaAttached	@	index-DP5Wq8_5.js:685
+c.emit	@	index-DP5Wq8_5.js:672
+emit	@	index-DP5Wq8_5.js:696
+trigger	@	index-DP5Wq8_5.js:696
+E6._onMediaSourceOpen	@	index-DP5Wq8_5.js:681
+index-DP5Wq8_5.js:696 [HLS] HLS_BUFFER_NUDGE 
+{currentTime: 0.2}
+index-DP5Wq8_5.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+{level: 2}
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/d24a6c1f36…c2d5baf…&exp=1781157120 403 (Forbidden)
+
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/7d549ac6c1…19a458d…&exp=1781157180 403 (Forbidden)
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/30ea042035…df62abd…&exp=1781157120 403 (Forbidden)
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/2dec6ad144…ad14244…&exp=1781157240 403 (Forbidden)
+index-DP5Wq8_5.js:696 Refused to get unsafe header "X-Playback-Error"
+index-DP5Wq8_5.js:696 
+ POST https://railway-cms-production.up.railway.app/api/player/mMWk8yN5oU/tick 403 (Forbidden)
+index-DP5Wq8_5.js:696 [HLS] MANIFEST_PARSED levels= 3 
+(3) [{…}, {…}, {…}]
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/f6b5f0ab55…50f2fcb…&exp=1781157900 403 (Forbidden)
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/a35fe21e3b…3e587da…&exp=1781157900 403 (Forbidden)
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/70ad951616…e65412c…&exp=1781157900 403 (Forbidden)
+index-DP5Wq8_5.js:696 
+ GET https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/690b357df9…4efb1b1…&exp=1781157960 403 (Forbidden)
+index-DP5Wq8_5.js:696 Refused to get unsafe header "X-Playback-Error"
+index-DP5Wq8_5.js:696 
+ POST https://railway-cms-production.up.railway.app/api/player/mMWk8yN5oU/tick 403 (Forbidden)
+index-DP5Wq8_5.js:696 [HLS] MANIFEST_PARSED levels= 3 
+(3) [{…}, {…}, {…}]
+index-DP5Wq8_5.js:696 [HLS] HLS_STALL_DETECTED 
+{currentTime: 1550.722476, ticks: 3}
+index-DP5Wq8_5.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+{currentTime: 1550.722476}
+index-DP5Wq8_5.js:696 [HLS] HLS_BUFFER_NUDGE 
+{currentTime: 0}
+index-DP5Wq8_5.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+{level: 2}
+﻿

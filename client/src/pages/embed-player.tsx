@@ -1373,12 +1373,13 @@ export default function EmbedPlayerPage(props: any = {}) {
               // to lastHealthyTimeRef prevents the "restart from zero" UX bug.
               const liveTime = videoRef.current?.currentTime || 0;
               const savedTime = liveTime > 0.25 ? liveTime : (lastHealthyTimeRef.current || 0);
+              isRotatingRef.current = true;
               fetch(`/api/player/${publicId}/rotate-session`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ sid: currentSid, currentTime: savedTime }),
               }).then(async r => {
-                if (!r.ok) { triggerDenial(sig); return; }
+                if (!r.ok) { isRotatingRef.current = false; triggerDenial(sig); return; }
                 const rd = await r.json();
                 if (rd.manifestUrl && rd.sessionId) {
                   streamSidRef.current = rd.sessionId;
@@ -1748,6 +1749,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                   return;
                 }
                 console.info("[HLS] HLS_FULL_RELOAD_START", { currentTime: t3 });
+                isRotatingRef.current = true;
                 fetch(`/api/player/${publicId}/rotate-session`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -1755,6 +1757,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                 }).then(async r => {
                   if (!r.ok) {
                     console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, status: r.status });
+                    isRotatingRef.current = false;
                     isStallRecoveringRef.current = false;
                     stallRecoveryLevelRef.current = 0;
                     return;

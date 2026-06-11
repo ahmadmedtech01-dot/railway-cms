@@ -111,9 +111,9 @@ export const defaultHardening: SessionHardeningConfig = {
   // session lifetime, abuse detection, and window validation — not by token
   // TTL. 90s is well under SESSION_MAX_AGE_MS so signed URLs still rotate
   // through the natural session lifecycle.
-  tokenTtlPlaylistSec: 60,
-  tokenTtlSegmentSec: 30,
-  tokenTtlKeySec: 30,
+  tokenTtlPlaylistSec: 120,
+  tokenTtlSegmentSec: 120,
+  tokenTtlKeySec: 120,
   // Heartbeat raised 15→30s. The heartbeat is pure session-keepalive — it
   // does not refresh any URL, signed token, or playlist. Halving its rate
   // cuts control-plane RPS without affecting playback, security, or
