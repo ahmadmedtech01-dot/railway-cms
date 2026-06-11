@@ -1,0 +1,68 @@
+Request URL
+https://video.syanmedtech.com/api/player/mMWk8yN5oU/stream/chunk/ecfec195e812c187755dfcdfc7403cd4d68db4dbc86c0e334820e8c47974552850e78f0a11f5c766cf4ba5e63031769881f8190394b2a897a67d2665a6e5df4d235fb664029b8a150308f9886d4e1d7fdcfbfbb745502fcc184cf130a98777bc900ce87d24966d41ff9338b165b4f3d841ef8e4ec92013b53278abc2036cb9acecdb407bd5?st=c024d0305ec8cfbf6baa705c3f959f4b52f546bec5c1d34b89956f8c4bb2062d&exp=1781182860
+Request Method
+GET
+Status Code
+403 Forbidden
+Remote Address
+[2606:4700:3036::6815:3858]:443
+Referrer Policy
+strict-origin-when-cross-origin
+access-control-allow-headers
+Range, Content-Type
+access-control-allow-methods
+GET, HEAD, OPTIONS
+access-control-allow-origin
+*
+access-control-max-age
+86400
+alt-svc
+h3=":443"; ma=86400
+cf-ray
+a0a07563d9acf696-KHI
+content-encoding
+zstd
+content-type
+application/json
+date
+Thu, 11 Jun 2026 12:00:59 GMT
+nel
+{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+report-to
+{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=tHmdzhl9JHlf6Ue2eVH6ugyYvcRyr4WC19K%2FwIGN%2FzA426AfPLvFq93myZ90uoxmQba9rtjv7L5U3uBUCRGb%2FLoiKwibujfFBJ8Uk1hKd1ECa8d4YGHmQU3OR5ky%2FvM82gKpzTF8fioTURWFZz0tylCRS5I%3D"}]}
+server
+cloudflare
+:authority
+video.syanmedtech.com
+:method
+GET
+:path
+/api/player/mMWk8yN5oU/stream/chunk/ecfec195e812c187755dfcdfc7403cd4d68db4dbc86c0e334820e8c47974552850e78f0a11f5c766cf4ba5e63031769881f8190394b2a897a67d2665a6e5df4d235fb664029b8a150308f9886d4e1d7fdcfbfbb745502fcc184cf130a98777bc900ce87d24966d41ff9338b165b4f3d841ef8e4ec92013b53278abc2036cb9acecdb407bd5?st=c024d0305ec8cfbf6baa705c3f959f4b52f546bec5c1d34b89956f8c4bb2062d&exp=1781182860
+:scheme
+https
+accept
+*/*
+accept-encoding
+gzip, deflate, br, zstd
+accept-language
+en-GB,en-US;q=0.9,en;q=0.8
+origin
+https://railway-cms-production.up.railway.app
+priority
+u=1, i
+referer
+https://railway-cms-production.up.railway.app/
+sec-ch-ua
+"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+cross-site
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36

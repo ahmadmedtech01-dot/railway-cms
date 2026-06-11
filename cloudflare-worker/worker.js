@@ -301,9 +301,12 @@ async function proxyStealth(request, env, url, kind, publicId, opaqueId, ctx, si
       }
       // Defense-in-depth: reject absurdly-future exp values (e.g. from a
       // mis-configured origin or a tampered token). Stealth chunk URLs are
-      // minted with TTL ≤ TOKEN_TTL (~15 min) so anything more than 1h in
-      // the future is invalid by construction.
-      if (expNum - now > 3600) {
+      // minted with a TTL that is then rounded UP to the next 60s bucket
+      // boundary (bucketExp on the origin). With a 3600s TTL the rounded
+      // exp can legitimately be up to now+3659s. We therefore use 7200s
+      // (2 h) as the "absurdly future" threshold — well above any valid
+      // minted URL while still catching tampered tokens with huge expiry.
+      if (expNum - now > 7200) {
         console.log(`[gw] stealth chunk ${publicId}/${stablePrefix} exp-too-far-future (delta=${expNum - now}s)`);
         return jsonResponse(403, { code: "INVALID_TOKEN", message: "Exp out of range" });
       }
