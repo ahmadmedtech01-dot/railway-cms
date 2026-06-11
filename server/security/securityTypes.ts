@@ -37,6 +37,9 @@ export type ClientSecuritySettings = {
   maxPrebufferSec?: number;
   maxDownloadAheadSec?: number;
   windowOverlapGraceSec?: number;
+
+  // ── Session limits ─────────────────────────────────────────────────────────
+  concurrentLimit?: number;
 };
 
 const BALANCED = SECURITY_PROFILES.balanced;
@@ -67,6 +70,8 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   // downloadAheadLimit is segment-based; derived from maxDownloadAheadSec (60s @ ~2s/seg = 30).
   downloadAheadLimit: Math.ceil(BALANCED.maxDownloadAheadSec / 2),
   stealthModeEnabled: false,
+
+  concurrentLimit: 5,
 
   securityProfile: DEFAULT_SECURITY_PROFILE,
   maxPrebufferSec: BALANCED.maxPrebufferSec,

@@ -44,6 +44,8 @@ export type ClientSecuritySettings = {
   maxPrebufferSec?: number;
   maxDownloadAheadSec?: number;
   windowOverlapGraceSec?: number;
+  // Session limits
+  concurrentLimit?: number;
 };
 
 const BALANCED = SECURITY_PROFILES.balanced;
@@ -72,6 +74,7 @@ export const defaultClientSecuritySettings: ClientSecuritySettings = {
   heartbeatIntervalSec: BALANCED.heartbeatIntervalSec,
   downloadAheadLimit: Math.ceil(BALANCED.maxDownloadAheadSec / 2),
   stealthModeEnabled: false,
+  concurrentLimit: 5,
   securityProfile: DEFAULT_SECURITY_PROFILE,
   maxPrebufferSec: BALANCED.maxPrebufferSec,
   maxDownloadAheadSec: BALANCED.maxDownloadAheadSec,
@@ -292,6 +295,19 @@ export function SecuritySettingsForm({ value, onChange, disabled, onSave, showSa
           disabled={disabled}
           className="w-24 text-center"
           data-testid="input-violation-limit"
+        />
+      </SettingRow>
+
+      <SettingRow label="Concurrent Session Limit" description="Max simultaneous active sessions per student. 5 is safe for browser refreshes. Raise for shared devices.">
+        <Input
+          type="number"
+          min={1}
+          max={20}
+          value={value.concurrentLimit ?? 5}
+          onChange={e => set("concurrentLimit", parseInt(e.target.value) || 5)}
+          disabled={disabled}
+          className="w-24 text-center"
+          data-testid="input-concurrent-limit"
         />
       </SettingRow>
 

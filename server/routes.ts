@@ -3757,7 +3757,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const secSettings = await storage.getSecuritySettings(video.id);
       const ttlMs = (secSettings?.tokenTtl || 3600) * 1000;
-      const concurrentLimit = secSettings?.concurrentLimit ?? 1;
+      // Resolve concurrentLimit: prefer per-video security setting, then effective
+      // client security (which respects Global Security toggle), then default 5.
+      const videoUseGlobalMint = await secRepo.getUseGlobal(video.id);
+      const effectiveClientSecMint = videoUseGlobalMint
+        ? await secRepo.getGlobal()
+        : (await secRepo.getVideo(video.id)) ?? await secRepo.getGlobal();
+      const concurrentLimit = secSettings?.concurrentLimit ?? effectiveClientSecMint.concurrentLimit ?? 5;
 
       // Client instance ID — stable per browser/tab, sent via x-client-instance header.
       // Allows refresh to silently replace its own token instead of triggering session limit.
