@@ -1772,6 +1772,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                   const rd = await r.json();
                   if (!rd.manifestUrl || !rd.sessionId) {
                     console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "bad-response" });
+                    isRotatingRef.current = false;
                     isStallRecoveringRef.current = false;
                     stallRecoveryLevelRef.current = 0;
                     return;
@@ -1779,6 +1780,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                   const h4 = hlsRef.current;
                   const v4 = videoRef.current;
                   if (!h4 || !v4) {
+                    isRotatingRef.current = false;
                     isStallRecoveringRef.current = false;
                     stallRecoveryLevelRef.current = 0;
                     return;
@@ -1815,6 +1817,7 @@ export default function EmbedPlayerPage(props: any = {}) {
                   sendProgress("rotation", resumeAt, { sid: rd.sessionId, seekTo: true });
                 }).catch(() => {
                   console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "fetch-error" });
+                  isRotatingRef.current = false;
                   isStallRecoveringRef.current = false;
                   stallRecoveryLevelRef.current = 0;
                 });

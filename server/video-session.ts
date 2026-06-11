@@ -1800,6 +1800,16 @@ export function recordSecurityEvent(sid: string, eventType: string): { revoked: 
 export function getSessionTokenTTL(sid: string): { manifest: number; playlist: number; segment: number; key: number } {
   const s = sessions.get(sid);
   if (!s || !s.hardening.shortTokenTtlEnabled) return getTokenTTL();
+  // Short token TTLs are only safe when the playlist is RE-FETCHED: a gated
+  // EVENT playlist re-polls every ~20s and re-signs every segment/key URL, so
+  // a 120s TTL is constantly refreshed. A NON-gated VOD playlist is the
+  // opposite — hls.js fetches it ONCE (it carries #EXT-X-ENDLIST) and never
+  // re-polls, so every embedded segment/key URL keeps its original signature
+  // for the entire watch. Applying the short TTL there guarantees mid-watch
+  // 403s the moment playback passes the TTL horizon (the freeze-then-rotate
+  // loop seen on non-gated videos). Fall back to the long, session-lifetime
+  // TTLs — exactly what TOKEN_TTL (3600s == SESSION_MAX_AGE_MS) was sized for.
+  if (!s.hardening.serverGatedWindowEnabled) return getTokenTTL();
   return {
     manifest: s.hardening.tokenTtlPlaylistSec,
     playlist: s.hardening.tokenTtlPlaylistSec,

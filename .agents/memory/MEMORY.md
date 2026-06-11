@@ -5,3 +5,4 @@
 - [_runProgressLogic authoritative index](progress-logic-authoritative-idx.md) — `targetSegmentIndex` in progress responses must be `session.currentSegmentIndex` (post-guard), not echoed input; matters for integration resume-position sync at /tick line ~3425.
 - [HLS stall detector](hls-stall-detector.md) — embed-player stall detector: 3s poll, 9s threshold → L1 recoverMediaError, L2 nudge, L3 rotate-session; `tryRotationRecovery` is scoped inside ERROR handler so L3 uses inline rotate-session fetch.
 - [Stealth chunk 403 root causes](stealth-chunk-403.md) — chunk 403s were from short TTL (30s DB default) expiring before hls.js fetch, NOT SIGNING_SECRET mismatch. Tick 403 was rotate-session race. Both fixed; secrets matched throughout.
+- [Non-gated VOD short-TTL freeze](non-gated-vod-short-ttl-freeze.md) — non-gated VOD playlist (ENDLIST, never re-polled) + short segment TTL = mid-watch 403 → ~24s rotate loop; getSessionTokenTTL must use long TTLs when !gated.
