@@ -4,3 +4,4 @@
 - [HLS startup resume-seek clobber](hls-resume-seek-clobber.md) — HLS.js snaps currentTime→0 mid-resume; onNativeSeeking posts authoritative seekTo:0, resetting server window → restart. Fix client-side, not server.
 - [_runProgressLogic authoritative index](progress-logic-authoritative-idx.md) — `targetSegmentIndex` in progress responses must be `session.currentSegmentIndex` (post-guard), not echoed input; matters for integration resume-position sync at /tick line ~3425.
 - [HLS stall detector](hls-stall-detector.md) — embed-player stall detector: 3s poll, 9s threshold → L1 recoverMediaError, L2 nudge, L3 rotate-session; `tryRotationRecovery` is scoped inside ERROR handler so L3 uses inline rotate-session fetch.
+- [Stealth chunk 403 root causes](stealth-chunk-403.md) — chunk 403s were from short TTL (30s DB default) expiring before hls.js fetch, NOT SIGNING_SECRET mismatch. Tick 403 was rotate-session race. Both fixed; secrets matched throughout.
