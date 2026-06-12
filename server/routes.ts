@@ -3723,9 +3723,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         identitySource = "session";
       }
 
-      // Path B: LMS launch token (HMAC-signed)
+      // Path B: LMS launch token (HMAC-signed) OR integration embed JWT pass-through
       const { lmsLaunchToken } = req.body || {};
       if (!userId && lmsLaunchToken) {
+        // Path B1: integration embed JWT pass-through
+        // The integration API already minted a signed embed JWT server-side and sent it to
+        // the player iframe via postMessage as LMS_LAUNCH_TOKEN. Old client code (pre-fix)
+        // forwards it here. Detect it by part count (JWT = 3 parts, HMAC token = 2 parts),
+        // verify the signature and DB liveness, then return it directly — no re-mint needed.
+        if (lmsLaunchToken.split(".").length === 3) {
+          let jwtDecoded: any = null;
+          try { jwtDecoded = verifyToken(lmsLaunchToken); } catch {}
+          if (jwtDecoded && jwtDecoded.publicId === video.publicId) {
+            const dbToken = await storage.getTokenByValue(lmsLaunchToken);
+            if (dbToken && !(dbToken as any).revoked) {
+              log(`TOKEN_MINT_INTEGRATION_PASSTHROUGH: publicId=${video.publicId} userId=${jwtDecoded.userId || "unknown"}`);
+              return res.json({ token: lmsLaunchToken });
+            }
+          }
+          // JWT but invalid/revoked — fall through to proper error below
+          log(`TOKEN_MINT_DENIED: reason=invalid_integration_jwt publicId=${req.params.publicId}`);
+          return res.status(403).json({ code: "INVALID_LAUNCH_TOKEN", message: "Invalid or expired launch token" });
+        }
+
+        // Path B2: HMAC-signed launch token (2 parts)
         if (!process.env.LMS_HMAC_SECRET) {
           log(`TOKEN_MINT_DENIED: reason=lms_hmac_secret_not_configured publicId=${req.params.publicId}`);
           return res.status(500).json({ message: "LMS integration not configured" });
