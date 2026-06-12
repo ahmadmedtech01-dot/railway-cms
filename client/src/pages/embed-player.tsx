@@ -2570,8 +2570,19 @@ export default function EmbedPlayerPage(props: any = {}) {
     //    first so HLS abandons the in-flight queue, then currentTime so
     //    MSE buffer-flush targets the new position, then startLoad so
     //    fetching resumes at the new offset.
+    //
+    //    GUARD: raise isSeeking BEFORE writing currentTime. The browser
+    //    dispatches the "seeking" event SYNCHRONOUSLY on the currentTime
+    //    write; without the guard, onNativeSeeking fires with both
+    //    isSeeking and isSeekingRef false, issues a DUPLICATE
+    //    seekProgressWithTimeout, and schedules a second hls.startLoad at
+    //    ~700 ms that interrupts the already-loading stream → seek freeze.
+    //    We clear the guard immediately after because the event has already
+    //    been dispatched and handled (synchronous contract per HTML spec).
+    isSeeking.current = true;
     if (hls) { try { hls.stopLoad(); } catch {} }
     try { v.currentTime = newTime; } catch {}
+    isSeeking.current = false; // seeking event already dispatched synchronously above
     if (hls) { try { hls.startLoad(newTime); } catch {} }
 
     // 2. Fire-and-forget progress POST. seekProgressWithTimeout raises
@@ -2605,8 +2616,10 @@ export default function EmbedPlayerPage(props: any = {}) {
       if (stuck) {
         sdbg("performLocalSeek — retry (stuck after 1.5s)", { target: retryTarget, actual: cur.currentTime, readyState: cur.readyState });
         const hlsNow = hlsRef.current;
+        isSeeking.current = true; // guard against onNativeSeeking during retry write
         if (hlsNow) { try { hlsNow.stopLoad(); } catch {} }
         try { cur.currentTime = retryTarget; } catch {}
+        isSeeking.current = false; // seeking event dispatched synchronously; clear guard
         if (hlsNow) { try { hlsNow.startLoad(retryTarget); } catch {} }
         const sidNow = streamSidRef.current;
         if (sidNow) {
