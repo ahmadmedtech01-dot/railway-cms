@@ -1318,6 +1318,19 @@ export default function EmbedPlayerPage(props: any = {}) {
             const total = d.details?.totalduration;
             if (total && isFinite(total) && total > 0) setDuration(prev => prev > 0 ? prev : total);
           });
+          hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => {
+            // Keep the dropdown in sync with the actual playing level.
+            // When in Auto mode (currentQuality === -1) the dropdown stays
+            // on "Auto"; when the user picked a level manually, confirm the
+            // switch landed (or detect if ABR overrode back to a different
+            // level and reset the dropdown to Auto so it's never misleading).
+            setCurrentQuality(prev => {
+              if (prev === -1) return -1; // Auto mode — ABR controls level, keep showing "Auto"
+              // Manual pick: if ABR overrode it back to a different level,
+              // reset to Auto so the dropdown isn't frozen on a stale value.
+              return prev === d.level ? prev : -1;
+            });
+          });
           // Healthy playback resets the fatal-recovery budget AND samples
           // the last known good time. As long as fragments keep arriving,
           // transient blips never accumulate to the point of triggering the
@@ -2749,7 +2762,7 @@ export default function EmbedPlayerPage(props: any = {}) {
 
   const changeQuality = (index: number) => {
     const hls = hlsRef.current;
-    if (!hls || !playerSettings.allowQuality) return;
+    if (!hls || playerSettings.allowQuality === false) return;
     if (index === -1) {
       // Auto mode — re-enable ABR. Use currentLevel so it takes effect
       // immediately rather than waiting for the next segment boundary.
