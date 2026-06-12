@@ -4092,6 +4092,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       if (oldDbToken) {
         if (oldDbToken.revoked) {
+          // Integration-token recovery: when the player calls refresh-token
+          // with a revoked integration embed token (e.g. after a page reload
+          // where the iframe URL still carries the original token that was
+          // revoked by a previous successful refresh-token call), find the
+          // active replacement integration token for this userId+video so the
+          // player can re-initialize without a new LMS launch flow.
+          const tokenLabel = (oldDbToken as any).label as string | null | undefined;
+          const tokenUserId = (oldDbToken as any).userId as string | null | undefined;
+          if ((tokenLabel?.startsWith("integration:") || tokenUserId?.startsWith("integration:")) && tokenUserId) {
+            const allActive = await storage.getActiveUserTokens(video.id, tokenUserId);
+            const integrationActive = allActive.filter((t: any) => (t.label as string | null)?.startsWith("integration:"));
+            const replacement = oldIntegrationSessionId
+              ? (integrationActive.find((t: any) => (t.label as string).includes(`:isid:${oldIntegrationSessionId}`)) ?? integrationActive[0])
+              : integrationActive[0];
+            if (replacement) {
+              log(`TOKEN_REFRESH_INTEGRATION_RECOVERY: oldTokenId=${oldDbToken.id} replacedWithTokenId=${replacement.id} userId=${tokenUserId}`);
+              return res.json({ token: replacement.token });
+            }
+          }
           log(`TOKEN_REFRESH_FAIL: reason=token_revoked videoId=${video.id} tokenId=${oldDbToken.id}`);
           return res.status(401).json({ message: "Token was revoked — cannot refresh" });
         }

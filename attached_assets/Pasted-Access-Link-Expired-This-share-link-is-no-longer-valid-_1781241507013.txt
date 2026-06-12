@@ -1,0 +1,21 @@
+Access Link Expired
+
+This share link is no longer valid. Please contact the person who shared this video to get a new link.
+
+now this error after ur recent changes[integrations] INTEGRATION_REFRESH_EXTEND: client=syanrx-lms user=9c52d43c-8b5b-4abe-bd7d-ee150eed4cf1 session=7b121c9e-7a30-4916-b3f1-3d17c9871876 tokenId=d830efff-cb09-4f8d-995b-152bb6e5593b
+5:15:20 PM [express] POST /api/integrations/player/mMWk8yN5oU/refresh 200 in 1784ms :: {"ok":true,"embedToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3...
+5:16:44 PM [express] GET /api/lms/origins 200 in 1ms :: {"origins":["https://simple-lmstest-production.up.railway.app","https://complete-video-hr-syan-exams-test-final-dww7.onrender.com","https://syanacademy.com","https://syanrx.com","https://www.syanrx.com"]}
+5:16:45 PM [express] GET /api/player/mMWk8yN5oU/manifest 401 in 1010ms :: {"message":"Token revoked"}
+5:16:46 PM [routes] TOKEN_REFRESH_FAIL: reason=token_revoked videoId=d6d282d9-721e-4aea-b4cf-0eea9f51934a tokenId=14f03389-1ff9-4983-855c-2d16801fff11
+5:16:46 PM [express] POST /api/player/mMWk8yN5oU/refresh-token 401 in 508ms :: {"message":"Token was revoked — cannot refresh"}Failed to load resource: the server responded with a status of 401 ()Understand this error
+railway-cms-production.up.railway.app/api/player/mMWk8yN5oU/refresh-token:1 Failed to load resource: the server responded with a status of 401 (){"message":"Token revoked"}https://railway-cms-production.up.railway.app/api/player/mMWk8yN5oU/manifest?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2aWRlb0lkIjoiZDZkMjgyZDktNzIxZS00YWVhLWI0Y2YtMGVlYTlmNTE5MzRhIiwicHVibGljSWQiOiJtTVdrOHlONW9VIiwidXNlcklkIjoiaW50ZWdyYXRpb246c3lhbnJ4LWxtczo5YzUyZDQzYy04YjViLTRhYmUtYmQ3ZC1lZTE1MGVlZDRjZjEiLCJpbnRlZ3JhdGlvbkNsaWVudElkIjoiYmZhMGM4MjMtMWM4OS00ZGE3LTlmYTItN2M4NjJjMzRkYjFmIiwiaW50ZWdyYXRpb25TZXNzaW9uSWQiOiI3YjEyMWM5ZS03YTMwLTQ5MTYtYjNmMS0zZDE3Yzk4NzE4NzYiLCJqdGkiOiJmMmNhNjNlZi05ZjNlLTQwNzQtOTlhNi1lYzNlZDlkZWIwNzUiLCJpYXQiOjE3ODExNzk4MzMsImV4cCI6MTc4MTE4MDEzM30.c7J34sS3x-u8cBfVTskD638r_gV6eZWxv6sxWS6HD3Y
+Request Method
+GET
+Status Code
+401 Unauthorized
+Remote Address
+69.46.46.101:443
+Referrer Policy
+strict-origin-when-cross-origin
+
+now this error?????? why again error again error again error
