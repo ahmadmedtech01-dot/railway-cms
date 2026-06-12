@@ -864,36 +864,49 @@ export default function EmbedPlayerPage(props: any = {}) {
         // Secure token minting: if no explicit URL token, mint using the LMS launch token received via postMessage
         let activeToken = token;
         if (!token) {
-          const mintBody: Record<string, string> = {};
           const lmsToken = receivedLmsTokenRef.current;
-          if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
 
-          const mintRes = await fetch(`/api/player/${publicId}/mint`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-client-instance": getClientInstanceId() },
-            credentials: "include",
-            body: JSON.stringify(mintBody),
-          });
-          if (mintRes.status === 429) {
-            const d = await mintRes.json().catch(() => ({}));
-            if (d.code === "SESSION_LIMIT") {
-              lmsSessionActiveRef.current = false;
-              setSessionLimitInfo({ activeSessions: d.activeSessions || [] });
+          // Integration API path: the integration server already minted an embed JWT
+          // and sent it via postMessage as LMS_LAUNCH_TOKEN. A JWT has 3 dot-separated
+          // parts; an HMAC launch token has 2. When we receive a JWT, skip the old
+          // /mint call entirely and use it directly — calling /mint with a JWT causes
+          // a guaranteed 403 ("token has 3 parts, expected 2").
+          const isIntegrationJwt = lmsToken ? lmsToken.split(".").length === 3 : false;
+
+          if (isIntegrationJwt && lmsToken) {
+            activeToken = lmsToken;
+            activeTokenRef.current = lmsToken;
+          } else {
+            const mintBody: Record<string, string> = {};
+            if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
+
+            const mintRes = await fetch(`/api/player/${publicId}/mint`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-client-instance": getClientInstanceId() },
+              credentials: "include",
+              body: JSON.stringify(mintBody),
+            });
+            if (mintRes.status === 429) {
+              const d = await mintRes.json().catch(() => ({}));
+              if (d.code === "SESSION_LIMIT") {
+                lmsSessionActiveRef.current = false;
+                setSessionLimitInfo({ activeSessions: d.activeSessions || [] });
+                setStatus("error");
+                setErrorMsg("SESSION_LIMIT");
+                return;
+              }
+            }
+            if (!mintRes.ok) {
+              const d = await mintRes.json().catch(() => ({}));
+              lmsSessionActiveRef.current = false; // unlock so next LMS token can retry
               setStatus("error");
-              setErrorMsg("SESSION_LIMIT");
+              setErrorMsg(d.message || "Could not start session");
               return;
             }
+            const mintData = await mintRes.json();
+            activeToken = mintData.token;
+            activeTokenRef.current = activeToken;
           }
-          if (!mintRes.ok) {
-            const d = await mintRes.json().catch(() => ({}));
-            lmsSessionActiveRef.current = false; // unlock so next LMS token can retry
-            setStatus("error");
-            setErrorMsg(d.message || "Could not start session");
-            return;
-          }
-          const mintData = await mintRes.json();
-          activeToken = mintData.token;
-          activeTokenRef.current = activeToken;
         }
 
         // Fetch manifest
@@ -2788,6 +2801,26 @@ export default function EmbedPlayerPage(props: any = {}) {
   if (status === "error" && errorMsg === "SESSION_LIMIT") {
     const mintAndContinue = async () => {
       const lmsToken = receivedLmsTokenRef.current;
+      const isIntegrationJwt = lmsToken ? lmsToken.split(".").length === 3 : false;
+
+      // Integration API path: the embed JWT was already minted server-side.
+      // Just revoke other sessions and re-use the existing token.
+      if (isIntegrationJwt && lmsToken) {
+        if (activeTokenRef.current) {
+          await fetch(`/api/player/${publicId}/revoke-other-sessions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ currentToken: activeTokenRef.current }),
+          }).catch(() => {});
+        }
+        activeTokenRef.current = lmsToken;
+        setSessionLimitInfo(null);
+        setErrorMsg("");
+        setStatus("loading");
+        setRetryKey(k => k + 1);
+        return;
+      }
+
       const mintBody: Record<string, string> = {};
       if (lmsToken) mintBody.lmsLaunchToken = lmsToken;
 
