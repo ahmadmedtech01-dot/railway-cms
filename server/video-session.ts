@@ -944,7 +944,11 @@ export function rotateSession(oldSid: string, resumePositionSec?: number): strin
     // so the first variant-playlist response already covers the resume point.
     currentSegmentIndex: resumeSegIdx,
     maxSegmentExposed: Math.max(old.maxSegmentExposed, resumeSegIdx),
-    variantCache: new Map(),
+    // Inherit the old session's variant playlist cache so the first stream/window
+    // request after rotation is served immediately from memory without a storage
+    // round-trip. This is critical when storage is slow — without it, every rotation
+    // forces a fresh uncached B2/R2 fetch which hangs if storage is degraded.
+    variantCache: new Map(old.variantCache),
     ephemeralKey: crypto.randomBytes(16),
     ephemeralIV: crypto.randomBytes(16),
     keyIssued: false,

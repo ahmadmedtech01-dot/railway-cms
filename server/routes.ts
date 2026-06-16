@@ -175,6 +175,23 @@ function log(message: string) {
   console.log(`${t} [routes] ${message}`);
 }
 
+// Fetch with an AbortController timeout so slow/unresponsive storage (B2/R2/Bunny)
+// does not cause Railway to hang indefinitely and force-close the TCP connection.
+// Without this, a 9+ second B2 stall causes ERR_CONNECTION_CLOSED on every
+// stream/window and stream/master request, breaking all video playback globally.
+async function fetchWithTimeout(url: string, timeoutMs = 6000): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(id);
+    return res;
+  } catch (e: any) {
+    clearTimeout(id);
+    throw e;
+  }
+}
+
 function asyncHandler(fn: (req: any, res: any, next: any) => Promise<any>) {
   return (req: any, res: any, next: any) => {
     Promise.resolve(fn(req, res, next)).catch((err) => {
@@ -2424,7 +2441,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         let cached: PlaylistCache | undefined = session.variantCache.get(cacheKey);
 
         if (!cached) {
-          const fetchRes = await fetch(originUrl);
+          let fetchRes: Response;
+          try {
+            fetchRes = await fetchWithTimeout(originUrl, 6000);
+          } catch (e: any) {
+            if (e.name === "AbortError") {
+              log(`[hls/variant] STORAGE_TIMEOUT sid=${sid} key=${fileKey}`);
+              return res.status(503).json({ code: "STORAGE_TIMEOUT", message: "Storage timeout — try again" });
+            }
+            throw e;
+          }
           if (!fetchRes.ok) return res.status(404).json({ message: "Variant playlist not found" });
           const playlistText = await fetchRes.text();
           cached = parsePlaylist(playlistText);
@@ -2839,7 +2865,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         originUrl = await getSignedUrl(c, cmd, { expiresIn: 30 });
       }
 
-      const masterRes = await fetch(originUrl);
+      let masterRes: Response;
+      try {
+        masterRes = await fetchWithTimeout(originUrl, 6000);
+      } catch (e: any) {
+        if (e.name === "AbortError") {
+          log(`[stream/master] STORAGE_TIMEOUT pub=${req.params.publicId} sid=${sid} key=${masterKey}`);
+          return res.status(503).json({ code: "STORAGE_TIMEOUT", message: "Storage timeout — try again" });
+        }
+        throw e;
+      }
       if (!masterRes.ok) {
         log(`[stream/master] UPSTREAM_NOT_FOUND pub=${req.params.publicId} sid=${sid} key=${masterKey} status=${masterRes.status}`);
         return res.status(404).json({ message: "Master playlist not found" });
@@ -2978,7 +3013,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const cacheKey = "/" + variantSubPath;
       let cached: PlaylistCache | undefined = session.variantCache.get(cacheKey);
       if (!cached) {
-        const fetchRes = await fetch(originUrl);
+        let fetchRes: Response;
+        try {
+          fetchRes = await fetchWithTimeout(originUrl, 6000);
+        } catch (e: any) {
+          if (e.name === "AbortError") {
+            log(`[stream/window] STORAGE_TIMEOUT pub=${req.params.publicId} sid=${sid} key=${fileKey}`);
+            return res.status(503).json({ code: "STORAGE_TIMEOUT", message: "Storage timeout — try again" });
+          }
+          throw e;
+        }
         if (!fetchRes.ok) return res.status(404).json({ message: "Variant playlist not found" });
         cached = parsePlaylist(await fetchRes.text());
         session.variantCache.set(cacheKey, cached);
