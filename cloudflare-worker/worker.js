@@ -437,24 +437,50 @@ async function proxyStealth(request, env, url, kind, publicId, opaqueId, ctx, si
     // Connection, Keep-Alive) from Railway into the Worker response. HTTP/2 frames
     // must not carry these headers; forwarding them causes ERR_CONNECTION_CLOSED on
     // the browser when Cloudflare's edge tries to set them on an H2 response frame.
-    // This was causing persistent stream/window failures (empty-buffer stall loop)
-    // for videos with small playlists (short windowEnd) whose responses flush
-    // synchronously and trigger the edge frame-validator before buffering can hide it.
     const respHeaders = new Headers();
-    const safePassthrough = ["content-type", "content-length", "content-range", "accept-ranges", "x-content-type-options"];
-    for (const h of safePassthrough) {
-      const v = originResp.headers.get(h);
-      if (v) respHeaders.set(h, v);
-    }
     respHeaders.set("Cache-Control", "private, no-store");
     respHeaders.set("Access-Control-Allow-Origin", "*");
     respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
-    console.log(`[gw] stealth ${kind} ${publicId} -> ${originResp.status}`);
+
+    // For playlist/key text responses (window, master, secret) buffer the FULL body
+    // before returning. Passing originResp.body as a ReadableStream means Cloudflare
+    // pipes bytes from Railway → browser while still reading from Railway. If Railway's
+    // keep-alive connection closes mid-stream (normal HTTP/1.1 behaviour), Cloudflare
+    // tears down the browser connection too → ERR_CONNECTION_CLOSED with 0 bytes
+    // received. Buffering with .text() waits for Railway to finish, gives Cloudflare
+    // a complete in-memory string, and sends it as a single reliable response.
+    // Binary chunk bodies continue to use streaming (they can be large; 302 redirect
+    // path handles them separately above).
+    if (kind === "window" || kind === "master" || kind === "secret") {
+      const bodyText = await originResp.text();
+      // Recompute content-length from the actual buffered body (Railway may have
+      // sent chunked encoding without a content-length header).
+      respHeaders.set("Content-Length", String(new TextEncoder().encode(bodyText).byteLength));
+      console.log(`[gw] stealth ${kind} ${publicId} -> ${originResp.status} (${bodyText.length} chars buffered)`);
+      return new Response(bodyText, { status: originResp.status, headers: respHeaders });
+    }
+
+    // Fallback stream passthrough for any other non-chunk kind (shouldn't happen
+    // with current routes, but keeps the function correct if kinds are added later).
+    const safePassthrough = ["content-type", "content-length", "content-range", "accept-ranges"];
+    for (const h of safePassthrough) {
+      const v = originResp.headers.get(h);
+      if (v) respHeaders.set(h, v);
+    }
+    console.log(`[gw] stealth ${kind} ${publicId} -> ${originResp.status} (stream)`);
     return new Response(originResp.body, { status: originResp.status, headers: respHeaders });
   } catch (e) {
     console.log(`[gw] stealth upstream error: ${e.message}`);
-    return new Response("Upstream error", { status: 502 });
+    return new Response(JSON.stringify({ error: "upstream_error", message: e.message }), {
+      status: 502,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range, Content-Type",
+      },
+    });
   }
 }
 
