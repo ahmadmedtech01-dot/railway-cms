@@ -34,3 +34,16 @@ proxy). Not yet implemented.
 **Also:** `releaseSegment(sid)` now fires immediately before the redirect (byte
 transfer is off-origin and no longer observable), so concurrency protection is
 request-rate based rather than in-flight-byte based.
+
+**Worker buffering must be BINARY, not text:** when buffering window/master/secret
+in the Worker (to avoid mid-stream connection drops), use `await
+originResp.arrayBuffer()`, NEVER `.text()`. The `secret` kind is the raw 16-byte
+AES-128 key (`application/octet-stream`); `.text()` decodes it as UTF-8 and corrupts
+the key bytes → segments download (200, full size) but cannot be decrypted →
+endless re-download / spinner on BOTH shareable link and LMS embed. arrayBuffer is
+byte-exact for the binary key and the m3u8 text playlists alike. Preserve the
+upstream content-type so the key stays octet-stream.
+
+**LMS side needs NO changes** for any of these byte-path/worker fixes — the LMS only
+loads the CMS iframe + postMessage launch token + SDK; all redirect/buffering
+changes are origin/Worker-side and transparent to LMS clients.

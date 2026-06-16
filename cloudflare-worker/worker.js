@@ -443,22 +443,32 @@ async function proxyStealth(request, env, url, kind, publicId, opaqueId, ctx, si
     respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
 
-    // For playlist/key text responses (window, master, secret) buffer the FULL body
+    // For playlist/key responses (window, master, secret) buffer the FULL body
     // before returning. Passing originResp.body as a ReadableStream means Cloudflare
     // pipes bytes from Railway → browser while still reading from Railway. If Railway's
     // keep-alive connection closes mid-stream (normal HTTP/1.1 behaviour), Cloudflare
     // tears down the browser connection too → ERR_CONNECTION_CLOSED with 0 bytes
-    // received. Buffering with .text() waits for Railway to finish, gives Cloudflare
-    // a complete in-memory string, and sends it as a single reliable response.
+    // received. Buffering waits for Railway to finish, gives Cloudflare a complete
+    // in-memory body, and sends it as a single reliable response.
+    //
+    // CRITICAL: buffer as arrayBuffer (BINARY), never as .text(). The `secret`
+    // response is the raw 16-byte AES-128 key (application/octet-stream). Decoding
+    // it with .text() mangles the bytes through UTF-8 and corrupts the key, so
+    // segments download fine but cannot be decrypted → endless re-download / spinner.
+    // arrayBuffer is byte-exact for both the binary key AND the m3u8 text playlists.
     // Binary chunk bodies continue to use streaming (they can be large; 302 redirect
     // path handles them separately above).
     if (kind === "window" || kind === "master" || kind === "secret") {
-      const bodyText = await originResp.text();
+      const bodyBuf = await originResp.arrayBuffer();
       // Recompute content-length from the actual buffered body (Railway may have
       // sent chunked encoding without a content-length header).
-      respHeaders.set("Content-Length", String(new TextEncoder().encode(bodyText).byteLength));
-      console.log(`[gw] stealth ${kind} ${publicId} -> ${originResp.status} (${bodyText.length} chars buffered)`);
-      return new Response(bodyText, { status: originResp.status, headers: respHeaders });
+      respHeaders.set("Content-Length", String(bodyBuf.byteLength));
+      // Preserve the upstream content-type so the AES key stays octet-stream and
+      // playlists stay m3u8.
+      const ct = originResp.headers.get("content-type");
+      if (ct) respHeaders.set("Content-Type", ct);
+      console.log(`[gw] stealth ${kind} ${publicId} -> ${originResp.status} (${bodyBuf.byteLength} bytes buffered)`);
+      return new Response(bodyBuf, { status: originResp.status, headers: respHeaders });
     }
 
     // Fallback stream passthrough for any other non-chunk kind (shouldn't happen
