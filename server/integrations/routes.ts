@@ -689,15 +689,14 @@ export function registerIntegrationRoutes(app: Express) {
       }
 
       const cmsBase = process.env.CMS_PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-      // Explicit startAt wins; if absent, use the session's saved position
-      // (set by /tick every 20 s via touchIntegrationSessionPosition, so it
-      // reflects where the player actually was even if the LMS ping omits
-      // currentTime). The player reads ?t= → pendingInitialSeekRef → seek.
-      const sessionForResume = activeSession || prevSession;
+      // AUTO-RESUME DISABLED (per product decision): every LMS launch starts the
+      // video from the beginning. The maxPositionSeconds fallback was removed so
+      // a stale/poisoned saved position can never seek the student forward.
+      // An LMS may still request a specific start position by passing an explicit
+      // `startAt` in the request body — that is an intentional caller choice, not
+      // auto-resume — so we continue to honour it when present.
       const explicitStartAt = startAt !== undefined && startAt !== null ? Math.max(0, Math.floor(Number(startAt))) : 0;
-      const autoResumeAt = explicitStartAt > 0
-        ? explicitStartAt
-        : (sessionForResume && sessionForResume.maxPositionSeconds > 5 ? Math.floor(sessionForResume.maxPositionSeconds) : 0);
+      const autoResumeAt = explicitStartAt;
       const iframeUrl = `${cmsBase}/embed/${videoId}?token=${tokenValue}${autoResumeAt > 0 ? `&t=${autoResumeAt}` : ""}`;
       const manifestUrl = `${cmsBase}/api/player/${videoId}/manifest?token=${tokenValue}`;
 
