@@ -3144,49 +3144,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const cmd = new GetObjectCommand({ Bucket: s3cfg.bucket, Key: fileKey });
         originUrl = await getSignedUrl(c, cmd, { expiresIn: 20 });
       }
-      // Stealth contract: never expose origin URL to the browser. Stream bytes
-      // through our server so the only network entry visible to the client is
-      // the opaque /stream/chunk/:opaqueId URL.
-      const range = req.headers["range"];
-      // Abort upstream only on PREMATURE disconnect (see /seg comment above).
-      const abortCtrl = new AbortController();
-      res.on("close", () => { if (!res.writableEnded) abortCtrl.abort(); });
-      const upstream = await fetch(originUrl, {
-        headers: range ? { Range: String(range) } : undefined,
-        signal: abortCtrl.signal,
-      }).catch((err: any) => {
-        if (err?.name === "AbortError") return null;
-        throw err;
-      });
-      if (!upstream) { releaseSegment(sid); return; }
-      if (!upstream.ok && upstream.status !== 206) {
-        releaseSegment(sid);
-        log(`stream/chunk upstream failed status=${upstream.status} key=${fileKey}`);
-        return res.status(502).json({ message: "Chunk upstream failed" });
-      }
-      res.status(upstream.status);
-      // Stealth: drop content-type, etag, last-modified from passthrough — these leak
-      // media identity to scrapers (B2 returns "video/MP2T" which CocoCut sniffs).
-      const passthrough = ["content-length", "content-range", "accept-ranges"];
-      for (const h of passthrough) {
-        const v = upstream.headers.get(h);
-        if (v) res.setHeader(h, v);
-      }
-      res.setHeader("Content-Type", "application/octet-stream");
+      // Stealth contract preserved via the edge Worker: we return a 302 to the
+      // short-lived (20s) presigned storage URL instead of proxying the bytes.
+      // The Cloudflare Worker fetches stealth chunks with `redirect: "manual"`
+      // and FOLLOWS this 302 server-side (Storage → Worker → Browser), so the
+      // browser still only ever sees the opaque /stream/chunk/:opaqueId URL —
+      // the real storage URL is never exposed to the client. This removes
+      // Railway from the video byte path entirely (only tiny playlist/tick JSON
+      // still flows through Railway), eliminating origin-bandwidth saturation
+      // and the connection-close failures that come with proxying large bytes
+      // over Railway's keep-alive connections.
+      //
+      // All security gates (UA, segment window, abuse, velocity) have already
+      // run above before we mint/return this redirect. The segment lock is
+      // released immediately because byte transfer now happens off-origin and
+      // we can no longer observe its completion; the velocity tracker still
+      // counts each request.
+      releaseSegment(sid);
       res.setHeader("Cache-Control", "private, no-store, no-cache, max-age=0");
       res.setHeader("X-Content-Type-Options", "nosniff");
-      const body = upstream.body as any;
-      if (body && typeof body.getReader === "function") {
-        const { Readable } = await import("stream");
-        const nodeStream = Readable.fromWeb(body);
-        nodeStream.on("close", () => releaseSegment(sid));
-        nodeStream.on("error", () => releaseSegment(sid));
-        nodeStream.pipe(res);
-      } else {
-        const buf = Buffer.from(await upstream.arrayBuffer());
-        releaseSegment(sid);
-        res.end(buf);
-      }
+      res.redirect(302, originUrl);
+      return;
     } catch (e: any) {
       releaseSegment(sid);
       log(`stream/chunk error for ${req.params.publicId}: ${e.message}`);
