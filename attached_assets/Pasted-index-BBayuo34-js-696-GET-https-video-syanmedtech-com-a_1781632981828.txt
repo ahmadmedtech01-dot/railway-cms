@@ -1,0 +1,130 @@
+index-BBayuo34.js:696 
+ GET https://video.syanmedtech.com/api/player/O6Q89aG20I/stream/window/85faf0bf1…1ac4df7… net::ERR_CONNECTION_CLOSED
+openAndSendXhr	@	index-BBayuo34.js:696
+loadInternal	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+onLevelLoading	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+loadingPlaylist	@	index-BBayuo34.js:696
+scheduleLoading	@	index-BBayuo34.js:678
+loadPlaylist	@	index-BBayuo34.js:696
+startLoad	@	index-BBayuo34.js:678
+startLoad	@	index-BBayuo34.js:696
+(anonymous)	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+handleNetworkError	@	index-BBayuo34.js:696
+onTimeout	@	index-BBayuo34.js:696
+loadtimeout	@	index-BBayuo34.js:696
+setTimeout		
+openAndSendXhr	@	index-BBayuo34.js:696
+loadInternal	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+onLevelLoading	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+loadingPlaylist	@	index-BBayuo34.js:696
+scheduleLoading	@	index-BBayuo34.js:678
+loadPlaylist	@	index-BBayuo34.js:696
+startLoad	@	index-BBayuo34.js:678
+startLoad	@	index-BBayuo34.js:696
+(anonymous)	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+handleNetworkError	@	index-BBayuo34.js:696
+onTimeout	@	index-BBayuo34.js:696
+loadtimeout	@	index-BBayuo34.js:696
+setTimeout		
+openAndSendXhr	@	index-BBayuo34.js:696
+loadInternal	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+onLevelLoading	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+loadingPlaylist	@	index-BBayuo34.js:696
+scheduleLoading	@	index-BBayuo34.js:678
+loadPlaylist	@	index-BBayuo34.js:696
+set level	@	index-BBayuo34.js:696
+set nextLoadLevel	@	index-BBayuo34.js:696
+set nextLoadLevel	@	index-BBayuo34.js:696
+switchLevel	@	index-BBayuo34.js:667
+sendAlternateToPenaltyBox	@	index-BBayuo34.js:667
+onErrorOut	@	index-BBayuo34.js:667
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+handleNetworkError	@	index-BBayuo34.js:696
+onError	@	index-BBayuo34.js:696
+readystatechange	@	index-BBayuo34.js:696
+XMLHttpRequest.send		
+openAndSendXhr	@	index-BBayuo34.js:696
+loadInternal	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+onLevelLoading	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+loadingPlaylist	@	index-BBayuo34.js:696
+scheduleLoading	@	index-BBayuo34.js:678
+loadPlaylist	@	index-BBayuo34.js:696
+set level	@	index-BBayuo34.js:696
+set nextLoadLevel	@	index-BBayuo34.js:696
+set nextLoadLevel	@	index-BBayuo34.js:696
+startLoad	@	index-BBayuo34.js:696
+startLoad	@	index-BBayuo34.js:696
+(anonymous)	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+filterAndSortMediaOptions	@	index-BBayuo34.js:696
+onManifestLoaded	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+handleMasterPlaylist	@	index-BBayuo34.js:696
+onSuccess	@	index-BBayuo34.js:696
+readystatechange	@	index-BBayuo34.js:696
+XMLHttpRequest.send		
+openAndSendXhr	@	index-BBayuo34.js:696
+loadInternal	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+load	@	index-BBayuo34.js:696
+onManifestLoading	@	index-BBayuo34.js:696
+c.emit	@	index-BBayuo34.js:672
+emit	@	index-BBayuo34.js:696
+trigger	@	index-BBayuo34.js:696
+loadSource	@	index-BBayuo34.js:696
+(anonymous)	@	index-BBayuo34.js:696
+await in (anonymous)		
+(anonymous)	@	index-BBayuo34.js:696
+ku	@	index-BBayuo34.js:8
+Tl	@	index-BBayuo34.js:8
+fS	@	index-BBayuo34.js:8
+Ea	@	index-BBayuo34.js:6
+iL	@	index-BBayuo34.js:8
+To	@	index-BBayuo34.js:8
+uS	@	index-BBayuo34.js:8
+L	@	index-BBayuo34.js:1
+G	@	index-BBayuo34.js:1
+
+index-BBayuo34.js:696 [HLS] HLS_BUFFER_NUDGE 
+{currentTime: 0}
+index-BBayuo34.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+{level: 2}
+index-BBayuo34.js:696 
+ GET https://video.syanmedtech.com/api/player/O6Q89aG20I/stream/window/85faf0bf1…1ac4df7… net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 [HLS] HLS_STALL_DETECTED 
+{currentTime: 0.2, ticks: 3}
+index-BBayuo34.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+{currentTime: 0.2}
+﻿

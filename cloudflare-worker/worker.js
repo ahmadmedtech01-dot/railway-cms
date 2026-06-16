@@ -15,7 +15,10 @@ export default {
     // must not) verify it — the origin decodes & validates session, UA,
     // window, abuse, etc. The Worker is a transparent CDN passthrough that
     // hides the Railway origin and puts an edge in front of every request.
-    const stealthMatch = url.pathname.match(/^\/api\/player\/([^/]+)\/stream\/(window|chunk|secret)\/([^/?#]+)\/?$/);
+    // `master` is included so the stealth master playlist (stream/master)
+    // is forwarded transparently rather than falling through to the legacy
+    // routeMatch which would 404 it.
+    const stealthMatch = url.pathname.match(/^\/api\/player\/([^/]+)\/stream\/(window|chunk|secret|master)\/([^/?#]+)\/?$/);
     if (stealthMatch) {
       return proxyStealth(request, env, url, stealthMatch[2], stealthMatch[1], stealthMatch[3], ctx, env.SIGNING_SECRET);
     }
@@ -211,7 +214,16 @@ export default {
         return new Response(b2Resp.body, { status: b2Resp.status, headers: respHeaders });
       }
 
-      const respHeaders = new Headers(railwayResp.headers);
+      // Build a CLEAN header set — never copy hop-by-hop headers (Transfer-Encoding,
+      // Connection, Keep-Alive) from Railway into the Worker response. HTTP/2 frames
+      // must not carry hop-by-hop headers; forwarding them causes ERR_CONNECTION_CLOSED
+      // on the browser side when Cloudflare's edge tries to set them on an H2 frame.
+      const respHeaders = new Headers();
+      const safeHdrs = ["content-type", "content-length", "content-range", "accept-ranges", "x-content-type-options"];
+      for (const h of safeHdrs) {
+        const v = railwayResp.headers.get(h);
+        if (v) respHeaders.set(h, v);
+      }
       respHeaders.set("Access-Control-Allow-Origin", "*");
       respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
       respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");
@@ -419,9 +431,22 @@ async function proxyStealth(request, env, url, kind, publicId, opaqueId, ctx, si
       return new Response(browserStream, { status: 200, headers: respHeaders });
     }
 
-    // Normal passthrough — non-cacheable cases (window, secret, 4xx/5xx,
+    // Normal passthrough — non-cacheable cases (window, master, secret, 4xx/5xx,
     // 206 Range responses, old-format opaque IDs, etc.).
-    const respHeaders = new Headers(originResp.headers);
+    // Build a CLEAN header set — never copy hop-by-hop headers (Transfer-Encoding,
+    // Connection, Keep-Alive) from Railway into the Worker response. HTTP/2 frames
+    // must not carry these headers; forwarding them causes ERR_CONNECTION_CLOSED on
+    // the browser when Cloudflare's edge tries to set them on an H2 response frame.
+    // This was causing persistent stream/window failures (empty-buffer stall loop)
+    // for videos with small playlists (short windowEnd) whose responses flush
+    // synchronously and trigger the edge frame-validator before buffering can hide it.
+    const respHeaders = new Headers();
+    const safePassthrough = ["content-type", "content-length", "content-range", "accept-ranges", "x-content-type-options"];
+    for (const h of safePassthrough) {
+      const v = originResp.headers.get(h);
+      if (v) respHeaders.set(h, v);
+    }
+    respHeaders.set("Cache-Control", "private, no-store");
     respHeaders.set("Access-Control-Allow-Origin", "*");
     respHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     respHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type");

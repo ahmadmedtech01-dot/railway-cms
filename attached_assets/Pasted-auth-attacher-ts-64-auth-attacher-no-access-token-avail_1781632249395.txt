@@ -1,0 +1,70 @@
+auth-attacher.ts:64 [auth-attacher] no access token available; server call will be unauthenticated
+index-BBayuo34.js:696 [HLS] MANIFEST_PARSED levels= 2 
+Array(2)
+index-BBayuo34.js:696 [HLS] HLS_STALL_DETECTED 
+Object
+index-BBayuo34.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+Object
+index-BBayuo34.js:696 [HLS] HLS_BUFFER_NUDGE 
+Object
+index-BBayuo34.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+Object
+video.syanmedtech.co…82c223a264164577b:1 
+ Failed to load resource: net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 [HLS] HLS_STALL_DETECTED 
+Object
+index-BBayuo34.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+Object
+index-BBayuo34.js:696 [HLS] HLS_BUFFER_NUDGE 
+Object
+index-BBayuo34.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+Object
+video.syanmedtech.co…82c223a264164577b:1 
+ Failed to load resource: net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 [HLS] HLS_STALL_DETECTED 
+Object
+index-BBayuo34.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+Object
+video.syanmedtech.co…82c223a264164577b:1 
+ Failed to load resource: net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 [HLS] HLS_BUFFER_NUDGE 
+Object
+index-BBayuo34.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+Object
+video.syanmedtech.co…5d0d7167b332a3fed:1 
+ Failed to load resource: net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 [HLS] HLS_STALL_DETECTED 
+Object
+index-BBayuo34.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+Object
+index-BBayuo34.js:696 [HLS] HLS_BUFFER_NUDGE 
+Object
+index-BBayuo34.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+Object
+video.syanmedtech.co…5d0d7167b332a3fed:1 
+ Failed to load resource: net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 [HLS] HLS_STALL_DETECTED 
+Object
+index-BBayuo34.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+Object
+index-BBayuo34.js:696 [HLS] HLS_BUFFER_NUDGE 
+{currentTime: 0.8}
+index-BBayuo34.js:696 [HLS] HLS_RECOVERY_SUCCESS (progress confirmed) 
+{level: 2}
+video.syanmedtech.co…5d0d7167b332a3fed:1 
+ Failed to load resource: net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 
+ GET https://video.syanmedtech.com/api/player/nz7pnd2-9Q/stream/window/387a50a13…78f324a… net::ERR_CONNECTION_CLOSED
+
+index-BBayuo34.js:696 
+ GET https://video.syanmedtech.com/api/player/nz7pnd2-9Q/stream/window/06aa15505…76eb91c… net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 
+ GET https://video.syanmedtech.com/api/player/nz7pnd2-9Q/stream/window/06aa15505…76eb91c… net::ERR_CONNECTION_CLOSED
+index-BBayuo34.js:696 [HLS] HLS_STALL_DETECTED 
+{currentTime: 1, ticks: 3}
+index-BBayuo34.js:696 [HLS] HLS_SOFT_RECOVERY_START 
+{currentTime: 1}
+index-BBayuo34.js:696 [HLS] HLS_BUFFER_NUDGE 
+{currentTime: 1}
+﻿
+
