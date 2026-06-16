@@ -1,0 +1,36 @@
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/583e70cf9…1f0e741… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/a08e2fe85…a49bac7… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/a08e2fe85…a49bac7… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/a08e2fe85…a49bac7… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/583e70cf9…1f0e741… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/a08e2fe85…a49bac7… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/a08e2fe85…a49bac7… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/583e70cf9…1f0e741… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/a08e2fe85…a49bac7… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/a08e2fe85…a49bac7… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 [HLS] MANIFEST_PARSED levels= 3 
+(3) [{…}, {…}, {…}]
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/da01d34af…0a4a08b… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/b2f9c4981…6b8c709… net::ERR_CONNECTION_CLOSED
+
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/b2f9c4981…6b8c709… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/b2f9c4981…6b8c709… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/da01d34af…0a4a08b… net::ERR_CONNECTION_CLOSED
+index-yv2_yJYJ.js:696 
+ GET https://video.syanmedtech.com/api/player/m2_1uvtZMy/stream/window/da01d34af…0a4a08b… net::ERR_CONNECTION_CLOSED
+﻿

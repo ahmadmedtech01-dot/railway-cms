@@ -1716,7 +1716,13 @@ export default function EmbedPlayerPage(props: any = {}) {
           //
           //   L1 (~9 s stall)  : recoverMediaError + startLoad(ct) + play
           //   L2 (+5 s stuck)  : nudge ct+0.2, startLoad, play
-          //   L3 (+5 s stuck)  : POST rotate-session → fresh manifest → seek+play
+          //   L3 (+5 s stuck)  : passive stopLoad + startLoad(ct) + play
+          //
+          // The ladder NEVER rotates the session. Session rotation is reserved
+          // for genuine token/session expiry, which surfaces as a fatal HLS
+          // ERROR and is handled by the ERROR handler's tryRotationRecovery.
+          // Rotating on a buffering stall caused a ~once-per-minute rotate loop
+          // (60s cooldown vs ~65s rotate→rebuffer cycle) that froze playback.
           //
           // Intentionally separate from the ERROR handler — this catches
           // *silent* stalls where HLS.js never emits a fatal error (the most
@@ -1781,103 +1787,30 @@ export default function EmbedPlayerPage(props: any = {}) {
                   return;
                 }
 
-                // ── Level 3: rotate-session → fresh manifest ────────────
+                // ── Level 3: passive reload at current position ─────────
+                // IMPORTANT: a buffering stall must NEVER rotate the session.
+                // Session rotation is a destructive teardown (hls.loadSource +
+                // re-seek). For a pure buffering stall (no auth error) it makes
+                // the stall LONGER, and because each rotate→re-buffer cycle
+                // lands just past the 60s ROTATION_COOLDOWN_MS, the ladder
+                // re-rotates roughly once a minute — an endless rotate loop
+                // that freezes the player for minutes and inflates the
+                // server's segment window (maxSegmentExposed) to the whole
+                // video via the rotation re-anchor seekTo.
+                //
+                // Genuine token/session expiry surfaces as a FATAL HLS error
+                // (403/401/network) and is rotated by the ERROR handler's
+                // tryRotationRecovery — that is the correct, single place a
+                // rotation may originate. Here we only re-prime hls.js's loader
+                // at the current position; the existing signed URLs are still
+                // valid within their TTL, so this clears a transient buffer
+                // stall without any teardown.
                 const t3 = v3.currentTime;
-                const sid3 = streamSidRef.current;
-                if (!sid3 || !publicId) {
-                  console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "no-sid" });
-                  isStallRecoveringRef.current = false;
-                  stallRecoveryLevelRef.current = 0;
-                  return;
-                }
-                // Coordinate with the other rotation paths via the shared
-                // cooldown. Without this the stall ladder re-rotates every
-                // ~24s (L1→L2→L3) regardless of how recently a rotation ran —
-                // the exact mechanism behind the infinite rotate-session loop.
-                // If we rotated recently, do a passive reload at the current
-                // position and let the already-fresh signed URLs do their job.
-                if (Date.now() - lastRotationAtRef.current <= ROTATION_COOLDOWN_MS) {
-                  console.info("[HLS] HLS_RECOVERY_COOLDOWN", { level: 3, currentTime: t3 });
-                  try { h3.stopLoad(); h3.startLoad(t3); } catch {}
-                  v3.play().catch(() => {});
-                  isStallRecoveringRef.current = false;
-                  stallRecoveryLevelRef.current = 0;
-                  return;
-                }
-                console.info("[HLS] HLS_FULL_RELOAD_START", { currentTime: t3 });
-                isRotatingRef.current = true;
-                lastRotationAtRef.current = Date.now();
-                fetch(`/api/player/${publicId}/rotate-session`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ sid: sid3, currentTime: t3 }),
-                }).then(async r => {
-                  if (!r.ok) {
-                    console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, status: r.status });
-                    isRotatingRef.current = false;
-                    isStallRecoveringRef.current = false;
-                    stallRecoveryLevelRef.current = 0;
-                    return;
-                  }
-                  const rd = await r.json();
-                  if (!rd.manifestUrl || !rd.sessionId) {
-                    console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "bad-response" });
-                    isRotatingRef.current = false;
-                    isStallRecoveringRef.current = false;
-                    stallRecoveryLevelRef.current = 0;
-                    return;
-                  }
-                  const h4 = hlsRef.current;
-                  const v4 = videoRef.current;
-                  if (!h4 || !v4) {
-                    isRotatingRef.current = false;
-                    isStallRecoveringRef.current = false;
-                    stallRecoveryLevelRef.current = 0;
-                    return;
-                  }
-                  streamSidRef.current = rd.sessionId;
-                  isRotatingRef.current = true;
-                  lastRotationAtRef.current = Date.now();
-                  // Create the op id here (after the response, right before
-                  // loadSource) — identical to the error/refresh/pause paths.
-                  // Placing it before the fetch let a stale in-flight response
-                  // mutate state after a newer rotation, stranding isRotatingRef.
-                  const l3OpId = ++rotationOpIdRef.current;
-                  const freshUrl = (rd.stealth?.enabled && rd.stealth.streamUrl)
-                    ? rd.stealth.streamUrl
-                    : rd.manifestUrl;
-                  const resumeAt = t3 + 0.2;
-                  h4.loadSource(freshUrl);
-                  const l3Safety = setTimeout(() => {
-                    if (l3OpId !== rotationOpIdRef.current) return;
-                    isRotatingRef.current = false;
-                    isStallRecoveringRef.current = false;
-                    stallRecoveryLevelRef.current = 0;
-                    console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "manifest-timeout" });
-                    try { h4.stopLoad(); h4.startLoad(resumeAt); } catch {}
-                    try { v4.currentTime = resumeAt; v4.play().catch(() => {}); } catch {}
-                  }, 15000);
-                  h4.once(Hls.Events.MANIFEST_PARSED, () => {
-                    clearTimeout(l3Safety);
-                    if (l3OpId !== rotationOpIdRef.current) return;
-                    isRotatingRef.current = false;
-                    lastRotationAtRef.current = Date.now();
-                    h4.startLoad(resumeAt);
-                    h4.once(Hls.Events.FRAG_BUFFERED, () => {
-                      try { v4.currentTime = resumeAt; } catch {}
-                      v4.play().catch(() => {});
-                      isStallRecoveringRef.current = false;
-                      stallRecoveryLevelRef.current = 0;
-                      console.info("[HLS] HLS_RECOVERY_SUCCESS", { level: 3, resumeAt });
-                    });
-                  });
-                  sendProgress("rotation", resumeAt, { sid: rd.sessionId, seekTo: true });
-                }).catch(() => {
-                  console.warn("[HLS] HLS_RECOVERY_FAILED", { level: 3, reason: "fetch-error" });
-                  isRotatingRef.current = false;
-                  isStallRecoveringRef.current = false;
-                  stallRecoveryLevelRef.current = 0;
-                });
+                console.info("[HLS] HLS_PASSIVE_RELOAD", { level: 3, currentTime: t3 });
+                try { h3.stopLoad(); h3.startLoad(t3); } catch {}
+                v3.play().catch(() => {});
+                isStallRecoveringRef.current = false;
+                stallRecoveryLevelRef.current = 0;
               }, 5000);
             }, 5000);
           };
