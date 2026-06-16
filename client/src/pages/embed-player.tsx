@@ -468,7 +468,14 @@ export default function EmbedPlayerPage(props: any = {}) {
 
   // Control bridge refs
   const playerReadyRef = useRef(false);
-  const pendingInitialSeekRef = useRef<number>(urlSeekTime);
+  // AUTO-RESUME DISABLED: always start from the beginning.
+  // urlSeekTime (?t= in URL) was the mechanism for server-side auto-resume
+  // (the server embedded the saved position as &t=NNN in the iframe URL).
+  // Since auto-resume is off at the server, we also ignore ?t= here so that
+  // any cached/stale iframe URLs that still carry &t=NNN don't cause the
+  // player to seek forward. Intentional start-positions from the LMS should
+  // use the SEEK_TO postMessage API instead of relying on the URL parameter.
+  const pendingInitialSeekRef = useRef<number>(-1);
   const pendingMessageSeekRef = useRef<number | null>(null);
   // STARTUP RESUME-CLOBBER GUARD state.
   // initialResumeTargetRef holds the saved-position resume target (seconds)
