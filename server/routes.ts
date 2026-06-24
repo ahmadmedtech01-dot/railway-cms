@@ -930,7 +930,7 @@ async function runFfmpegHls(
       const cfg = qualityMap[q];
       args.push(
         `-map`, `0:v:0`, `-map`, `0:a:0`,
-        `-c:v:${i}`, `libx264`, `-b:v:${i}`, cfg.b,
+        `-c:v:${i}`, `libx264`, `-preset:v:${i}`, `fast`, `-b:v:${i}`, cfg.b,
         `-maxrate:v:${i}`, cfg.maxrate, `-bufsize:v:${i}`, cfg.bufsize,
         `-filter:v:${i}`, cfg.vf, `-c:a:${i}`, `aac`, `-b:a:${i}`, cfg.ba,
       );
