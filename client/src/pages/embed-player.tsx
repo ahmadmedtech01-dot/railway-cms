@@ -826,7 +826,10 @@ export default function EmbedPlayerPage(props: any = {}) {
       if (import.meta.env.DEV) console.debug("[EmbedControl] received", msg.type, "from", event.origin);
 
       switch (msg.type) {
-        case "SEEK_TO": {
+        case "SEEK_TO":
+        case "SEEK": {
+          // "SEEK" is the legacy name used by Syan LMS; "SEEK_TO" is the canonical name.
+          // Both are accepted for backward compatibility.
           const t = typeof msg.time === "number" ? msg.time : parseFloat(msg.time);
           if (!isFinite(t) || t < 0) return;
           if (playerReadyRef.current) {

@@ -1,0 +1,109 @@
+Secure CMS — Complete Integration Report
+What Is It?
+An external video player hosted on Railway (https://railway-cms-production.up.railway.app). It handles DRM, watermarking, and playback controls. Syan never touches the raw video — it only embeds the CMS player inside an iframe.
+
+Configuration (per video, stored in DB)
+Field	Purpose
+provider = 'secure_cms'	Tells the system to use this flow
+public_video_id	The video's ID on the Railway CMS
+token_mode	'postMessage' (secure default) or 'query_param' (WebViews)
+embed_url	Optional stored URL; auto-derived as {CMS_BASE}/embed/{publicVideoId}
+Full Flow — Step by Step
+Student clicks a topic video
+         │
+         ▼
+Frontend: getEmbedToken(courseId, videoId)
+  POST /api/video-courses/:courseId/embed-token
+         │
+         ▼
+Server checks (3 gates — ALL must pass):
+  1. requireAuth              ← valid JWT session
+  2. hasActiveVideoCourseAccess  ← course enrollment active + not expired
+  3. isVideoAllowedForUser    ← per-video free/lock check
+         │
+         ▼
+Server mints a launchToken (HMAC-SHA256):
+  Payload = {
+    iss: 'syan-lms',
+    aud: 'cms-player',
+    sub: userId,
+    publicId: vid.publicVideoId,
+    iat: now,
+    exp: now + 300,       ← 5 min expiry
+    jti: randomUUID(),    ← prevents replay attacks
+    name: student.fullName,
+    email: student.email
+  }
+  Signed with INTEGRATION_MASTER_SECRET (server-side only, never sent to client)
+         │
+         ▼
+Server POSTs launchToken → Railway CMS:
+  POST {CMS_BASE}/api/integrations/player/{publicVideoId}/mint
+  body: { launchToken }
+  timeout: 15 seconds
+         │
+         ▼
+CMS validates launchToken, returns:
+  { embedToken, manifestUrl }
+         │
+         ▼
+Server returns to frontend:
+  {
+    embedToken,       ← short-lived player session token
+    manifestUrl,      ← DRM manifest URL
+    publicVideoId,
+    tokenMode,        ← 'postMessage' or 'query_param'
+    bareEmbedUrl,     ← URL WITHOUT token (postMessage mode)
+    embedUrl,         ← URL WITH token (query_param mode)
+  }
+
+Two Delivery Modes
+Mode A — postMessage (default, most secure)
+iframe src = bareEmbedUrl     ← token is NOT in the URL
+     │
+     ▼ iframe loads
+onLoad fires →
+  iframe.contentWindow.postMessage(
+    { type: 'LMS_LAUNCH_TOKEN', token: embedToken },
+    cmsOrigin        ← NEVER '*', always exact Railway origin
+  )
+  + retries at 250ms and 1000ms (cover listener-attach race)
+
+Why this is safer: the token never appears in browser history, server logs, or URL bars.
+
+Mode B — query_param (for WebViews/mobile)
+iframe src = embedUrl?embedToken=xxxx
+  ← token embedded in URL directly
+  ← used because WebViews can't do cross-frame postMessage
+
+CMS → LMS Messages (what the CMS sends back)
+Message	When	What LMS Does
+PLAYER_READY	CMS player + manifest loaded	Flushes any pending segment seeks
+SEEKED	After a seek completes	Clears the loading overlay
+PLAY	Playback started	Logged in dev mode
+PAUSE	Playback paused	Logged in dev mode
+CURRENT_TIME	Time progress tick	Available for future tracking
+ERROR	CMS player error	Logged in dev mode
+LMS → CMS Messages (what Syan sends)
+Message	When	Purpose
+LMS_LAUNCH_TOKEN	On iframe onLoad	Authenticate the player session
+SEEK	Student clicks a segment	Jump to timestamp
+Security Layers
+Layer	Detail
+Token expiry	exp = now + 300 — 5 min, then useless
+Replay prevention	jti: randomUUID() — each mint is unique
+Secret stays server-side	INTEGRATION_MASTER_SECRET never sent to browser
+postMessage targeting	Always cmsOrigin (Railway URL), never '*'
+Access checked before mint	3 gates validated before any token is issued
+Retry dedup	CMS de-duplicates repeated LMS_LAUNCH_TOKEN sends
+15s mint timeout	AbortController prevents hanging if Railway is slow
+Token not in URL	postMessage mode keeps token out of browser history
+Required Environment Variables
+Variable	Required?	Purpose
+INTEGRATION_MASTER_SECRET	✅ Required	Signs launchToken (HMAC-SHA256)
+CMS_BASE_URL	Optional	Railway CMS base URL (defaults to https://railway-cms-production.up.railway.app)
+LMS_ORIGIN	Optional	Syan's origin sent as Origin header to CMS for CORS
+If INTEGRATION_MASTER_SECRET is missing the endpoint returns HTTP 500 immediately with a clear error logged.
+
+Retry Logic (frontend)
+If the getEmbedToken call fails, the frontend automatically retries once after 2 seconds, then shows an error state. The abort controller cleans up everything if the user navigates away before the token arrives.
